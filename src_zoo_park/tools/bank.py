@@ -1,5 +1,3 @@
-import asyncio
-
 from db import User, Value
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,20 +53,38 @@ async def get_weight_rate_bank(session: AsyncSession) -> list[float]:
     weight_rate = await tools.get_value(
         session=session, value_name="WEIGHT_RATE_BANK", value_type="str"
     )
-    return [float(i.strip()) for i in weight_rate.split(",")]
+    try:
+        values = [float(i.strip()) for i in weight_rate.split(",") if i.strip()]
+    except ValueError:
+        values = []
+    if len(values) < 2:
+        return [1.0, 1.0]
+    return values[:2]
 
 
 async def get_increase_rate_bank(
     session: AsyncSession,
 ) -> tuple[list[int], list[int]]:
-    increase_rate_plus, increase_rate_minus = await asyncio.gather(
-        tools.get_value(
-            session=session, value_name="INCREASE_PLUS_RATE_BANK", value_type="str"
-        ),
-        tools.get_value(
-            session=session, value_name="INCREASE_MINUS_RATE_BANK", value_type="str"
-        ),
+    increase_rate_plus = await tools.get_value(
+        session=session, value_name="INCREASE_PLUS_RATE_BANK", value_type="str"
     )
-    increase_rate_plus = [int(i.strip()) for i in increase_rate_plus.split(", ")]
-    increase_rate_minus = [int(i.strip()) for i in increase_rate_minus.split(", ")]
+    increase_rate_minus = await tools.get_value(
+        session=session, value_name="INCREASE_MINUS_RATE_BANK", value_type="str"
+    )
+    try:
+        increase_rate_plus = [
+            int(i.strip()) for i in increase_rate_plus.split(",") if i.strip()
+        ]
+    except ValueError:
+        increase_rate_plus = []
+    try:
+        increase_rate_minus = [
+            int(i.strip()) for i in increase_rate_minus.split(",") if i.strip()
+        ]
+    except ValueError:
+        increase_rate_minus = []
+    if not increase_rate_plus:
+        increase_rate_plus = [1]
+    if not increase_rate_minus:
+        increase_rate_minus = [1]
     return increase_rate_plus, increase_rate_minus

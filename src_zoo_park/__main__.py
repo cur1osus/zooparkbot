@@ -1,6 +1,7 @@
 import asyncio
+from datetime import datetime
+import traceback
 
-import aioschedule
 import tools
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
@@ -34,22 +35,45 @@ async def on_startup(_engine: AsyncEngine) -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-async def on_shutdown(session: AsyncSession) -> None:
-    await session.close_all()
+async def on_shutdown(*args, **kwargs) -> None:
+    await _engine.dispose()
 
 
 async def scheduler() -> None:
-    # aioschedule.every(1).seconds.do(job_sec)
-    aioschedule.every(1).seconds.do(job_minute)
-    aioschedule.every(15).minutes.do(run_npc_players_turn)
-    aioschedule.every().day.at("10:30").do(reset_first_offer_bought)
-    aioschedule.every().day.at("11:00").do(add_bonus_to_users)
-    aioschedule.every().day.at("13:00").do(create_game_for_chat)
-    aioschedule.every().day.at("16:30").do(create_game_for_chat)
-    aioschedule.every().day.at("20:00").do(create_game_for_chat)
-    aioschedule.every().day.at("21:00").do(verification_referrals)
+    last_runs: dict[str, str] = {}
+
+    async def run_task(name: str, coro) -> None:
+        try:
+            await coro
+        except Exception:
+            traceback.print_exc()
+        else:
+            last_runs[name] = datetime.now().strftime("%Y-%m-%d %H:%M")
+
     while True:
-        await aioschedule.run_pending()
+        now = datetime.now()
+        await run_task(name="job_minute", coro=job_minute())
+
+        if now.second == 0:
+            minute_key = now.strftime("%Y-%m-%d %H:%M")
+            clock = now.strftime("%H:%M")
+
+            if now.minute % 15 == 0 and last_runs.get("npc") != minute_key:
+                await run_task(name="npc", coro=run_npc_players_turn())
+
+            daily_jobs = {
+                "10:30": ("reset_first_offer_bought", reset_first_offer_bought),
+                "11:00": ("add_bonus_to_users", add_bonus_to_users),
+                "13:00": ("create_game_for_chat_1", create_game_for_chat),
+                "16:30": ("create_game_for_chat_2", create_game_for_chat),
+                "20:00": ("create_game_for_chat_3", create_game_for_chat),
+                "21:00": ("verification_referrals", verification_referrals),
+            }
+            if clock in daily_jobs:
+                task_name, task_func = daily_jobs[clock]
+                if last_runs.get(task_name) != minute_key:
+                    await run_task(name=task_name, coro=task_func())
+
         await asyncio.sleep(1)
 
 
@@ -84,6 +108,8 @@ async def set_default_commands(bot: Bot):
 
 async def main() -> None:
     dp = Dispatcher(_engine=_engine, storage=RedisStorage(redis=redis))
+
+    await on_startup(_engine)
 
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
