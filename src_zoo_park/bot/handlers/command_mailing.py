@@ -24,8 +24,9 @@ async def command_mailing(
     session: AsyncSession,
     user: User | None,
 ) -> None:
-    if user.id_user != ADMIN_ID:
-        return await message.answer("У вас нет прав")
+    if not user or user.id_user != ADMIN_ID:
+        await message.answer("У вас нет прав")
+        return
     await state.set_state(AdminState.get_mess_mailing)
     await message.answer(text=await get_text_message("send_mess_for_mailing"))
 
@@ -37,15 +38,20 @@ async def get_mess_mailing(
     session: AsyncSession,
     user: User | None,
 ) -> None:
-    users = await session.scalars(select(User))
+    if not user or user.id_user != ADMIN_ID:
+        await state.set_state(UserState.zoomarket_menu)
+        await message.answer("У вас нет прав")
+        return
+
+    users = await session.execute(select(User.id_user, User.username))
     users = users.all()
     not_sended = []
-    for user in users:
+    for id_user, username in users:
         try:
-            await message.send_copy(chat_id=user.id_user)
+            await message.send_copy(chat_id=id_user)
         except Exception:
-            not_sended.append(mention_html(user.id_user, user.username))
-        await asyncio.sleep(0.5)
+            not_sended.append(mention_html(id_user, username or str(id_user)))
+        await asyncio.sleep(0.1)
     amount_got_message = len(users) - len(not_sended)
     amount_not_got_message = len(not_sended)
     not_sended = ", ".join(not_sended) if not_sended else "Нет"

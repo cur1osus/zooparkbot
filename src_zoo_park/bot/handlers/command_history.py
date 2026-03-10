@@ -21,14 +21,24 @@ async def command_history(
     session: AsyncSession,
     user: User | None,
 ) -> None:
-    if user.id_user != ADMIN_ID:
-        return await message.answer("У вас нет прав")
+    if not user or user.id_user != ADMIN_ID:
+        await message.answer("У вас нет прав")
+        return
     if not command.args:
         await message.answer("Не указано время")
         return
-    mins = command.args
+    try:
+        mins = int(command.args)
+    except ValueError:
+        await message.answer("Время должно быть числом в минутах")
+        return
+
+    if mins <= 0:
+        await message.answer("Время должно быть больше нуля")
+        return
+
     events_list = await get_events_list(session, user.id_user)
-    sev = sort_events_by_time(events_list=events_list, time=int(mins))
+    sev = sort_events_by_time(events_list=events_list, time=mins)
     if not sev:
         await message.answer(text="Нет событий")
         return

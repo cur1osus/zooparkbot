@@ -33,8 +33,18 @@ async def income_from_animal(
     session: AsyncSession, animals: dict, unity_idpk: int, info_about_items: str
 ):
     income = 0
+    if not animals:
+        return income
+
+    animal_rows = await session.scalars(
+        select(Animal).where(Animal.code_name.in_(list(animals.keys())))
+    )
+    animals_by_code = {animal.code_name: animal for animal in animal_rows.all()}
+
     for animal, quantity in animals.items():
-        animal = await session.scalar(select(Animal).where(Animal.code_name == animal))
+        animal = animals_by_code.get(animal)
+        if not animal:
+            continue
         animal_income = await tools.get_income_animal(
             session=session,
             animal=animal,

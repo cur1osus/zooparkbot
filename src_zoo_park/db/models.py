@@ -1,6 +1,6 @@
 import json
 
-from sqlalchemy import BigInteger, DateTime, Numeric, String, Text
+from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -9,15 +9,24 @@ from .base import Base
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        Index(
+            "ix_users_id_referrer_referral_verification",
+            "id_referrer",
+            "referral_verification",
+        ),
+    )
 
     id_user: Mapped[int] = mapped_column(BigInteger, unique=True)
-    username: Mapped[str] = mapped_column(String(length=64), nullable=True)
+    username: Mapped[str] = mapped_column(String(length=64), nullable=True, index=True)
     nickname: Mapped[str] = mapped_column(String(length=64), nullable=True)
     date_reg: Mapped[str] = mapped_column(DateTime)
-    id_referrer: Mapped[int] = mapped_column(BigInteger, nullable=True)
-    referral_verification: Mapped[bool] = mapped_column(default=False)
+    id_referrer: Mapped[int] = mapped_column(BigInteger, nullable=True, index=True)
+    referral_verification: Mapped[bool] = mapped_column(default=False, index=True)
     moves: Mapped[int] = mapped_column(default=0)
-    history_moves: Mapped[str] = mapped_column(MEDIUMTEXT, default="{}")
+    history_moves: Mapped[str] = mapped_column(
+        Text().with_variant(MEDIUMTEXT(), "mysql"), default="{}"
+    )
     paw_coins: Mapped[int] = mapped_column(default=0)
     amount_expenses_paw_coins: Mapped[int] = mapped_column(default=0)
     rub: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0)
@@ -85,7 +94,7 @@ class RequestToUnity(Base):
     idpk_user: Mapped[int] = mapped_column()
     idpk_unity_owner: Mapped[int] = mapped_column()
     date_request: Mapped[str] = mapped_column(DateTime)
-    date_request_end: Mapped[str] = mapped_column(DateTime)
+    date_request_end: Mapped[str] = mapped_column(DateTime, index=True)
 
 
 class Item(Base):
@@ -144,7 +153,7 @@ class RandomMerchant(Base):
 class TransferMoney(Base):
     __tablename__ = "transfer_money"
 
-    id_transfer: Mapped[str] = mapped_column(String(length=10))
+    id_transfer: Mapped[str] = mapped_column(String(length=10), index=True)
     idpk_user: Mapped[int] = mapped_column()
     currency: Mapped[str] = mapped_column(String(length=10))
     one_piece_sum: Mapped[int] = mapped_column(BigInteger)
@@ -163,8 +172,11 @@ class Donate(Base):
 
 class Game(Base):
     __tablename__ = "games"
+    __table_args__ = (
+        Index("ix_games_end_last_update_mess", "end", "last_update_mess"),
+    )
 
-    id_game: Mapped[str] = mapped_column(String(length=20))
+    id_game: Mapped[str] = mapped_column(String(length=20), index=True)
     idpk_user: Mapped[int] = mapped_column()
     type_game: Mapped[str] = mapped_column(String(length=64))
     amount_gamers: Mapped[int] = mapped_column()
@@ -202,7 +214,7 @@ class MessageToSupport(Base):
 class Text(Base):
     __tablename__ = "texts"
 
-    name: Mapped[str] = mapped_column(String(length=100))  # Название текста
+    name: Mapped[str] = mapped_column(String(length=100), index=True)  # Название текста
     text: Mapped[str] = mapped_column(
         String(length=4096), default="текст не задан"
     )  # Текст
@@ -211,7 +223,7 @@ class Text(Base):
 class Button(Base):
     __tablename__ = "buttons"
 
-    name: Mapped[str] = mapped_column(String(length=100))  # Название кнопки
+    name: Mapped[str] = mapped_column(String(length=100), index=True)  # Название кнопки
     text: Mapped[str] = mapped_column(
         String(length=64), default="кнопка"
     )  # Текст кнопки
@@ -226,7 +238,9 @@ class BlackList(Base):
 class Value(Base):
     __tablename__ = "values"
 
-    name: Mapped[str] = mapped_column(String(length=100))  # Название значения
+    name: Mapped[str] = mapped_column(
+        String(length=100), index=True
+    )  # Название значения
     value_int: Mapped[int] = mapped_column(BigInteger, default=0)  # Значение целое
     value_str: Mapped[str] = mapped_column(
         String(length=4096), default="не установлено"
@@ -236,5 +250,5 @@ class Value(Base):
 class Photo(Base):
     __tablename__ = "photos"
 
-    name: Mapped[str] = mapped_column(String(length=30))  # Название фото
+    name: Mapped[str] = mapped_column(String(length=30), index=True)  # Название фото
     photo_id: Mapped[str] = mapped_column(String(length=100))  # Идентификатор фото

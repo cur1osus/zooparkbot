@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 from decimal import Decimal
 import json
@@ -42,6 +43,8 @@ from tools import (
     ft_inaction,
 )
 
+job_minute_lock = asyncio.Lock()
+
 
 async def job_sec() -> None:
     await verification_referrals()
@@ -51,14 +54,30 @@ async def job_sec() -> None:
 
 
 async def job_minute() -> None:
-    now = datetime.now()
-    second = now.second
-    async with _sessionmaker_for_func() as session:
+    second = datetime.now().second
+    if second not in {0, 30, 50}:
+        return
+
+    if job_minute_lock.locked():
+        return
+
+    async with job_minute_lock:
+        second = datetime.now().second
+
         if second == 30:
-            await updater_message_minigame(session=session)
-        elif second == 50:
-            await ender_minigames(session=session)
-        elif second == 00:
+            async with _sessionmaker_for_func() as session:
+                await updater_message_minigame(session=session)
+            return
+
+        if second == 50:
+            async with _sessionmaker_for_func() as session:
+                await ender_minigames(session=session)
+            return
+
+        if second != 0:
+            return
+
+        async with _sessionmaker_for_func() as session:
             await accrual_of_income(session=session)
             await update_rate_bank(session=session)
             await check_inaction(session=session)
@@ -336,6 +355,7 @@ async def check_inaction(session: AsyncSession):
     if now_hour < 10 and now_hour > 0:
         return
     users = await session.scalars(select(User).where(User.history_moves != "{}"))
+    notifications = []
     for user in users.all():
         last_online = get_last_online(user.history_moves)
         if not_time_yet(last_online=last_online):
@@ -347,14 +367,22 @@ async def check_inaction(session: AsyncSession):
         rub, rub_burned = process_of_burning_rub(user.rub)
         user.usd = usd
         user.rub = rub
-        await session.commit()
-        await send_info_about_inaction(
-            session=session,
-            dict_of_dead_animal=dict_of_dead_animal,
-            usd_burned=usd_burned,
-            rub_burned=rub_burned,
-            id_user=user.id_user,
+        notifications.append(
+            {
+                "dict_of_dead_animal": dict_of_dead_animal,
+                "usd_burned": usd_burned,
+                "rub_burned": rub_burned,
+                "id_user": user.id_user,
+            }
         )
+
+    if not notifications:
+        return
+
+    await session.commit()
+
+    for notification in notifications:
+        await send_info_about_inaction(session=session, **notification)
 
 
 def process_of_dead_animal(user_animals: str):

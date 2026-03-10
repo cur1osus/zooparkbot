@@ -71,7 +71,8 @@ async def get_events_list(session: AsyncSession, id_user: int):
     events_list = []
     events = await session.execute(
         select(User.id_user, User.nickname, User.history_moves).where(
-            User.id_user != id_user
+            User.id_user != id_user,
+            User.history_moves != "{}",
         )
     )
     for id_user, nickname, history_moves in events.all():

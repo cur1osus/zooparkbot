@@ -4,7 +4,7 @@ from collections import defaultdict
 
 from db import Unity, User
 from init_db import _sessionmaker_for_func
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import tools
@@ -22,11 +22,12 @@ async def has_special_characters_name(name: str) -> str | None:
 
 
 async def is_unique_name(session: AsyncSession, nickname: str) -> bool:
-    users_nickname = await session.scalars(select(User.nickname))
-    users_nickname = [
-        nickname.lower() for nickname in users_nickname.all() if nickname is not None
-    ]
-    return nickname.lower() not in users_nickname
+    count_unities = await session.scalar(
+        select(func.count())
+        .select_from(Unity)
+        .where(func.lower(Unity.name) == nickname.lower())
+    )
+    return not count_unities
 
 
 async def get_row_unity_for_kb(session: AsyncSession):
@@ -48,8 +49,7 @@ async def count_page_unity(
     session: AsyncSession,
 ) -> int:
     size = await get_size_unity_for_kb(session=session)
-    r = await session.scalars(select(Unity.name))
-    len_unity = len(r.all())
+    len_unity = await session.scalar(select(func.count()).select_from(Unity)) or 0
     remains = len_unity % size
     return len_unity // size + (1 if remains else 0)
 
@@ -175,10 +175,15 @@ async def get_members_name_and_idpk(
 async def get_top_unity_by_animal(session: AsyncSession) -> tuple[int, dict]:
     table_for_compare = {}
 
-    # Fetch all unities and users in a single query
     unites = await session.scalars(select(Unity))
     unites = unites.all()
+    if not unites:
+        return 0, {}
+
     user_ids = [int(idpk) for unity in unites for idpk in unity.get_members_idpk()]
+    if not user_ids:
+        return 0, {}
+
     users = await session.execute(select(User).where(User.idpk.in_(user_ids)))
     users = {user.idpk: user for user in users.scalars().all()}
 
@@ -194,6 +199,9 @@ async def get_top_unity_by_animal(session: AsyncSession) -> tuple[int, dict]:
             continue
         max_animal = max(animals, key=animals.get)
         table_for_compare[unity.idpk] = {max_animal: animals[max_animal]}
+    if not table_for_compare:
+        return 0, {}
+
     top_unity = max(
         table_for_compare, key=lambda x: next(iter(table_for_compare[x].values()))
     )

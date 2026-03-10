@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.filters import CompareDataByIndex, GetTextButton
 from bot.keyboards import (
     ik_menu_unity_to_join,
+    ik_npc_unity_invitation,
     ik_unity_invitation,
     ik_unity_options,
     ik_unity_send_request,
@@ -16,6 +17,7 @@ from bot.keyboards import (
     rk_main_menu,
     rk_unity_menu,
 )
+from init_db_redis import redis
 from bot.states import UserState
 from db import RequestToUnity, Unity, User
 from sqlalchemy import select
@@ -35,6 +37,10 @@ from tools import (
 
 flags = {"throttling_key": "default"}
 router = Router()
+
+
+def npc_unity_invite_key(owner_idpk: int, target_idpk: int) -> str:
+    return f"npc_unity_invite:{owner_idpk}:{target_idpk}"
 
 
 @router.message(UserState.main_menu, GetTextButton("unity"), flags=flags)
@@ -256,7 +262,6 @@ async def process_send_request(
     session: AsyncSession,
     user: User,
 ) -> None:
-
     if await session.scalar(
         select(RequestToUnity).where(RequestToUnity.idpk_user == user.idpk)
     ):
@@ -348,6 +353,57 @@ async def process_rejected_to_unity(
         chat_id=member.id_user,
         text=await get_text_message("request_rejected_to_unity"),
     )
+
+
+@router.callback_query(
+    StateFilter(any_state), CompareDataByIndex("accept_npc_unity_invite")
+)
+async def accept_npc_unity_invite(
+    query: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    user: User,
+) -> None:
+    if user.current_unity:
+        await query.answer(text="Вы уже состоите в объединении", show_alert=True)
+        return
+
+    unity_idpk, owner_idpk, _ = query.data.split(":")
+    unity = await session.get(Unity, int(unity_idpk))
+    owner = await session.get(User, int(owner_idpk))
+    if not unity or not owner or unity.idpk_user != owner.idpk:
+        await query.answer(text="Приглашение больше неактуально", show_alert=True)
+        return
+
+    invite_key = npc_unity_invite_key(owner.idpk, user.idpk)
+    if not await redis.get(invite_key):
+        await query.answer(
+            text="Приглашение истекло или было отозвано", show_alert=True
+        )
+        return
+
+    unity.add_member(idpk_member=user.idpk)
+    user.current_unity = f"member:{unity.idpk}"
+    await redis.delete(invite_key)
+    await session.commit()
+    await query.message.edit_text("Вы вступили в объединение NPC")
+    await query.answer(text="Приглашение принято", show_alert=False)
+
+
+@router.callback_query(
+    StateFilter(any_state), CompareDataByIndex("reject_npc_unity_invite")
+)
+async def reject_npc_unity_invite(
+    query: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    user: User,
+) -> None:
+    _, owner_idpk, _ = query.data.split(":")
+    invite_key = npc_unity_invite_key(int(owner_idpk), user.idpk)
+    await redis.delete(invite_key)
+    await query.message.edit_text("Вы отклонили приглашение в объединение")
+    await query.answer(text="Приглашение отклонено", show_alert=False)
 
 
 @router.message(UserState.unity_menu, GetTextButton("exit_from_unity"))

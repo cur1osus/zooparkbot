@@ -2,7 +2,7 @@ import html
 import re
 
 from db import Item, User
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -21,11 +21,12 @@ async def has_special_characters_nickname(nickname: str) -> str | None:
 
 async def is_unique_nickname(session: AsyncSession, nickname: str) -> bool:
     """Проверяет, что никнейм пользователя уникален"""
-    users_nickname = await session.scalars(select(User.nickname))
-    users_nickname = [
-        nickname.lower() for nickname in users_nickname.all() if nickname is not None
-    ]
-    return nickname.lower() not in users_nickname
+    count_users = await session.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(func.lower(User.nickname) == nickname.lower())
+    )
+    return not count_users
 
 
 async def view_nickname(session: AsyncSession, user: User):

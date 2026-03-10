@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import tools
 
+TOP_UNITY_ANIMAL_CACHE_KEY = "top_unity_animal_bonus"
+
 
 async def get_all_animals(session: AsyncSession) -> list[Animal]:
     result = await session.scalars(select(Animal).where(Animal.code_name.contains("-")))
@@ -65,13 +67,15 @@ async def get_income_animal(
     ):
         animal_income = animal_income * (1 + v / 100)
     if unity_idpk:
-        unity_idpk_top, animal_top = await tools.get_top_unity_by_animal(
-            session=session
-        )
-        if (
-            unity_idpk_top == unity_idpk
-            and animal.code_name == list(animal_top.keys())[0]
-        ):
+        top_unity_data = session.info.get(TOP_UNITY_ANIMAL_CACHE_KEY)
+        if top_unity_data is None:
+            unity_idpk_top, animal_top = await tools.get_top_unity_by_animal(
+                session=session
+            )
+            top_unity_data = (unity_idpk_top, next(iter(animal_top), None))
+            session.info[TOP_UNITY_ANIMAL_CACHE_KEY] = top_unity_data
+        unity_idpk_top, animal_code_name_top = top_unity_data
+        if unity_idpk_top == unity_idpk and animal.code_name == animal_code_name_top:
             bonus = await tools.get_value(
                 session=session, value_name="BONUS_FOR_AMOUNT_ANIMALS"
             )

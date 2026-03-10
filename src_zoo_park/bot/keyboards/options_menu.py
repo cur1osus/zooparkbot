@@ -459,6 +459,20 @@ async def ik_unity_invitation(idpk_user: int | str):
     return builder.as_markup()
 
 
+async def ik_npc_unity_invitation(unity_idpk: int, owner_idpk: int):
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=await tools.get_text_button("accept_to_unity"),
+        callback_data=f"{unity_idpk}:{owner_idpk}:accept_npc_unity_invite",
+    )
+    builder.button(
+        text=await tools.get_text_button("rejected_to_unity"),
+        callback_data=f"{unity_idpk}:{owner_idpk}:reject_npc_unity_invite",
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 async def ik_menu_unity_members(
     session: AsyncSession,
     unity_idpk: int,

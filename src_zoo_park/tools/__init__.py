@@ -97,7 +97,7 @@ from .nickname import (
 from .photo import get_photo, get_photo_from_message
 from .plug_classes import UnityPlug
 from .random_merchant import create_random_merchant, gen_price
-from .referrals import get_referrals, get_verify_referrals
+from .referrals import get_referrals, get_referrals_count_map, get_verify_referrals
 from .text import (
     contains_any_pattern,
     factory_text_account_animals,

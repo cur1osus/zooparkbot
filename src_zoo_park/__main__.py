@@ -25,6 +25,7 @@ from jobs import (
     reset_first_offer_bought,
     verification_referrals,
 )
+from npc_agent import run_npc_players_turn
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
@@ -40,6 +41,7 @@ async def on_shutdown(session: AsyncSession) -> None:
 async def scheduler() -> None:
     # aioschedule.every(1).seconds.do(job_sec)
     aioschedule.every(1).seconds.do(job_minute)
+    aioschedule.every(15).minutes.do(run_npc_players_turn)
     aioschedule.every().day.at("10:30").do(reset_first_offer_bought)
     aioschedule.every().day.at("11:00").do(add_bonus_to_users)
     aioschedule.every().day.at("13:00").do(create_game_for_chat)
@@ -81,7 +83,6 @@ async def set_default_commands(bot: Bot):
 
 
 async def main() -> None:
-
     dp = Dispatcher(_engine=_engine, storage=RedisStorage(redis=redis))
 
     dp.startup.register(on_startup)

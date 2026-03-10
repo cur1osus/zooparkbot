@@ -54,6 +54,15 @@ async def inline_game_three_pm(
     session: AsyncSession,
     user: User | None,
 ):
+    if not user:
+        r = await create_inline_query_result(
+            title_key="attention",
+            description_key="press_start_to_play",
+            message_text_key="press_start_to_play",
+        )
+        await inline_query.answer(results=[r], cache_time=0)
+        return
+
     split_query = inline_query.query.split()
     amount_params = len(split_query)
     attention_photo = "https://avatars.yandex.net/get-music-content/2433207/64c60238.a.12011003-1/m1000x1000?webp=false"
@@ -212,7 +221,12 @@ async def inline_game_three_pm(
 async def game_activate(chosen_result: ChosenInlineResult, session: AsyncSession):
     idpk_game, _ = chosen_result.result_id.split(":")
     game = await session.get(Game, int(idpk_game))
+    if not game:
+        return
+
     user = await session.get(User, game.idpk_user)
+    if not user:
+        return
 
     await add_to_currency(
         self=user,

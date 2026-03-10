@@ -20,6 +20,18 @@ async def share_referral_link(
     session: AsyncSession,
     user: User | None,
 ):
+    if not user:
+        r = InlineQueryResultArticle(
+            id="ref_not_found",
+            title=await get_text_message("attention"),
+            description=await get_text_message("press_start_to_play"),
+            input_message_content=InputTextMessageContent(
+                message_text=await get_text_message("press_start_to_play")
+            ),
+        )
+        await inline_query.answer(results=[r], cache_time=0)
+        return
+
     link = await create_start_link(bot=inline_query.bot, payload=user.idpk)
     r = InlineQueryResultArticle(
         id="ref",

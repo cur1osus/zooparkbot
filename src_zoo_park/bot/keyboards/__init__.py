@@ -41,6 +41,7 @@ from .options_menu import (
     ik_menu_unity_members,
     ik_menu_unity_to_join,
     ik_merchant_menu,
+    ik_npc_unity_invitation,
     ik_referrals_menu,
     ik_unity_invitation,
     ik_unity_options,

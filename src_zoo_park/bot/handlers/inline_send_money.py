@@ -35,6 +35,18 @@ async def inline_send_money(
     session: AsyncSession,
     user: User | None,
 ):
+    if not user:
+        r = InlineQueryResultArticle(
+            id="money_user_not_found",
+            title=await get_text_message("attention"),
+            description=await get_text_message("press_start_to_play"),
+            input_message_content=InputTextMessageContent(
+                message_text=await get_text_message("press_start_to_play")
+            ),
+        )
+        await inline_query.answer(results=[r], cache_time=0)
+        return
+
     split_query = inline_query.query.split()
     num = await find_integers(split_query[0])
     amount_params = len(split_query)
@@ -178,9 +190,14 @@ async def inline_send_money(
 async def pagination_demo(chosen_result: ChosenInlineResult, session: AsyncSession):
     idpk_tr = int(chosen_result.result_id.split(":")[0])
     tr = await session.get(TransferMoney, idpk_tr)
+    if not tr:
+        return
+
     user = await session.scalar(
         select(User).where(User.id_user == chosen_result.from_user.id)
     )
+    if not user:
+        return
 
     await add_to_currency(
         self=user,

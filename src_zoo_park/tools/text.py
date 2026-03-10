@@ -1,9 +1,10 @@
 import json
+from collections import defaultdict
 from decimal import Decimal
 
 import ahocorasick
 from cache import button_cache, text_cache
-from db import Animal, Aviary, Button, Game, Gamer, Text, Unity, User, Value
+from db import Animal, Aviary, Button, Game, Gamer, Item, Text, Unity, User, Value
 from game_variables import emoji_places_winner_in_mini_game
 from init_db import _sessionmaker_for_func
 from sqlalchemy import select
@@ -33,7 +34,8 @@ async def get_text_message(name: str, **kw) -> str:
             debug_text=debug_text,
             kw=kw,
         )
-        await session.commit()
+        if session.new or session.dirty:
+            await session.commit()
         return formatted_text
 
 
@@ -101,7 +103,8 @@ async def get_text_button(name: str, **kw) -> str:
             kw=kw,
             debug_button=debug_button,
         )
-        await session.commit()
+        if session.new or session.dirty:
+            await session.commit()
         return formatted_bttn
 
 
@@ -111,6 +114,53 @@ def mention_html(id_user: int, name: str) -> str:
 
 def mention_html_by_username(username: str, name: str) -> str:
     return f'<a href="http://t.me/{username}">{name}</a>' if username else name
+
+
+async def _get_top_emojis_by_user(
+    session: AsyncSession, users: list[User]
+) -> dict[int, str]:
+    if not users:
+        return {}
+
+    rows = await session.execute(
+        select(Item.id_user, Item.emoji).where(
+            Item.id_user.in_([user.id_user for user in users]),
+            Item.is_active == True,  # noqa: E712
+        )
+    )
+    emojis_by_user = defaultdict(list)
+    for id_user, emoji in rows.all():
+        emojis_by_user[id_user].append(emoji)
+    return {id_user: "".join(emojis) for id_user, emojis in emojis_by_user.items()}
+
+
+async def _get_top_unity_names(
+    session: AsyncSession, users: list[User]
+) -> dict[int, str]:
+    unity_ids = {
+        int(unity_idpk)
+        for user in users
+        if (unity_idpk := tools.get_unity_idpk(user.current_unity))
+    }
+    if not unity_ids:
+        return {}
+
+    rows = await session.execute(
+        select(Unity.idpk, Unity.name).where(Unity.idpk.in_(unity_ids))
+    )
+    return {idpk: f"«{name}»" for idpk, name in rows.all()}
+
+
+def _get_top_nickname(user: User, emojis_by_user: dict[int, str]) -> str:
+    emojis = emojis_by_user.get(user.id_user, "")
+    return f"{user.nickname} [{emojis}]" if emojis else user.nickname
+
+
+def _get_top_unity_name(user: User, unity_names: dict[int, str]) -> str:
+    unity_idpk = tools.get_unity_idpk(user.current_unity)
+    if not unity_idpk:
+        return ""
+    return unity_names.get(int(unity_idpk), "")
 
 
 async def factory_text_unity_top(session: AsyncSession) -> str:
@@ -145,6 +195,8 @@ async def factory_text_main_top(session: AsyncSession, idpk_user: int) -> str:
     users = await tools.fetch_users_for_top(session=session, idpk_user=idpk_user)
     if not users:
         return await get_text_message("top_not_exist")
+    emojis_by_user = await _get_top_emojis_by_user(session=session, users=users)
+    unity_names = await _get_top_unity_names(session=session, users=users)
     users_and_incomes = [
         (user, await tools.income_(session=session, user=user)) for user in users
     ]
@@ -162,7 +214,7 @@ async def factory_text_main_top(session: AsyncSession, idpk_user: int) -> str:
         )
         return await tools.get_text_message(
             pattern,
-            n=await tools.view_nickname(session=session, user=user),
+            n=_get_top_nickname(user=user, emojis_by_user=emojis_by_user),
             i=tools.formatter.format_large_number(income),
             c=counter,
             u=unity_name,
@@ -172,9 +224,12 @@ async def factory_text_main_top(session: AsyncSession, idpk_user: int) -> str:
     for counter, (user, income) in enumerate(users_and_incomes, start=1):
         if counter > total_place_top:
             break
-        unity_idpk = tools.get_unity_idpk(user.current_unity)
-        unity = await tools.fetch_unity(session=session, idpk_unity=unity_idpk)
-        text += await format_text(user, income, counter, unity.format_name)
+        text += await format_text(
+            user,
+            income,
+            counter,
+            _get_top_unity_name(user=user, unity_names=unity_names),
+        )
     self_place, user_data = next(
         (place, user_data)
         for place, user_data in enumerate(users_and_incomes, start=1)
@@ -183,7 +238,7 @@ async def factory_text_main_top(session: AsyncSession, idpk_user: int) -> str:
     if self_place > total_place_top:
         text += await tools.get_text_message(
             "pattern_line_not_in_top",
-            n=user_data[0].nickname,
+            n=_get_top_nickname(user=user_data[0], emojis_by_user=emojis_by_user),
             i=user_data[1],
             c=self_place,
         )
@@ -197,6 +252,8 @@ async def factory_text_main_top_by_money(session: AsyncSession, idpk_user: int) 
     users = await tools.fetch_users_for_top(session=session, idpk_user=idpk_user)
     if not users:
         return await get_text_message("top_not_exist")
+    emojis_by_user = await _get_top_emojis_by_user(session=session, users=users)
+    unity_names = await _get_top_unity_names(session=session, users=users)
     users.sort(key=lambda x: x.usd, reverse=True)
 
     async def format_text(user, money, counter, unity_name):
@@ -207,7 +264,7 @@ async def factory_text_main_top_by_money(session: AsyncSession, idpk_user: int) 
         )
         return await tools.get_text_message(
             pattern,
-            n=await tools.view_nickname(session=session, user=user),
+            n=_get_top_nickname(user=user, emojis_by_user=emojis_by_user),
             m=tools.formatter.format_large_number(money),
             c=counter,
             u=unity_name,
@@ -217,9 +274,12 @@ async def factory_text_main_top_by_money(session: AsyncSession, idpk_user: int) 
     for counter, user in enumerate(users, start=1):
         if counter > total_place_top:
             break
-        unity_idpk = tools.get_unity_idpk(user.current_unity)
-        unity = await tools.fetch_unity(session=session, idpk_unity=unity_idpk)
-        text += await format_text(user, user.usd, counter, unity.format_name)
+        text += await format_text(
+            user,
+            user.usd,
+            counter,
+            _get_top_unity_name(user=user, unity_names=unity_names),
+        )
 
     self_place, user = next(
         (place, user)
@@ -229,7 +289,7 @@ async def factory_text_main_top_by_money(session: AsyncSession, idpk_user: int) 
     if self_place > total_place_top:
         text += await tools.get_text_message(
             "pattern_line_not_in_top_money",
-            n=await tools.view_nickname(session=session, user=user),
+            n=_get_top_nickname(user=user, emojis_by_user=emojis_by_user),
             m=user.usd,
             c=self_place,
         )
@@ -245,6 +305,8 @@ async def factory_text_main_top_by_animals(
     users = await tools.fetch_users_for_top(session=session, idpk_user=idpk_user)
     if not users:
         return await get_text_message("top_not_exist")
+    emojis_by_user = await _get_top_emojis_by_user(session=session, users=users)
+    unity_names = await _get_top_unity_names(session=session, users=users)
     users_animals = [
         (user, await tools.get_total_number_animals(self=user)) for user in users
     ]
@@ -258,7 +320,7 @@ async def factory_text_main_top_by_animals(
         )
         return await tools.get_text_message(
             pattern,
-            n=await tools.view_nickname(session=session, user=user),
+            n=_get_top_nickname(user=user, emojis_by_user=emojis_by_user),
             a=tools.formatter.format_large_number(animals),
             c=counter,
             u=unity_name,
@@ -268,9 +330,12 @@ async def factory_text_main_top_by_animals(
     for counter, (user, animals) in enumerate(users_animals, start=1):
         if counter > total_place_top:
             break
-        unity_idpk = tools.get_unity_idpk(user.current_unity)
-        unity = await tools.fetch_unity(session=session, idpk_unity=unity_idpk)
-        text += await format_text(user, animals, counter, unity.format_name)
+        text += await format_text(
+            user,
+            animals,
+            counter,
+            _get_top_unity_name(user=user, unity_names=unity_names),
+        )
 
     self_place, user_data = next(
         (place, user_data)
@@ -280,7 +345,7 @@ async def factory_text_main_top_by_animals(
     if self_place > total_place_top:
         text += await tools.get_text_message(
             "pattern_line_not_in_top_animals",
-            n=user_data[0].nickname,
+            n=_get_top_nickname(user=user_data[0], emojis_by_user=emojis_by_user),
             a=user_data[1],
             c=self_place,
         )
@@ -296,9 +361,13 @@ async def factory_text_main_top_by_referrals(
     users = await tools.fetch_users_for_top(session=session, idpk_user=idpk_user)
     if not users:
         return await get_text_message("top_not_exist")
-    users_referrals = [
-        (user, await tools.get_referrals(session=session, user=user)) for user in users
-    ]
+    emojis_by_user = await _get_top_emojis_by_user(session=session, users=users)
+    unity_names = await _get_top_unity_names(session=session, users=users)
+    referrals_count = await tools.get_referrals_count_map(
+        session=session,
+        idpk_users=[user.idpk for user in users],
+    )
+    users_referrals = [(user, referrals_count.get(user.idpk, 0)) for user in users]
     users_referrals.sort(key=lambda x: x[1], reverse=True)
 
     async def format_text(user, ref, counter, unity_name):
@@ -309,7 +378,7 @@ async def factory_text_main_top_by_referrals(
         )
         return await tools.get_text_message(
             pattern,
-            n=await tools.view_nickname(session=session, user=user),
+            n=_get_top_nickname(user=user, emojis_by_user=emojis_by_user),
             r=ref,
             c=counter,
             u=unity_name,
@@ -319,9 +388,12 @@ async def factory_text_main_top_by_referrals(
     for counter, (user, ref) in enumerate(users_referrals, start=1):
         if counter > total_place_top:
             break
-        unity_idpk = tools.get_unity_idpk(user.current_unity)
-        unity = await tools.fetch_unity(session=session, idpk_unity=unity_idpk)
-        text += await format_text(user, ref, counter, unity.format_name)
+        text += await format_text(
+            user,
+            ref,
+            counter,
+            _get_top_unity_name(user=user, unity_names=unity_names),
+        )
 
     self_place, user_data = next(
         (place, user_data)
@@ -331,7 +403,7 @@ async def factory_text_main_top_by_referrals(
     if self_place > total_place_top:
         text += await tools.get_text_message(
             "pattern_line_not_in_top_referrals",
-            n=user_data[0].nickname,
+            n=_get_top_nickname(user=user_data[0], emojis_by_user=emojis_by_user),
             r=user_data[1],
             c=self_place,
         )
