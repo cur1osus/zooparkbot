@@ -195,14 +195,6 @@ def apply_axes_style(ax, spec: PlotSpec, max_width: float) -> None:
     )
     ax.set_xlabel(spec.xlabel, fontsize=12, color=THEME["muted"], labelpad=12)
     ax.set_ylabel(spec.ylabel, fontsize=12, color=THEME["muted"], labelpad=12)
-    ax.set_title(
-        spec.title,
-        fontsize=22,
-        fontweight="bold",
-        color=THEME["text"],
-        loc="left",
-        pad=18,
-    )
     ax.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
     ax.xaxis.set_major_formatter(FuncFormatter(format_value))
     ax.tick_params(axis="x", colors=THEME["muted"], labelsize=11)
@@ -238,12 +230,39 @@ def add_value_labels(ax, bars, max_width: float) -> None:
         )
 
 
+def add_plot_heading(fig, spec: PlotSpec, left: float) -> None:
+    fig.text(
+        left,
+        0.965,
+        spec.title,
+        fontsize=22,
+        fontweight="bold",
+        color=THEME["text"],
+        ha="left",
+        va="top",
+    )
+    fig.text(
+        left,
+        0.915,
+        spec.subtitle,
+        fontsize=11,
+        color=THEME["muted"],
+        ha="left",
+        va="top",
+    )
+
+
 def render_plot(
     nicks: list[str],
     values: list[int],
     spec: PlotSpec,
     plot_type: str,
 ) -> str:
+    plot_left = 0.22
+    plot_right = 0.94
+    plot_top = 0.82
+    plot_bottom = 0.16
+
     ensure_plot_dir()
     fig, ax = plt.subplots(figsize=FIGURE_SIZE)
     fig.patch.set_facecolor(THEME["figure_bg"])
@@ -264,8 +283,13 @@ def render_plot(
         zorder=3,
     )
     add_value_labels(ax=ax, bars=bars, max_width=max_width)
-    fig.text(0.125, 0.905, spec.subtitle, fontsize=11, color=THEME["muted"])
-    fig.subplots_adjust(left=0.22, right=0.94, top=0.84, bottom=0.16)
+    add_plot_heading(fig=fig, spec=spec, left=plot_left)
+    fig.subplots_adjust(
+        left=plot_left,
+        right=plot_right,
+        top=plot_top,
+        bottom=plot_bottom,
+    )
 
     remove_plot_files(pattern=f"plot_{plot_type}_*.png")
     filename = PLOT_DIR / f"plot_{plot_type}_{uuid4().hex}.png"
