@@ -1,13 +1,14 @@
 import json
 import math
 from datetime import datetime
+from enum import Enum
 
 from aiogram import F, Router
+from aiogram.filters.callback_data import CallbackData
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.state import any_state
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from bot.filters import CompareDataByIndex
 from bot.keyboards import ADMIN_PANEL_BUTTON
 from bot.states import UserState
 from config import ADMIN_ID
@@ -40,6 +41,51 @@ SECTION_LABELS = {
 MAX_ADMIN_TEXT = 3900
 USERS_PER_PAGE = 8
 USER_EVENTS_PER_PAGE = 6
+
+
+class AdminPanelAction(str, Enum):
+    LIST = "list"
+    REFRESH = "refresh"
+
+
+class AdminNpcSection(str, Enum):
+    OVERVIEW = "overview"
+    TACTICS = "tactics"
+    GOALS = "goals"
+    REFLECTIONS = "reflections"
+    EVENTS = "events"
+    RELATIONSHIPS = "relationships"
+    WAKE = "wake"
+
+
+class AdminPanelCallback(CallbackData, prefix="admp"):
+    action: AdminPanelAction
+
+
+class AdminNpcCallback(CallbackData, prefix="admnpc"):
+    npc_idpk: int
+    section: AdminNpcSection
+
+
+class AdminHistoryListCallback(CallbackData, prefix="ahlist"):
+    page: int
+
+
+class AdminHistoryUserCallback(CallbackData, prefix="ahuser"):
+    user_idpk: int
+    page: int
+    list_page: int
+
+
+class AdminHistoryEventCallback(CallbackData, prefix="ahevent"):
+    user_idpk: int
+    event_index: int
+    return_page: int
+    list_page: int
+
+
+class AdminHistoryNoopCallback(CallbackData, prefix="ahnoop"):
+    page: int
 
 
 def _is_admin(user: User | None, telegram_id: int) -> bool:
@@ -220,13 +266,22 @@ async def _build_admin_panel_text(session: AsyncSession) -> str:
 
 def _build_admin_panel_keyboard(npcs: list[User]):
     builder = InlineKeyboardBuilder()
-    builder.button(text="История пользователей", callback_data="admin_history:list:1")
+    builder.button(
+        text="История пользователей",
+        callback_data=AdminHistoryListCallback(page=1),
+    )
     for npc in npcs:
         builder.button(
             text=npc.nickname or f"NPC {npc.idpk}",
-            callback_data=f"admin_npc:{npc.idpk}:overview",
+            callback_data=AdminNpcCallback(
+                npc_idpk=npc.idpk,
+                section=AdminNpcSection.OVERVIEW,
+            ),
         )
-    builder.button(text="Обновить", callback_data="admin_panel:refresh")
+    builder.button(
+        text="Обновить",
+        callback_data=AdminPanelCallback(action=AdminPanelAction.REFRESH),
+    )
     builder.adjust(2)
     return builder.as_markup()
 
@@ -242,21 +297,29 @@ def _build_user_history_list_keyboard(users: list[User], page: int, total_pages:
         )
         builder.button(
             text=f"{target_user.nickname} ({len(history_entries)}) · {last_time}",
-            callback_data=f"admin_history:user:{target_user.idpk}:1:{page}",
+            callback_data=AdminHistoryUserCallback(
+                user_idpk=target_user.idpk,
+                page=1,
+                list_page=page,
+            ),
         )
     if total_pages > 1:
         builder.button(
             text="<",
-            callback_data=f"admin_history:list:{max(1, page - 1)}",
+            callback_data=AdminHistoryListCallback(page=max(1, page - 1)),
         )
         builder.button(
-            text=f"{page}/{total_pages}", callback_data="admin_history:noop:0"
+            text=f"{page}/{total_pages}",
+            callback_data=AdminHistoryNoopCallback(page=page),
         )
         builder.button(
             text=">",
-            callback_data=f"admin_history:list:{min(total_pages, page + 1)}",
+            callback_data=AdminHistoryListCallback(page=min(total_pages, page + 1)),
         )
-    builder.button(text="К NPC", callback_data="admin_panel:list")
+    builder.button(
+        text="К NPC",
+        callback_data=AdminPanelCallback(action=AdminPanelAction.LIST),
+    )
     builder.adjust(1, 1, 1, 3, 1)
     return builder.as_markup()
 
@@ -272,21 +335,38 @@ def _build_user_history_keyboard(
     for entry in entries:
         builder.button(
             text=f"{entry['time'].strftime('%d.%m %H:%M')} · {_history_event_preview(entry['event'], 34)}",
-            callback_data=f"admin_history:event:{target_user.idpk}:{entry['index']}:{page}:{list_page}",
+            callback_data=AdminHistoryEventCallback(
+                user_idpk=target_user.idpk,
+                event_index=entry["index"],
+                return_page=page,
+                list_page=list_page,
+            ),
         )
     if total_pages > 1:
         builder.button(
             text="<",
-            callback_data=f"admin_history:user:{target_user.idpk}:{max(1, page - 1)}:{list_page}",
+            callback_data=AdminHistoryUserCallback(
+                user_idpk=target_user.idpk,
+                page=max(1, page - 1),
+                list_page=list_page,
+            ),
         )
         builder.button(
-            text=f"{page}/{total_pages}", callback_data="admin_history:noop:0"
+            text=f"{page}/{total_pages}",
+            callback_data=AdminHistoryNoopCallback(page=page),
         )
         builder.button(
             text=">",
-            callback_data=f"admin_history:user:{target_user.idpk}:{min(total_pages, page + 1)}:{list_page}",
+            callback_data=AdminHistoryUserCallback(
+                user_idpk=target_user.idpk,
+                page=min(total_pages, page + 1),
+                list_page=list_page,
+            ),
         )
-    builder.button(text="К списку", callback_data=f"admin_history:list:{list_page}")
+    builder.button(
+        text="К списку",
+        callback_data=AdminHistoryListCallback(page=list_page),
+    )
     builder.adjust(1, 1, 1, 3, 1)
     return builder.as_markup()
 
@@ -302,18 +382,35 @@ def _build_user_event_detail_keyboard(
     if index > 0:
         builder.button(
             text="< Событие",
-            callback_data=f"admin_history:event:{target_user.idpk}:{index - 1}:{return_page}:{list_page}",
+            callback_data=AdminHistoryEventCallback(
+                user_idpk=target_user.idpk,
+                event_index=index - 1,
+                return_page=return_page,
+                list_page=list_page,
+            ),
         )
     if index + 1 < len(entries):
         builder.button(
             text="Событие >",
-            callback_data=f"admin_history:event:{target_user.idpk}:{index + 1}:{return_page}:{list_page}",
+            callback_data=AdminHistoryEventCallback(
+                user_idpk=target_user.idpk,
+                event_index=index + 1,
+                return_page=return_page,
+                list_page=list_page,
+            ),
         )
     builder.button(
         text="Назад к истории",
-        callback_data=f"admin_history:user:{target_user.idpk}:{return_page}:{list_page}",
+        callback_data=AdminHistoryUserCallback(
+            user_idpk=target_user.idpk,
+            page=return_page,
+            list_page=list_page,
+        ),
     )
-    builder.button(text="К списку", callback_data=f"admin_history:list:{list_page}")
+    builder.button(
+        text="К списку",
+        callback_data=AdminHistoryListCallback(page=list_page),
+    )
     builder.adjust(2, 1, 1)
     return builder.as_markup()
 
@@ -411,10 +508,22 @@ def _build_admin_npc_keyboard(npc: User, section: str):
         prefix = "• " if key == section else ""
         builder.button(
             text=f"{prefix}{label}",
-            callback_data=f"admin_npc:{npc.idpk}:{key}",
+            callback_data=AdminNpcCallback(
+                npc_idpk=npc.idpk,
+                section=AdminNpcSection(key),
+            ),
         )
-    builder.button(text="Разбудить", callback_data=f"admin_npc:{npc.idpk}:wake")
-    builder.button(text="К списку", callback_data="admin_panel:list")
+    builder.button(
+        text="Разбудить",
+        callback_data=AdminNpcCallback(
+            npc_idpk=npc.idpk,
+            section=AdminNpcSection.WAKE,
+        ),
+    )
+    builder.button(
+        text="К списку",
+        callback_data=AdminPanelCallback(action=AdminPanelAction.LIST),
+    )
     builder.adjust(3, 2, 1)
     return builder.as_markup()
 
@@ -698,18 +807,18 @@ async def open_admin_panel_button(
     )
 
 
-@router.callback_query(CompareDataByIndex("admin_panel", index=0), flags=flags)
+@router.callback_query(AdminPanelCallback.filter(), flags=flags)
 async def admin_panel_callbacks(
     query: CallbackQuery,
     session: AsyncSession,
     user: User | None,
+    callback_data: AdminPanelCallback,
 ) -> None:
     if not _is_admin(user=user, telegram_id=query.from_user.id):
         await query.answer("У вас нет прав", show_alert=True)
         return
     npcs = await _get_npc_users(session=session)
-    with_type = (query.data or "").split(":")
-    action = with_type[1] if len(with_type) > 1 else "list"
+    action = callback_data.action.value
     text = _clip_text(await _build_admin_panel_text(session=session))
     if action not in {"list", "refresh"}:
         await query.answer("Неизвестное действие", show_alert=True)
@@ -722,24 +831,21 @@ async def admin_panel_callbacks(
     await query.answer("Обновлено")
 
 
-@router.callback_query(CompareDataByIndex("admin_npc", index=0), flags=flags)
+@router.callback_query(AdminNpcCallback.filter(), flags=flags)
 async def admin_npc_callbacks(
     query: CallbackQuery,
     session: AsyncSession,
     user: User | None,
+    callback_data: AdminNpcCallback,
 ) -> None:
     if not _is_admin(user=user, telegram_id=query.from_user.id):
         await query.answer("У вас нет прав", show_alert=True)
         return
-    parts = (query.data or "").split(":")
-    if len(parts) < 3:
-        await query.answer("Некорректный callback", show_alert=True)
-        return
-    npc = await session.get(User, int(parts[1]))
+    npc = await session.get(User, callback_data.npc_idpk)
     if not npc:
         await query.answer("NPC не найден", show_alert=True)
         return
-    section = parts[2]
+    section = callback_data.section.value
     if section == "wake":
         await wake_npc_now(
             session=session,
@@ -758,114 +864,122 @@ async def admin_npc_callbacks(
     )
 
 
-@router.callback_query(CompareDataByIndex("admin_history", index=0), flags=flags)
-async def admin_user_history_callbacks(
+@router.callback_query(AdminHistoryNoopCallback.filter(), flags=flags)
+async def admin_user_history_noop(
     query: CallbackQuery,
-    session: AsyncSession,
     user: User | None,
 ) -> None:
     if not _is_admin(user=user, telegram_id=query.from_user.id):
         await query.answer("У вас нет прав", show_alert=True)
         return
-    parts = (query.data or "").split(":")
-    action = parts[1] if len(parts) > 1 else "list"
+    await query.answer()
 
-    if action == "noop":
-        await query.answer()
+
+@router.callback_query(AdminHistoryListCallback.filter(), flags=flags)
+async def admin_user_history_list_callbacks(
+    query: CallbackQuery,
+    session: AsyncSession,
+    user: User | None,
+    callback_data: AdminHistoryListCallback,
+) -> None:
+    if not _is_admin(user=user, telegram_id=query.from_user.id):
+        await query.answer("У вас нет прав", show_alert=True)
         return
-
-    if action == "list":
-        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
-        text, page_users, page, total_pages = await _build_user_history_list_text(
-            session=session,
+    text, page_users, page, total_pages = await _build_user_history_list_text(
+        session=session,
+        page=callback_data.page,
+    )
+    await _edit_admin_message(
+        query=query,
+        text=text,
+        reply_markup=_build_user_history_list_keyboard(
+            users=page_users,
             page=page,
-        )
-        await _edit_admin_message(
-            query=query,
-            text=text,
-            reply_markup=_build_user_history_list_keyboard(
-                users=page_users,
-                page=page,
-                total_pages=total_pages,
-            ),
-        )
-        await query.answer("История пользователей")
-        return
+            total_pages=total_pages,
+        ),
+    )
+    await query.answer("История пользователей")
 
-    if action == "user":
-        if len(parts) < 4 or not parts[2].isdigit():
-            await query.answer("Некорректный пользователь", show_alert=True)
-            return
-        target_user = await session.get(User, int(parts[2]))
-        if not target_user:
-            await query.answer("Пользователь не найден", show_alert=True)
-            return
-        entries = _load_user_history_entries(target_user)
-        indexed_entries = [
-            {
-                **entry,
-                "index": index,
-            }
-            for index, entry in enumerate(entries)
-        ]
-        page = int(parts[3]) if parts[3].isdigit() else 1
-        list_page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 1
-        page_entries, page, total_pages = _slice_page(
-            indexed_entries,
+
+@router.callback_query(AdminHistoryUserCallback.filter(), flags=flags)
+async def admin_user_history_user_callbacks(
+    query: CallbackQuery,
+    session: AsyncSession,
+    user: User | None,
+    callback_data: AdminHistoryUserCallback,
+) -> None:
+    if not _is_admin(user=user, telegram_id=query.from_user.id):
+        await query.answer("У вас нет прав", show_alert=True)
+        return
+    target_user = await session.get(User, callback_data.user_idpk)
+    if not target_user:
+        await query.answer("Пользователь не найден", show_alert=True)
+        return
+    entries = _load_user_history_entries(target_user)
+    indexed_entries = [
+        {
+            **entry,
+            "index": index,
+        }
+        for index, entry in enumerate(entries)
+    ]
+    page_entries, page, total_pages = _slice_page(
+        indexed_entries,
+        page=callback_data.page,
+        per_page=USER_EVENTS_PER_PAGE,
+    )
+    await _edit_admin_message(
+        query=query,
+        text=_build_user_history_text(
+            target_user=target_user,
+            page_entries=page_entries,
             page=page,
-            per_page=USER_EVENTS_PER_PAGE,
-        )
-        await _edit_admin_message(
-            query=query,
-            text=_build_user_history_text(
-                target_user=target_user,
-                page_entries=page_entries,
-                page=page,
-                total_pages=total_pages,
-                total_events=len(entries),
-            ),
-            reply_markup=_build_user_history_keyboard(
-                target_user=target_user,
-                page=page,
-                total_pages=total_pages,
-                entries=page_entries,
-                list_page=list_page,
-            ),
-        )
-        await query.answer()
-        return
+            total_pages=total_pages,
+            total_events=len(entries),
+        ),
+        reply_markup=_build_user_history_keyboard(
+            target_user=target_user,
+            page=page,
+            total_pages=total_pages,
+            entries=page_entries,
+            list_page=callback_data.list_page,
+        ),
+    )
+    await query.answer()
 
-    if action == "event":
-        if len(parts) < 5 or not parts[2].isdigit() or not parts[3].isdigit():
-            await query.answer("Некорректное событие", show_alert=True)
-            return
-        target_user = await session.get(User, int(parts[2]))
-        if not target_user:
-            await query.answer("Пользователь не найден", show_alert=True)
-            return
-        entries = _load_user_history_entries(target_user)
-        if not entries:
-            await query.answer("У пользователя нет истории", show_alert=True)
-            return
-        index = max(0, min(len(entries) - 1, int(parts[3])))
-        return_page = int(parts[4]) if parts[4].isdigit() else 1
-        list_page = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 1
-        await _edit_admin_message(
-            query=query,
-            text=_build_user_event_detail_text(
-                target_user=target_user,
-                entries=entries,
-                index=index,
-            ),
-            reply_markup=_build_user_event_detail_keyboard(
-                target_user=target_user,
-                entries=entries,
-                index=index,
-                return_page=return_page,
-                list_page=list_page,
-            ),
-        )
-        await query.answer()
-        return
 
-    await query.answer("Неизвестное действие", show_alert=True)
+@router.callback_query(AdminHistoryEventCallback.filter(), flags=flags)
+async def admin_user_history_callbacks(
+    query: CallbackQuery,
+    session: AsyncSession,
+    user: User | None,
+    callback_data: AdminHistoryEventCallback,
+) -> None:
+    if not _is_admin(user=user, telegram_id=query.from_user.id):
+        await query.answer("У вас нет прав", show_alert=True)
+        return
+    target_user = await session.get(User, callback_data.user_idpk)
+    if not target_user:
+        await query.answer("Пользователь не найден", show_alert=True)
+        return
+    entries = _load_user_history_entries(target_user)
+    if not entries:
+        await query.answer("У пользователя нет истории", show_alert=True)
+        return
+    index = max(0, min(len(entries) - 1, callback_data.event_index))
+    await _edit_admin_message(
+        query=query,
+        text=_build_user_event_detail_text(
+            target_user=target_user,
+            entries=entries,
+            index=index,
+        ),
+        reply_markup=_build_user_event_detail_keyboard(
+            target_user=target_user,
+            entries=entries,
+            index=index,
+            return_page=callback_data.return_page,
+            list_page=callback_data.list_page,
+        ),
+    )
+    await query.answer()
