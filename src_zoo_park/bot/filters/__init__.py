@@ -1,1 +1,1 @@
-from .text import GetTextButton, CompareDataByIndex, FindIntegers
+from .text import FindIntegers, GetTextButton

@@ -132,6 +132,10 @@ class WorkshopBackCallback(CallbackData, prefix="wibk"):
     target: str
 
 
+class WorkshopItemChoiceCallback(CallbackData, prefix="wich"):
+    item_code: str
+
+
 class ForgeBackTarget(str, Enum):
     forge_menu = "to_forge_items_menu"
     upgrade_info = "to_up_lvl_item_info"
