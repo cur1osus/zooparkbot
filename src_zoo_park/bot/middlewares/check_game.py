@@ -10,7 +10,6 @@ from tools import get_text_message
 
 
 class CheckGame(BaseMiddleware):
-
     async def __call__(
         self,
         handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
@@ -29,7 +28,10 @@ class CheckGame(BaseMiddleware):
             await state.clear()
             await state.set_state(UserState.main_menu)
             text = await get_text_message("main_menu")
-            reply_markup = await rk_main_menu()
+            user = data.get("user")
+            reply_markup = await rk_main_menu(
+                user_id=user.id_user if user else event.from_user.id
+            )
 
             if isinstance(event, Message):
                 return await event.answer(text=text, reply_markup=reply_markup)

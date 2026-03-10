@@ -145,7 +145,8 @@ async def command_start_with_deep_link(
 ):
     if user:
         await message.answer(
-            text=await get_text_message("main_menu"), reply_markup=await rk_main_menu()
+            text=await get_text_message("main_menu"),
+            reply_markup=await rk_main_menu(user_id=message.from_user.id),
         )
         await state.set_state(UserState.main_menu)
         return
@@ -183,7 +184,8 @@ async def command_start(
 ) -> None:
     if user:
         await message.answer(
-            text=await get_text_message("main_menu"), reply_markup=await rk_main_menu()
+            text=await get_text_message("main_menu"),
+            reply_markup=await rk_main_menu(user_id=message.from_user.id),
         )
         await state.set_state(UserState.main_menu)
         return
@@ -229,7 +231,8 @@ async def getting_nickname(
     session.add(User(**data_user))
     await session.commit()
     await message.answer(
-        text=await get_text_message("main_menu"), reply_markup=await rk_main_menu()
+        text=await get_text_message("main_menu"),
+        reply_markup=await rk_main_menu(user_id=message.from_user.id),
     )
     await state.set_state(UserState.main_menu)
     await message.bot.send_message(

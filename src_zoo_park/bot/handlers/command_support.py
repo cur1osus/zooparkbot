@@ -53,7 +53,8 @@ async def cancel_send_mess_to_supp(
 ):
     await state.set_state(UserState.main_menu)
     await message.answer(
-        text=await get_text_message("canceled"), reply_markup=await rk_main_menu()
+        text=await get_text_message("canceled"),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )
 
 
@@ -80,7 +81,8 @@ async def get_sended_message(
     await session.flush()
     await state.set_state(UserState.main_menu)
     await message.answer(
-        text=await get_text_message("wait_answer"), reply_markup=await rk_main_menu()
+        text=await get_text_message("wait_answer"),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )
     func = {
         False: message.bot.send_message,

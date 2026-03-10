@@ -295,7 +295,7 @@ async def add_award_and_send_message(session: AsyncSession, game: Game):
                 award=award_text,
             ),
             message_effect_id=petard_emoji_effect,
-            reply_markup=await rk_main_menu(),
+            reply_markup=await rk_main_menu(user_id=user.id_user),
         )
 
 

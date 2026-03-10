@@ -27,10 +27,11 @@ async def zoomarket(
 
 
 @router.message(UserState.zoomarket_menu, GetTextButton("back"), flags=flags)
-async def back(message: Message, state: FSMContext):
+async def back(message: Message, state: FSMContext, user: User):
     await disable_not_main_window(data=await state.get_data(), message=message)
     await state.clear()
     await state.set_state(UserState.main_menu)
     await message.answer(
-        text=await get_text_message("main_menu"), reply_markup=await rk_main_menu()
+        text=await get_text_message("main_menu"),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )

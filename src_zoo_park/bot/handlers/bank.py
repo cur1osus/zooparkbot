@@ -16,7 +16,7 @@ from tools import (
     get_text_message,
     get_value,
     mention_html_by_username,
-    formatter
+    formatter,
 )
 
 flags = {"throttling_key": "default"}
@@ -38,7 +38,7 @@ async def bank(
         False: message.answer,
     }
     bank_storage = await get_value(
-        session=session, value_name="BANK_STORAGE", cache_=False, value_type='str'
+        session=session, value_name="BANK_STORAGE", cache_=False, value_type="str"
     )
     bank_storage = formatter.format_large_number(float(bank_storage))
     keyboard = await ik_bank()
@@ -182,7 +182,7 @@ async def exchange_all_amount(
                 bank_got=bank_fee,
             ),
         ),
-        reply_markup=await rk_main_menu(),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )
     await state.set_state(UserState.main_menu)
     await session.commit()
@@ -196,7 +196,8 @@ async def back_to_bank(
     user: User,
 ):
     await message.answer(
-        text=await get_text_message("back_to_bank"), reply_markup=await rk_main_menu()
+        text=await get_text_message("back_to_bank"),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )
     await state.set_state(UserState.main_menu)
     await bank(
@@ -269,7 +270,7 @@ async def get_amount(
                 bank_got=bank_fee,
             ),
         ),
-        reply_markup=await rk_main_menu(),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )
     await state.set_state(UserState.main_menu)
     await session.commit()

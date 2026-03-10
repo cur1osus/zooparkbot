@@ -1,8 +1,12 @@
 import tools
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from config import ADMIN_ID
 
 
-async def rk_main_menu():
+ADMIN_PANEL_BUTTON = "Админ"
+
+
+async def rk_main_menu(user_id: int | None = None):
     builder = ReplyKeyboardBuilder()
     builder.button(text=await tools.get_text_button("zoomarket"))
     builder.button(text=await tools.get_text_button("bank"))
@@ -10,8 +14,13 @@ async def rk_main_menu():
     builder.button(text=await tools.get_text_button("account"))
     builder.button(text=await tools.get_text_button("top"))
     builder.button(text=await tools.get_text_button("bonus"))
+    if user_id == ADMIN_ID:
+        builder.button(text=ADMIN_PANEL_BUTTON)
 
-    builder.adjust(3, 2, 1)
+    if user_id == ADMIN_ID:
+        builder.adjust(3, 2, 1, 1)
+    else:
+        builder.adjust(3, 2, 1)
     return builder.as_markup(resize_keyboard=True)
 
 

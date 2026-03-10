@@ -3,6 +3,7 @@ from aiogram import Router
 
 def setup_message_routers() -> Router:
     from . import (
+        admin_panel,
         account,
         any_unknown_message,
         aviaries,
@@ -40,6 +41,7 @@ def setup_message_routers() -> Router:
 
     router = Router()
     router.include_router(start.router)
+    router.include_router(admin_panel.router)
     router.include_router(command_usd.router)
     router.include_router(command_support.router)
     router.include_router(command_calculator.router)

@@ -83,7 +83,8 @@ async def back_to_main_menu(
     await disable_not_main_window(data=await state.get_data(), message=message)
     await state.set_state(UserState.main_menu)
     await message.answer(
-        text=await get_text_message("main_menu"), reply_markup=await rk_main_menu()
+        text=await get_text_message("main_menu"),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )
 
 
@@ -118,7 +119,8 @@ async def back_to_main_menu_2(
 ):
     await state.set_state(UserState.main_menu)
     await message.answer(
-        text=await get_text_message("main_menu"), reply_markup=await rk_main_menu()
+        text=await get_text_message("main_menu"),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )
 
 
@@ -450,7 +452,8 @@ async def exit_from_unity(
             text=await get_text_message("exit_from_unity_text"), reply_markup=None
         )
         await message.answer(
-            text=await get_text_message("main_menu"), reply_markup=await rk_main_menu()
+            text=await get_text_message("main_menu"),
+            reply_markup=await rk_main_menu(user_id=user.id_user),
         )
         return
     # если владелец объединения
@@ -480,6 +483,7 @@ async def exit_from_unity(
         )
     await state.set_state(UserState.main_menu)
     await message.answer(
-        text=await get_text_message("main_menu"), reply_markup=await rk_main_menu()
+        text=await get_text_message("main_menu"),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
     )
     await session.commit()

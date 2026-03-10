@@ -9,7 +9,6 @@ from tools import get_text_message
 
 
 class CheckUnity(BaseMiddleware):
-
     async def __call__(
         self,
         handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
@@ -27,13 +26,13 @@ class CheckUnity(BaseMiddleware):
                 await state.set_state(UserState.main_menu)
                 return await event.answer(
                     text=await get_text_message("main_menu"),
-                    reply_markup=await rk_main_menu(),
+                    reply_markup=await rk_main_menu(user_id=user.id_user),
                 )
             if isinstance(event, CallbackQuery):
                 await state.set_state(UserState.main_menu)
                 await event.message.delete()
                 return await event.message.answer(
                     text=await get_text_message("main_menu"),
-                    reply_markup=await rk_main_menu(),
+                    reply_markup=await rk_main_menu(user_id=user.id_user),
                 )
         return await handler(event, data)

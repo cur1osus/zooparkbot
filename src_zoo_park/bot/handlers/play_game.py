@@ -33,11 +33,12 @@ async def handle_game_end(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
+    user: User,
 ):
     # link = create_telegram_link(chat_username, str(message_id)) if chat_username else ""
     await query.message.answer(
         text=await get_text_message("game_end"),
-        reply_markup=await rk_main_menu(),
+        reply_markup=await rk_main_menu(user_id=user.id_user),
         disable_web_page_preview=False,
     )
     await state.clear()
@@ -87,6 +88,7 @@ async def play_game(
             query=query,
             state=state,
             session=session,
+            user=user,
         )
     else:
         await query.message.answer(
@@ -205,5 +207,6 @@ async def play_game_autopilot(
         query=query,
         state=state,
         session=session,
+        user=user,
     )
     await session.commit()
