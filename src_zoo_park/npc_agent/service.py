@@ -28,6 +28,7 @@ from tools.bank import exchange, get_rate
 from tools.bonus import apply_bonus, get_bonus
 from tools.income import income_
 from tools.items import (
+    CREATE_ITEM_PAW_PRICE,
     add_item_to_db,
     able_to_enhance,
     calculate_percent_to_enhance,
@@ -933,6 +934,8 @@ async def build_item_state(session: AsyncSession, user: User) -> dict[str, Any]:
     create_price = await gen_price_to_create_item(session=session, id_user=user.id_user)
     return {
         "create_price_usd": int(create_price),
+        "create_price_paw": CREATE_ITEM_PAW_PRICE,
+        "can_afford_create_with_paw": int(user.paw_coins) >= CREATE_ITEM_PAW_PRICE,
         "owned_count": len(items),
         "active_count": len([item for item in items if item.is_active]),
         "items": [
@@ -1092,7 +1095,10 @@ async def execute_invest_for_income(
             },
             observation=observation,
         )
-    if int(user.usd) >= observation["items"]["create_price_usd"]:
+    if (
+        int(user.usd) >= observation["items"]["create_price_usd"]
+        or int(user.paw_coins) >= CREATE_ITEM_PAW_PRICE
+    ):
         return await execute_create_item(
             session=session,
             user=user,
@@ -1369,11 +1375,15 @@ async def execute_create_item(
     observation: dict[str, Any],
 ) -> dict[str, Any]:
     create_price = await gen_price_to_create_item(session=session, id_user=user.id_user)
-    if int(user.usd) < create_price:
-        return {"status": "skipped", "summary": "not_enough_usd"}
+    if int(user.usd) >= create_price:
+        user.usd -= create_price
+        user.amount_expenses_usd += create_price
+    elif int(user.paw_coins) >= CREATE_ITEM_PAW_PRICE:
+        user.paw_coins -= CREATE_ITEM_PAW_PRICE
+        user.amount_expenses_paw_coins += CREATE_ITEM_PAW_PRICE
+    else:
+        return {"status": "skipped", "summary": "not_enough_create_currency"}
 
-    user.usd -= create_price
-    user.amount_expenses_usd += create_price
     item_info, item_props = await create_item(session=session)
     await add_item_to_db(
         session=session,

@@ -19,6 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import tools
 
 
+CREATE_ITEM_PAW_PRICE = 350
+
+
 async def get_items_data_to_kb(
     session: AsyncSession,
     id_user: int,
@@ -275,7 +278,6 @@ class ExchangeBankProperty(Property):
 
 # Пример конкретного свойства: Скорость
 class AviariesSaleProperty(Property):
-
     name = "aviaries_sale"
 
     async def generate(self, rarity: str):
@@ -286,7 +288,6 @@ class AviariesSaleProperty(Property):
 
 
 class AnimalIncomeProperty(Property):
-
     name = "animal_income"
 
     @classmethod
@@ -309,7 +310,6 @@ class AnimalIncomeProperty(Property):
 
 
 class AnimalSaleProperty(Property):
-
     name = "animal_sale"
 
     async def generate(self, rarity: str):
@@ -322,7 +322,6 @@ class AnimalSaleProperty(Property):
 
 
 class BonusChanger(Property):
-
     name = "bonus_changer"
 
     async def generate(self, rarity: str):
@@ -333,7 +332,6 @@ class BonusChanger(Property):
 
 
 class LastChance(Property):
-
     name = "last_chance"
 
     async def generate(self, rarity: str):
@@ -344,7 +342,6 @@ class LastChance(Property):
 
 
 class ExtraMoves(Property):
-
     name = "extra_moves"
 
     async def generate(self, rarity: str):

@@ -826,7 +826,11 @@ async def ik_confirm_or_change_bonus(number_attempts_item: int):
     return builder.as_markup()
 
 
-async def ik_create_item(uci: int = None, is_sell: bool = False):
+async def ik_create_item(
+    uci: int = None,
+    pci: int = None,
+    is_sell: bool = False,
+):
     builder = InlineKeyboardBuilder()
     if is_sell:
         builder.button(
@@ -834,20 +838,22 @@ async def ik_create_item(uci: int = None, is_sell: bool = False):
             callback_data="sell_item",
         )
     if uci:
-        builder.button(
-            text=await tools.get_text_button("create_item_with_price", uci=uci),
-            callback_data="create_item",
-        )
+        builder.button(text=f"Создать за {uci}$", callback_data="create_item")
     else:
         builder.button(
             text=await tools.get_text_button("create_item"),
             callback_data="create_item",
         )
+    if pci:
+        builder.button(text=f"Создать за {pci}🐾", callback_data="create_item_paw")
     builder.button(
         text=await tools.get_text_button("back"),
         callback_data=ForgeBackCallback(target=ForgeBackTarget.forge_menu),
     )
-    builder.adjust(1)
+    row_sizes = [1] * (3 if is_sell else 2)
+    if pci:
+        row_sizes.append(1)
+    builder.adjust(*row_sizes)
     return builder.as_markup()
 
 

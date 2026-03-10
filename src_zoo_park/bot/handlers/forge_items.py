@@ -28,6 +28,7 @@ from game_variables import prop_quantity_by_rarity, translated_rarities
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
+    CREATE_ITEM_PAW_PRICE,
     able_to_enhance,
     add_item_to_db,
     calculate_percent_to_enhance,
@@ -48,6 +49,60 @@ from tools import (
 
 flags = {"throttling_key": "default"}
 router = Router()
+
+
+def _build_create_item_info_note(user: User) -> str:
+    return (
+        f"\n\nАльтернатива: создать предмет за {CREATE_ITEM_PAW_PRICE}🐾."
+        f"\nСейчас у тебя {int(user.paw_coins)}🐾."
+    )
+
+
+def _build_create_item_spent_text(currency: str, amount: int) -> str:
+    return f"{amount}$" if currency == "usd" else f"{amount}🐾"
+
+
+async def _finish_create_item(
+    query: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+    user: User,
+    currency: str,
+    amount: int,
+) -> None:
+    item_info, item_props = await create_item(session=session)
+    await add_item_to_db(
+        session=session,
+        item_info=item_info,
+        item_props=item_props,
+        id_user=user.id_user,
+    )
+    await session.commit()
+    usd_to_create_item = await gen_price_to_create_item(
+        session=session, id_user=user.id_user
+    )
+    await state.update_data(
+        USD_TO_CREATE_ITEM=usd_to_create_item,
+        id_item=item_info["key"],
+    )
+    text_props = await ft_item_props(item_props=item_props)
+    await query.message.edit_text(
+        text=(
+            await get_text_message(
+                "item_created",
+                name_=item_info["name"],
+                emoji=item_info["emoji"],
+                rarity=translated_rarities[item_info["rarity"]],
+                text_props=text_props,
+            )
+            + f"\n\nПотрачено: {_build_create_item_spent_text(currency=currency, amount=amount)}"
+        ),
+        reply_markup=await ik_create_item(
+            uci=usd_to_create_item,
+            pci=CREATE_ITEM_PAW_PRICE,
+            is_sell=True,
+        ),
+    )
 
 
 @router.message(UserState.zoomarket_menu, GetTextButton("forge_items"), flags=flags)
@@ -83,15 +138,21 @@ async def fi_create_item_info(
     )
     await state.update_data(USD_TO_CREATE_ITEM=USD_TO_CREATE_ITEM)
     await query.message.edit_text(
-        text=await get_text_message(
-            "item_probability_info",
-            uci=int(USD_TO_CREATE_ITEM),
-            common_weight=common,
-            rare_weight=rare,
-            epic_weight=epic,
-            mythical_weight=mythical,
+        text=(
+            await get_text_message(
+                "item_probability_info",
+                uci=int(USD_TO_CREATE_ITEM),
+                common_weight=common,
+                rare_weight=rare,
+                epic_weight=epic,
+                mythical_weight=mythical,
+            )
+            + _build_create_item_info_note(user=user)
         ),
-        reply_markup=await ik_create_item(),
+        reply_markup=await ik_create_item(
+            uci=int(USD_TO_CREATE_ITEM),
+            pci=CREATE_ITEM_PAW_PRICE,
+        ),
     )
 
 
@@ -110,30 +171,35 @@ async def fi_create_item(
         return
     user.usd -= USD_TO_CREATE_ITEM
     user.amount_expenses_usd += USD_TO_CREATE_ITEM
-    item_info, item_props = await create_item(session=session)
-    await add_item_to_db(
+    await _finish_create_item(
+        query=query,
         session=session,
-        item_info=item_info,
-        item_props=item_props,
-        id_user=user.id_user,
+        state=state,
+        user=user,
+        currency="usd",
+        amount=USD_TO_CREATE_ITEM,
     )
-    await session.commit()
-    USD_TO_CREATE_ITEM = await gen_price_to_create_item(
-        session=session, id_user=user.id_user
-    )
-    await state.update_data(
-        USD_TO_CREATE_ITEM=USD_TO_CREATE_ITEM, id_item=item_info["key"]
-    )
-    text_props = await ft_item_props(item_props=item_props)
-    await query.message.edit_text(
-        text=await get_text_message(
-            "item_created",
-            name_=item_info["name"],
-            emoji=item_info["emoji"],
-            rarity=translated_rarities[item_info["rarity"]],
-            text_props=text_props,
-        ),
-        reply_markup=await ik_create_item(uci=USD_TO_CREATE_ITEM, is_sell=True),
+
+
+@router.callback_query(UserState.zoomarket_menu, F.data == "create_item_paw")
+async def fi_create_item_paw(
+    query: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+    user: User,
+):
+    if int(user.paw_coins) < CREATE_ITEM_PAW_PRICE:
+        await query.answer(text="Недостаточно paw coins", show_alert=True)
+        return
+    user.paw_coins -= CREATE_ITEM_PAW_PRICE
+    user.amount_expenses_paw_coins += CREATE_ITEM_PAW_PRICE
+    await _finish_create_item(
+        query=query,
+        session=session,
+        state=state,
+        user=user,
+        currency="paw",
+        amount=CREATE_ITEM_PAW_PRICE,
     )
 
 
@@ -158,7 +224,11 @@ async def sell_item_no_in_create(
 ):
     data = await state.get_data()
     await query.message.edit_reply_markup(
-        reply_markup=await ik_create_item(uci=data["USD_TO_CREATE_ITEM"], is_sell=True),
+        reply_markup=await ik_create_item(
+            uci=data["USD_TO_CREATE_ITEM"],
+            pci=CREATE_ITEM_PAW_PRICE,
+            is_sell=True,
+        ),
     )
 
 
@@ -189,7 +259,10 @@ async def sell_item_yes_in_create(
     await state.update_data(USD_TO_CREATE_ITEM=USD_TO_CREATE_ITEM)
     await query.message.edit_text(
         text=await get_text_message("item_sold", sell_price=sell_price),
-        reply_markup=await ik_create_item(uci=USD_TO_CREATE_ITEM),
+        reply_markup=await ik_create_item(
+            uci=USD_TO_CREATE_ITEM,
+            pci=CREATE_ITEM_PAW_PRICE,
+        ),
     )
 
 
