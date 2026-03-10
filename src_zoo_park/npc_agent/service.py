@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 from datetime import datetime, timedelta
 from itertools import combinations
@@ -53,6 +52,14 @@ from tools.value import get_value
 
 from .client import NpcDecisionClient
 from .logs import log_npc_decision
+from .memory import build_npc_memory_context, build_npc_snapshot, remember_npc_turn
+from .schedule import (
+    clear_npc_event_wake,
+    clamp_npc_sleep_seconds,
+    default_npc_sleep_seconds,
+    get_npc_wake_trigger,
+    schedule_next_npc_wake,
+)
 from .settings import settings
 
 NPC_LOCK = asyncio.Lock()
@@ -72,12 +79,23 @@ async def run_npc_players_turn() -> None:
 
             client = NpcDecisionClient(settings=settings)
             for npc_user in npc_users:
-                if not await npc_ready_for_step(session=session, user=npc_user):
+                wake_trigger = await get_npc_wake_trigger(
+                    session=session, user=npc_user
+                )
+                if not wake_trigger["due"]:
                     continue
                 await ensure_random_merchant_for_user(session=session, user=npc_user)
+                last_action = None
+                last_result = None
                 for decision_index in range(1, settings.max_actions_per_cycle + 1):
+                    before_snapshot = await build_npc_snapshot(
+                        session=session,
+                        user=npc_user,
+                    )
                     observation = await build_observation(
-                        session=session, user=npc_user
+                        session=session,
+                        user=npc_user,
+                        wake_context=wake_trigger,
                     )
                     try:
                         decision = await client.choose_action(observation=observation)
@@ -86,6 +104,10 @@ async def run_npc_players_turn() -> None:
                             "action": "wait",
                             "params": {},
                             "reason": f"llm_error:{str(exc)[:250]}",
+                            "sleep_seconds": default_npc_sleep_seconds(
+                                user=npc_user,
+                                salt="llm_error",
+                            ),
                         }
                     action = validate_action(decision=decision)
                     try:
@@ -101,6 +123,12 @@ async def run_npc_players_turn() -> None:
                             "status": "error",
                             "summary": f"execution_error:{type(exc).__name__}",
                         }
+                    after_snapshot = await build_npc_snapshot(
+                        session=session,
+                        user=npc_user,
+                    )
+                    last_action = action
+                    last_result = result
                     print(
                         "NPC_DECISION",
                         json.dumps(
@@ -120,6 +148,19 @@ async def run_npc_players_turn() -> None:
                         user=npc_user,
                         action=action,
                         result=result,
+                        wake_trigger=wake_trigger,
+                    )
+                    await remember_npc_turn(
+                        session=session,
+                        user=npc_user,
+                        observation=observation,
+                        before_snapshot=before_snapshot,
+                        after_snapshot=after_snapshot,
+                        action=action,
+                        result=result,
+                        wake_trigger=wake_trigger,
+                        decision_index=decision_index,
+                        client=client,
                     )
                     await session.commit()
                     try:
@@ -134,6 +175,8 @@ async def run_npc_players_turn() -> None:
                                 "step": decision_index,
                                 "action": action,
                                 "result": result,
+                                "snapshot_before": before_snapshot,
+                                "snapshot_after": after_snapshot,
                                 "observation": observation,
                             },
                         )
@@ -142,6 +185,25 @@ async def run_npc_players_turn() -> None:
 
                     if should_stop_npc_cycle(action=action, result=result):
                         break
+
+                planned_sleep_seconds = resolve_npc_sleep_seconds(
+                    user=npc_user,
+                    wake_trigger=wake_trigger,
+                    action=last_action,
+                    result=last_result,
+                )
+                await schedule_next_npc_wake(
+                    session=session,
+                    user=npc_user,
+                    sleep_seconds=planned_sleep_seconds,
+                    source=str(wake_trigger["source"]),
+                    reason=build_npc_wake_reason(
+                        action=last_action, result=last_result
+                    ),
+                )
+                if wake_trigger["source"] == "event":
+                    await clear_npc_event_wake(npc_user.idpk)
+                await session.commit()
 
 
 async def get_npc_users(session: AsyncSession) -> list[User]:
@@ -173,27 +235,43 @@ async def ensure_default_npc_user(session: AsyncSession) -> User:
     return npc_user
 
 
-async def npc_ready_for_step(session: AsyncSession, user: User) -> bool:
-    history = json.loads(user.history_moves)
-    if not history:
-        return True
-    last_event = max(
-        history,
-        key=lambda value: datetime.strptime(value, "%d.%m.%Y %H:%M:%S.%f"),
+def build_npc_wake_reason(
+    action: dict[str, Any] | None,
+    result: dict[str, Any] | None,
+) -> str:
+    if not action:
+        return "cycle_complete"
+    action_name = str(action.get("action", "wait"))
+    result_summary = ""
+    if result:
+        result_summary = str(result.get("summary", ""))[:180]
+    if result_summary:
+        return f"{action_name}:{result_summary}"[:255]
+    return action_name[:255]
+
+
+def resolve_npc_sleep_seconds(
+    user: User,
+    wake_trigger: dict[str, Any],
+    action: dict[str, Any] | None,
+    result: dict[str, Any] | None,
+) -> int:
+    default_sleep = default_npc_sleep_seconds(
+        user=user,
+        salt=f"{wake_trigger.get('source', 'scheduled')}:{wake_trigger.get('reason', '')}",
     )
-    elapsed = datetime.now() - datetime.strptime(last_event, "%d.%m.%Y %H:%M:%S.%f")
-    required_delay = get_npc_step_delay_seconds(user=user, last_event=last_event)
-    return elapsed.total_seconds() >= required_delay
-
-
-def get_npc_step_delay_seconds(user: User, last_event: str) -> int:
-    if settings.step_jitter_seconds <= 0:
-        return settings.step_seconds
-
-    seed = f"{user.id_user}:{last_event}".encode("utf-8")
-    digest = hashlib.sha256(seed).digest()
-    jitter = int.from_bytes(digest[:4], "big") % (settings.step_jitter_seconds + 1)
-    return settings.step_seconds + jitter
+    if action and action.get("action") == "wait":
+        default_sleep = clamp_npc_sleep_seconds(default_sleep * 2)
+    if result and result.get("status") == "error":
+        default_sleep = settings.min_sleep_seconds
+    elif wake_trigger.get("source") == "event":
+        default_sleep = min(default_sleep, settings.step_seconds)
+    if not action:
+        return default_sleep
+    sleep_value = action.get("sleep_seconds")
+    if sleep_value is None:
+        return default_sleep
+    return clamp_npc_sleep_seconds(safe_int(sleep_value, default=default_sleep))
 
 
 async def ensure_random_merchant_for_user(
@@ -578,7 +656,11 @@ async def generate_npc_unity_name_via_llm(
     return await generate_npc_unity_name(session=session, user=user)
 
 
-async def build_observation(session: AsyncSession, user: User) -> dict[str, Any]:
+async def build_observation(
+    session: AsyncSession,
+    user: User,
+    wake_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     merchant = await ensure_random_merchant_for_user(session=session, user=user)
     (
         rate,
@@ -611,8 +693,18 @@ async def build_observation(session: AsyncSession, user: User) -> dict[str, Any]
         cache_=False,
     )
     observation = {
-        "schema_version": 2,
+        "schema_version": 4,
         "current_time": datetime.now().isoformat(),
+        "wake_context": {
+            "source": (wake_context or {}).get("source", "scheduled"),
+            "reason": (wake_context or {}).get("reason", "planned_wake"),
+            "scheduled_at": (wake_context or {}).get("scheduled_at"),
+            "constraints": {
+                "min_sleep_seconds": settings.min_sleep_seconds,
+                "max_sleep_seconds": settings.max_sleep_seconds,
+                "default_sleep_seconds": settings.step_seconds,
+            },
+        },
         "player": {
             "id_user": user.id_user,
             "nickname": user.nickname,
@@ -737,6 +829,14 @@ async def build_observation(session: AsyncSession, user: User) -> dict[str, Any]
         ],
     }
     observation["strategy_signals"] = build_strategy_signals(observation=observation)
+    observation["memory"] = await build_npc_memory_context(
+        session=session,
+        user=user,
+        observation=observation,
+    )
+    observation["strategy_signals"]["goal_focus"] = [
+        goal.get("topic") for goal in observation["memory"].get("active_goals", [])
+    ][: settings.memory_goal_limit]
     return observation
 
 
@@ -869,6 +969,7 @@ def validate_action(decision: dict[str, Any]) -> dict[str, Any]:
         "action": action,
         "params": params,
         "reason": str(decision.get("reason", ""))[:300],
+        "sleep_seconds": decision.get("sleep_seconds"),
     }
 
 
@@ -1718,6 +1819,7 @@ async def register_npc_move(
     user: User,
     action: dict[str, Any],
     result: dict[str, Any],
+    wake_trigger: dict[str, Any] | None = None,
 ) -> None:
     history = json.loads(user.history_moves)
     key = datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")
@@ -1727,6 +1829,9 @@ async def register_npc_move(
             "action": action["action"],
             "params": action["params"],
             "reason": action.get("reason", ""),
+            "sleep_seconds": action.get("sleep_seconds"),
+            "wake_source": (wake_trigger or {}).get("source"),
+            "wake_reason": (wake_trigger or {}).get("reason"),
             "result": result,
         },
         ensure_ascii=False,

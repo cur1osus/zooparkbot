@@ -8,7 +8,7 @@ from .settings import NpcAgentSettings
 
 SYSTEM_PROMPT = """
 You are an autonomous NPC player in a Telegram zoo economy game.
-Your task is to choose exactly one next action for your player.
+Your task is to choose exactly one next action for your player and decide when to wake up next.
 
 Rules:
 - Use only the allowed actions from the observation.
@@ -19,11 +19,36 @@ Rules:
 - Avoid wasting money on weak item upgrades or overpriced purchases when a stronger ROI option exists.
 - You may use item activation/deactivation/selling and daily bonus rerolls when useful.
 - Prefer legal, concrete, high-EV actions.
+- Respect the NPC profile, active goals, and lessons from memory.
+- Avoid repeating recently failed actions unless the state clearly changed.
+- Return sleep_seconds as the planned delay until the next wake-up.
+- Keep sleep_seconds within the limits from wake_context.constraints.
 - Respond with JSON only.
-- JSON shape: {"action": "...", "params": {...}, "reason": "short text"}
+- JSON shape: {"action": "...", "params": {...}, "reason": "short text", "sleep_seconds": 300}
 - Keep reason short.
-- Never invent fields outside action, params, reason.
-- If no action is attractive, return {"action": "wait", "params": {}, "reason": "..."}
+- Never invent fields outside action, params, reason, sleep_seconds.
+- If no action is attractive, return {"action": "wait", "params": {}, "reason": "...", "sleep_seconds": 300}
+""".strip()
+
+REFLECTION_SYSTEM_PROMPT = """
+You are generating strategic memory for an autonomous NPC in a Telegram zoo economy game.
+
+Return JSON only with this shape:
+{
+  "summary": "short reflection",
+  "lessons": ["lesson 1", "lesson 2"],
+  "opportunities": ["opportunity 1"],
+  "risks": ["risk 1"],
+  "goal_adjustments": [
+    {"topic": "goal_topic", "adjustment": "short note"}
+  ]
+}
+
+Rules:
+- Use the profile and mission to keep behavior consistent.
+- Focus on what the NPC should remember for future turns.
+- Prefer concrete lessons over vague narration.
+- Keep lists short and high-signal.
 """.strip()
 
 
@@ -39,29 +64,93 @@ class NpcDecisionClient:
         if self.settings.transport == "cli":
             return await self._choose_action_via_cli(observation=observation)
 
+        return await self._request_json(
+            system_prompt=SYSTEM_PROMPT,
+            user_payload={
+                "task": "Choose the single best next action for this NPC.",
+                "required_output": {
+                    "action": "string",
+                    "params": "object",
+                    "reason": "short string",
+                    "sleep_seconds": "integer",
+                },
+                "observation": observation,
+            },
+            max_tokens=self.settings.max_tokens,
+            temperature=self.settings.temperature,
+        )
+
+    async def generate_unity_name(self, context: dict[str, Any]) -> str:
+        prompt_payload = {
+            "task": "Create one short original unity name for the NPC.",
+            "required_output": {"name": "string"},
+            "constraints": [
+                "Return JSON only.",
+                "Name must be short and memorable.",
+                "Name should fit a zoo, animals, strategy, or AI theme.",
+                "No quotes around the whole response outside JSON.",
+            ],
+            "context": context,
+        }
+
+        if self.settings.transport == "cli":
+            content = await self._run_cli_prompt(prompt_payload=prompt_payload)
+            return str(self._parse_json(content).get("name", "")).strip()
+
+        data = await self._request_json(
+            system_prompt="Generate one short unity name. Respond with JSON only.",
+            user_payload=prompt_payload,
+            max_tokens=80,
+            temperature=0.7,
+        )
+        return str(data.get("name", "")).strip()
+
+    async def reflect_on_memory(self, payload: dict[str, Any]) -> dict[str, Any]:
+        cli_payload = {
+            "system": REFLECTION_SYSTEM_PROMPT,
+            "task": "Generate a durable strategic reflection for the NPC memory.",
+            "required_output": {
+                "summary": "string",
+                "lessons": ["string"],
+                "opportunities": ["string"],
+                "risks": ["string"],
+                "goal_adjustments": [{"topic": "string", "adjustment": "string"}],
+            },
+            "constraints": [
+                "Return JSON only.",
+                "Keep the reflection concise and concrete.",
+                "Do not invent facts outside the provided payload.",
+            ],
+            "memory_packet": payload,
+        }
+        if self.settings.transport == "cli":
+            content = await self._run_cli_prompt(prompt_payload=cli_payload)
+            return self._parse_json(content)
+        return await self._request_json(
+            system_prompt=REFLECTION_SYSTEM_PROMPT,
+            user_payload=cli_payload,
+            max_tokens=min(700, self.settings.max_tokens),
+            temperature=0.4,
+        )
+
+    async def _request_json(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        max_tokens: int,
+        temperature: float,
+    ) -> dict[str, Any]:
         request_url = self._build_request_url()
         payload = {
             "model": self.settings.model,
-            "temperature": self.settings.temperature,
-            "max_tokens": self.settings.max_tokens,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {
-                            "task": "Choose the single best next action for this NPC.",
-                            "required_output": {
-                                "action": "string",
-                                "params": "object",
-                                "reason": "short string",
-                            },
-                            "observation": observation,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
+                    "content": json.dumps(user_payload, ensure_ascii=False, indent=2),
                 },
             ],
         }
@@ -83,58 +172,6 @@ class NpcDecisionClient:
         content = self._extract_content(data)
         return self._parse_json(content)
 
-    async def generate_unity_name(self, context: dict[str, Any]) -> str:
-        prompt_payload = {
-            "task": "Create one short original unity name for the NPC.",
-            "required_output": {"name": "string"},
-            "constraints": [
-                "Return JSON only.",
-                "Name must be short and memorable.",
-                "Name should fit a zoo, animals, strategy, or AI theme.",
-                "No quotes around the whole response outside JSON.",
-            ],
-            "context": context,
-        }
-
-        if self.settings.transport == "cli":
-            content = await self._run_cli_prompt(prompt_payload=prompt_payload)
-            return str(self._parse_json(content).get("name", "")).strip()
-
-        request_url = self._build_request_url()
-        payload = {
-            "model": self.settings.model,
-            "temperature": 0.7,
-            "max_tokens": 80,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Generate one short unity name. Respond with JSON only.",
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(prompt_payload, ensure_ascii=False),
-                },
-            ],
-        }
-        timeout = aiohttp.ClientTimeout(total=self.settings.timeout_seconds)
-        headers = {
-            "Authorization": f"Bearer {self.settings.api_key}",
-            "Content-Type": "application/json",
-        }
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                request_url,
-                headers=headers,
-                json=payload,
-            ) as response:
-                if response.status >= 400:
-                    error_body = await response.text()
-                    raise NpcLlmError(f"http_{response.status}:{error_body[:500]}")
-                data = await response.json()
-        content = self._extract_content(data)
-        return str(self._parse_json(content).get("name", "")).strip()
-
     def _build_request_url(self) -> str:
         base_url = self.settings.base_url.rstrip("/")
         if base_url.endswith("/chat/completions"):
@@ -154,6 +191,7 @@ class NpcDecisionClient:
                     "action": "string",
                     "params": "object",
                     "reason": "short string",
+                    "sleep_seconds": "integer",
                 },
                 "constraints": [
                     "Do not use tools.",

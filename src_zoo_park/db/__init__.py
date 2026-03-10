@@ -9,6 +9,8 @@ from .models import (
     Gamer,
     Item,
     MessageToSupport,
+    NpcMemory,
+    NpcState,
     Photo,
     RandomMerchant,
     RequestToUnity,

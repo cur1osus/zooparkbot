@@ -1,6 +1,7 @@
 import json
+from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text
+from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text as SQLText
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,7 +26,7 @@ class User(Base):
     referral_verification: Mapped[bool] = mapped_column(default=False, index=True)
     moves: Mapped[int] = mapped_column(default=0)
     history_moves: Mapped[str] = mapped_column(
-        Text().with_variant(MEDIUMTEXT(), "mysql"), default="{}"
+        SQLText().with_variant(MEDIUMTEXT(), "mysql"), default="{}"
     )
     paw_coins: Mapped[int] = mapped_column(default=0)
     amount_expenses_paw_coins: Mapped[int] = mapped_column(default=0)
@@ -37,9 +38,9 @@ class User(Base):
     amount_expenses_usd: Mapped[int] = mapped_column(
         Numeric(precision=65, scale=0), default=0
     )
-    animals: Mapped[str] = mapped_column(Text, default="{}")
-    info_about_items: Mapped[str] = mapped_column(Text, default="{}")
-    aviaries: Mapped[str] = mapped_column(Text, default="{}")
+    animals: Mapped[str] = mapped_column(SQLText, default="{}")
+    info_about_items: Mapped[str] = mapped_column(SQLText, default="{}")
+    aviaries: Mapped[str] = mapped_column(SQLText, default="{}")
     current_unity: Mapped[str] = mapped_column(String(64), nullable=True)
     sub_on_chat: Mapped[bool] = mapped_column(default=False)
     sub_on_channel: Mapped[bool] = mapped_column(default=False)
@@ -51,7 +52,7 @@ class Unity(Base):
 
     idpk_user: Mapped[int] = mapped_column()
     name: Mapped[str] = mapped_column(String(length=64))
-    members: Mapped[str] = mapped_column(Text, default="{}")
+    members: Mapped[str] = mapped_column(SQLText, default="{}")
     level: Mapped[int] = mapped_column(default=0)
 
     @property
@@ -97,15 +98,57 @@ class RequestToUnity(Base):
     date_request_end: Mapped[str] = mapped_column(DateTime, index=True)
 
 
+class NpcState(Base):
+    __tablename__ = "npc_states"
+    __table_args__ = (
+        Index("ix_npc_states_idpk_user_unique", "idpk_user", unique=True),
+        Index("ix_npc_states_next_wake_at", "next_wake_at"),
+    )
+
+    idpk_user: Mapped[int] = mapped_column(index=True)
+    next_wake_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_wake_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sleep_seconds: Mapped[int] = mapped_column(nullable=True)
+    last_wake_source: Mapped[str] = mapped_column(String(length=32), nullable=True)
+    last_wake_reason: Mapped[str] = mapped_column(String(length=255), nullable=True)
+
+
+class NpcMemory(Base):
+    __tablename__ = "npc_memory"
+    __table_args__ = (
+        Index("ix_npc_memory_user_kind_status", "idpk_user", "kind", "status"),
+        Index("ix_npc_memory_user_importance", "idpk_user", "importance"),
+        Index(
+            "ix_npc_memory_user_kind_topic_unique",
+            "idpk_user",
+            "kind",
+            "topic",
+            unique=True,
+        ),
+    )
+
+    idpk_user: Mapped[int] = mapped_column(index=True)
+    kind: Mapped[str] = mapped_column(String(length=32), index=True)
+    topic: Mapped[str] = mapped_column(String(length=128), index=True)
+    payload: Mapped[str] = mapped_column(SQLText, default="{}")
+    importance: Mapped[int] = mapped_column(default=0)
+    confidence: Mapped[int] = mapped_column(default=0)
+    status: Mapped[str] = mapped_column(String(length=32), default="active", index=True)
+    access_count: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class Item(Base):
     __tablename__ = "items"
 
-    id_item: Mapped[str] = mapped_column(Text)
+    id_item: Mapped[str] = mapped_column(SQLText)
     id_user: Mapped[int] = mapped_column(BigInteger)
     emoji: Mapped[str] = mapped_column(String(length=10))
     name: Mapped[str] = mapped_column(String(length=64))
     lvl: Mapped[int] = mapped_column(default=0)
-    properties: Mapped[str] = mapped_column(Text)
+    properties: Mapped[str] = mapped_column(SQLText)
     rarity: Mapped[str] = mapped_column(String(length=64))
     is_active: Mapped[bool] = mapped_column(default=False)
 
@@ -158,7 +201,7 @@ class TransferMoney(Base):
     currency: Mapped[str] = mapped_column(String(length=10))
     one_piece_sum: Mapped[int] = mapped_column(BigInteger)
     pieces: Mapped[int] = mapped_column()
-    used: Mapped[str] = mapped_column(Text, nullable=True)
+    used: Mapped[str] = mapped_column(SQLText, nullable=True)
     status: Mapped[bool] = mapped_column(default=False)
 
 
@@ -205,7 +248,7 @@ class MessageToSupport(Base):
 
     id_message: Mapped[int] = mapped_column(nullable=True)
     idpk_user: Mapped[int] = mapped_column()
-    question: Mapped[str] = mapped_column(Text)
+    question: Mapped[str] = mapped_column(SQLText)
     id_message_question: Mapped[int] = mapped_column()
     photo_id: Mapped[str] = mapped_column(String(length=200), nullable=True)
     id_message_answer: Mapped[int] = mapped_column(nullable=True)

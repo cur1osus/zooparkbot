@@ -18,6 +18,7 @@ from bot.keyboards import (
     rk_unity_menu,
 )
 from init_db_redis import redis
+from npc_agent.schedule import wake_npc_now
 from bot.states import UserState
 from db import RequestToUnity, Unity, User
 from sqlalchemy import select
@@ -286,6 +287,12 @@ async def process_send_request(
         date_request_end=date_request_end,
     )
     session.add(request)
+    if unity_owner.id_user < 0:
+        await wake_npc_now(
+            session=session,
+            user_idpk=unity_owner.idpk,
+            reason=f"unity_request:{user.idpk}",
+        )
     await session.commit()
     await query.bot.send_message(
         chat_id=unity_owner.id_user,
@@ -385,6 +392,11 @@ async def accept_npc_unity_invite(
     unity.add_member(idpk_member=user.idpk)
     user.current_unity = f"member:{unity.idpk}"
     await redis.delete(invite_key)
+    await wake_npc_now(
+        session=session,
+        user_idpk=owner.idpk,
+        reason=f"npc_invite_accepted:{user.idpk}",
+    )
     await session.commit()
     await query.message.edit_text("Вы вступили в объединение NPC")
     await query.answer(text="Приглашение принято", show_alert=False)
@@ -402,6 +414,12 @@ async def reject_npc_unity_invite(
     _, owner_idpk, _ = query.data.split(":")
     invite_key = npc_unity_invite_key(int(owner_idpk), user.idpk)
     await redis.delete(invite_key)
+    await wake_npc_now(
+        session=session,
+        user_idpk=int(owner_idpk),
+        reason=f"npc_invite_rejected:{user.idpk}",
+    )
+    await session.commit()
     await query.message.edit_text("Вы отклонили приглашение в объединение")
     await query.answer(text="Приглашение отклонено", show_alert=False)
 
@@ -419,6 +437,13 @@ async def exit_from_unity(
     if unity.idpk_user != user.idpk:
         unity.remove_member(idpk_member=str(user.idpk))
         user.current_unity = None
+        owner = await session.get(User, unity.idpk_user)
+        if owner and owner.id_user < 0:
+            await wake_npc_now(
+                session=session,
+                user_idpk=owner.idpk,
+                reason=f"unity_member_left:{user.idpk}",
+            )
         await state.set_state(UserState.main_menu)
         await session.commit()
         await message.answer(
@@ -435,6 +460,12 @@ async def exit_from_unity(
         next_owner: User = await session.get(User, idpk_next_owner)
         next_owner.current_unity = f"owner:{unity.idpk}"
         unity.idpk_user = next_owner.idpk
+        if next_owner.id_user < 0:
+            await wake_npc_now(
+                session=session,
+                user_idpk=next_owner.idpk,
+                reason=f"unity_owner_promoted:{unity.idpk}",
+            )
         await message.answer(
             text=await get_text_message("exit_from_unity_text"), reply_markup=None
         )

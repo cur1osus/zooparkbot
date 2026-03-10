@@ -42,24 +42,30 @@ async def on_shutdown(*args, **kwargs) -> None:
 async def scheduler() -> None:
     last_runs: dict[str, str] = {}
 
-    async def run_task(name: str, coro) -> None:
+    async def run_task(name: str, coro, stamp: str | None = None) -> None:
         try:
             await coro
         except Exception:
             traceback.print_exc()
         else:
-            last_runs[name] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            last_runs[name] = stamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     while True:
         now = datetime.now()
         await run_task(name="job_minute", coro=job_minute())
 
+        if now.second % 5 == 0:
+            npc_tick_key = now.strftime("%Y-%m-%d %H:%M:%S")
+            if last_runs.get("npc") != npc_tick_key:
+                await run_task(
+                    name="npc",
+                    coro=run_npc_players_turn(),
+                    stamp=npc_tick_key,
+                )
+
         if now.second < 10:
             minute_key = now.strftime("%Y-%m-%d %H:%M")
             clock = now.strftime("%H:%M")
-
-            if last_runs.get("npc") != minute_key:
-                await run_task(name="npc", coro=run_npc_players_turn())
 
             daily_jobs = {
                 "10:30": ("reset_first_offer_bought", reset_first_offer_bought),
@@ -72,7 +78,7 @@ async def scheduler() -> None:
             if clock in daily_jobs:
                 task_name, task_func = daily_jobs[clock]
                 if last_runs.get(task_name) != minute_key:
-                    await run_task(name=task_name, coro=task_func())
+                    await run_task(name=task_name, coro=task_func(), stamp=minute_key)
 
         await asyncio.sleep(1)
 
