@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import json
 from datetime import datetime
@@ -547,12 +546,10 @@ async def ensure_npc_profile_memory(session: AsyncSession, user: User) -> NpcMem
 
 
 async def build_npc_snapshot(session: AsyncSession, user: User) -> dict[str, Any]:
-    income_value, total_seats, remain_seats, total_animals = await asyncio.gather(
-        income_(session=session, user=user),
-        get_total_number_seats(session=session, aviaries=user.aviaries),
-        get_remain_seats(session=session, user=user),
-        get_total_number_animals(self=user),
-    )
+    income_value = await income_(session=session, user=user)
+    total_seats = await get_total_number_seats(session=session, aviaries=user.aviaries)
+    remain_seats = await get_remain_seats(session=session, user=user)
+    total_animals = await get_total_number_animals(self=user)
     items_count = int(
         await session.scalar(
             select(func.count()).select_from(Item).where(Item.id_user == user.id_user)

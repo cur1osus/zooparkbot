@@ -662,23 +662,13 @@ async def build_observation(
     wake_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     merchant = await ensure_random_merchant_for_user(session=session, user=user)
-    (
-        rate,
-        current_income,
-        total_seats,
-        remain_seats,
-        standings,
-        unity,
-        item_opportunities,
-    ) = await asyncio.gather(
-        get_rate(session=session, user=user),
-        income_(session=session, user=user),
-        get_total_number_seats(session=session, aviaries=user.aviaries),
-        get_remain_seats(session=session, user=user),
-        build_standings(session=session, user=user),
-        build_unity_state(session=session, user=user),
-        build_item_opportunities(session=session, user=user),
-    )
+    rate = await get_rate(session=session, user=user)
+    current_income = await income_(session=session, user=user)
+    total_seats = await get_total_number_seats(session=session, aviaries=user.aviaries)
+    remain_seats = await get_remain_seats(session=session, user=user)
+    standings = await build_standings(session=session, user=user)
+    unity = await build_unity_state(session=session, user=user)
+    item_opportunities = await build_item_opportunities(session=session, user=user)
     animal_market = await build_animal_market(
         session=session,
         user=user,

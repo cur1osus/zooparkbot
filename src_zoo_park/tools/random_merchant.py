@@ -1,4 +1,3 @@
-import asyncio
 import json
 import random
 
@@ -52,18 +51,19 @@ def calculate_price_with_discount(price: int, discount: int) -> int:
 
 async def gen_price(session: AsyncSession, animals: str) -> int:
     animals_dict = json.loads(animals)
-    MAX_QUANTITY_ANIMALS, price = await asyncio.gather(
-        tools.get_value(session=session, value_name="MAX_QUANTITY_ANIMALS"),
-        (
-            tools.get_average_price_animals(
-                session=session, animals_code_name=set(animals_dict.keys())
-            )
-            if animals_dict
-            else session.scalar(
-                select(Animal.price).where(Animal.code_name == "animal1_rare")
-            )
-        ),
+    MAX_QUANTITY_ANIMALS = await tools.get_value(
+        session=session,
+        value_name="MAX_QUANTITY_ANIMALS",
     )
+    if animals_dict:
+        price = await tools.get_average_price_animals(
+            session=session,
+            animals_code_name=set(animals_dict.keys()),
+        )
+    else:
+        price = await session.scalar(
+            select(Animal.price).where(Animal.code_name == "animal1_rare")
+        )
 
     if animals_dict:
         price = price * (MAX_QUANTITY_ANIMALS - 2)

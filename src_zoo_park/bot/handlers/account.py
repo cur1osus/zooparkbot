@@ -111,13 +111,11 @@ async def account_aviaries(
             show_alert=True,
         )
         return
-    text, total_places, remain_places = await asyncio.gather(
-        factory_text_account_aviaries(session=session, aviaries=user.aviaries),
-        get_total_number_seats(session=session, aviaries=user.aviaries),
-        get_remain_seats(
-            session=session,
-            user=user,
-        ),
+    text = await factory_text_account_aviaries(session=session, aviaries=user.aviaries)
+    total_places = await get_total_number_seats(session=session, aviaries=user.aviaries)
+    remain_places = await get_remain_seats(
+        session=session,
+        user=user,
     )
     await query.message.edit_text(
         text=await get_text_message(
