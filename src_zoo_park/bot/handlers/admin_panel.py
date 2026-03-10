@@ -31,16 +31,19 @@ flags = {"throttling_key": "default"}
 
 SECTION_LABELS = {
     "overview": "Обзор",
-    "tactics": "Тактики",
+    "tactics": "Такт.",
     "goals": "Цели",
-    "reflections": "Рефлексия",
-    "events": "События",
+    "reflections": "Рефл.",
+    "events": "Событ.",
     "relationships": "Связи",
 }
 
 MAX_ADMIN_TEXT = 3900
-USERS_PER_PAGE = 8
-USER_EVENTS_PER_PAGE = 6
+USERS_PER_PAGE = 6
+USER_EVENTS_PER_PAGE = 5
+NPC_BUTTON_LABEL_LIMIT = 12
+HISTORY_USER_LABEL_LIMIT = 11
+HISTORY_EVENT_LABEL_LIMIT = 26
 
 
 class AdminPanelAction(str, Enum):
@@ -133,6 +136,13 @@ def _clip_text(text: str) -> str:
     return text[: MAX_ADMIN_TEXT - 20].rstrip() + "\n\n...[truncated]"
 
 
+def _short_label(text: str | None, limit: int) -> str:
+    value = " ".join(str(text or "-").split())
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
 def _history_time_sort_key(value: str) -> datetime:
     return datetime.strptime(value, "%d.%m.%Y %H:%M:%S.%f")
 
@@ -147,6 +157,14 @@ def _slice_page(items: list, page: int, per_page: int) -> tuple[list, int, int]:
     start = (page - 1) * per_page
     end = start + per_page
     return items[start:end], page, total_pages
+
+
+def _page_bounds(page: int, per_page: int, total_items: int) -> tuple[int, int]:
+    if total_items <= 0:
+        return 0, 0
+    start = (page - 1) * per_page + 1
+    end = min(total_items, page * per_page)
+    return start, end
 
 
 def _load_user_history_entries(target_user: User) -> list[dict]:
@@ -182,6 +200,45 @@ def _history_event_preview(event_text: str, limit: int = 56) -> str:
     return compact[: limit - 3].rstrip() + "..."
 
 
+def _build_npc_button_text(npc: User) -> str:
+    return _short_label(npc.nickname or f"NPC {npc.idpk}", NPC_BUTTON_LABEL_LIMIT)
+
+
+def _build_history_user_button_text(
+    target_user: User, history_entries: list[dict]
+) -> str:
+    last_time = (
+        history_entries[0]["time"].strftime("%d.%m %H:%M") if history_entries else "-"
+    )
+    nickname = _short_label(target_user.nickname, HISTORY_USER_LABEL_LIMIT)
+    return f"{nickname} · {len(history_entries)} · {last_time}"
+
+
+def _build_history_event_button_text(entry: dict) -> str:
+    preview = _history_event_preview(entry["event"], HISTORY_EVENT_LABEL_LIMIT)
+    return f"{entry['time'].strftime('%d.%m %H:%M')} · {preview}"
+
+
+def _append_pager_buttons(
+    builder, page: int, total_pages: int, callback_factory
+) -> int:
+    if total_pages <= 1:
+        return 0
+
+    buttons = []
+    if total_pages > 3:
+        buttons.append(("<<", callback_factory(1)))
+    buttons.append(("<", callback_factory(max(1, page - 1))))
+    buttons.append((f"{page}/{total_pages}", AdminHistoryNoopCallback(page=page)))
+    buttons.append((">", callback_factory(min(total_pages, page + 1))))
+    if total_pages > 3:
+        buttons.append((">>", callback_factory(total_pages)))
+
+    for text, callback_data in buttons:
+        builder.button(text=text, callback_data=callback_data)
+    return len(buttons)
+
+
 async def _get_npc_users(session: AsyncSession) -> list[User]:
     rows = await session.scalars(
         select(User)
@@ -200,17 +257,18 @@ async def _get_users_with_history(session: AsyncSession) -> list[User]:
         )
         .order_by(User.moves.desc(), User.idpk.desc())
     )
-    users = list(rows.all())
-    users.sort(
-        key=lambda item: (
-            _load_user_history_entries(item)[0]["time"]
-            if _load_user_history_entries(item)
-            else datetime.min,
-            item.moves,
-        ),
+    users_with_history = []
+    for item in rows.all():
+        history_entries = _load_user_history_entries(item)
+        if not history_entries:
+            continue
+        users_with_history.append((item, history_entries[0]["time"]))
+
+    users_with_history.sort(
+        key=lambda item: (item[1], item[0].moves),
         reverse=True,
     )
-    return users
+    return [item[0] for item in users_with_history]
 
 
 async def _get_memory_rows(
@@ -237,8 +295,8 @@ async def _get_memory_rows(
 async def _build_admin_panel_text(session: AsyncSession) -> str:
     npcs = await _get_npc_users(session=session)
     if not npcs:
-        return "Админ-панель NPC\n\nNPC не найдены."
-    lines = ["Админ-панель NPC", "", f"Всего NPC: {len(npcs)}", ""]
+        return "NPC админка\n\nNPC не найдены."
+    lines = ["NPC админка", "", f"Всего NPC: {len(npcs)}", ""]
     now = datetime.now()
     for npc in npcs:
         state = await session.scalar(
@@ -252,75 +310,78 @@ async def _build_admin_panel_text(session: AsyncSession) -> str:
             session=session, npc=npc, kind=GOAL_KIND, limit=6
         )
         last_event = _load_payload(event_rows[0]) if event_rows else {}
-        lines.append(
-            f"- {npc.nickname} | id {npc.idpk} | due {'yes' if due else 'no'} | next {_fmt_dt(state.next_wake_at if state else None)}"
-        )
+        due_label = "готов" if due else "ждет"
+        lines.append(f"- {_short_label(npc.nickname, 24)} · {due_label}")
+        lines.append(f"  след: {_fmt_dt(state.next_wake_at if state else None)}")
         if last_event:
             lines.append(
-                f"  last: {last_event.get('action', {}).get('name', '-')} / {last_event.get('result', {}).get('summary', '-')[:90]}"
+                f"  посл: {last_event.get('action', {}).get('name', '-')} -> {last_event.get('result', {}).get('summary', '-')[:64]}"
             )
-        lines.append(f"  active goals: {len(goal_rows)}")
-    lines.extend(["", "Выбери NPC кнопкой ниже."])
+        lines.append(f"  цели: {len(goal_rows)}")
+    lines.extend(["", "Открой NPC кнопкой ниже."])
     return "\n".join(lines)
 
 
 def _build_admin_panel_keyboard(npcs: list[User]):
     builder = InlineKeyboardBuilder()
+    row_sizes = [2]
     builder.button(
-        text="История пользователей",
+        text="История",
         callback_data=AdminHistoryListCallback(page=1),
+    )
+    builder.button(
+        text="Обновить",
+        callback_data=AdminPanelCallback(action=AdminPanelAction.REFRESH),
     )
     for npc in npcs:
         builder.button(
-            text=npc.nickname or f"NPC {npc.idpk}",
+            text=_build_npc_button_text(npc),
             callback_data=AdminNpcCallback(
                 npc_idpk=npc.idpk,
                 section=AdminNpcSection.OVERVIEW,
             ),
         )
-    builder.button(
-        text="Обновить",
-        callback_data=AdminPanelCallback(action=AdminPanelAction.REFRESH),
-    )
-    builder.adjust(2)
+    if npcs:
+        npc_rows = len(npcs) // 2
+        row_sizes.extend([2] * npc_rows)
+        if len(npcs) % 2:
+            row_sizes.append(1)
+    builder.adjust(*row_sizes)
     return builder.as_markup()
 
 
 def _build_user_history_list_keyboard(users: list[User], page: int, total_pages: int):
     builder = InlineKeyboardBuilder()
+    row_sizes = []
     for target_user in users:
         history_entries = _load_user_history_entries(target_user)
-        last_time = (
-            history_entries[0]["time"].strftime("%d.%m %H:%M")
-            if history_entries
-            else "-"
-        )
         builder.button(
-            text=f"{target_user.nickname} ({len(history_entries)}) · {last_time}",
+            text=_build_history_user_button_text(target_user, history_entries),
             callback_data=AdminHistoryUserCallback(
                 user_idpk=target_user.idpk,
                 page=1,
                 list_page=page,
             ),
         )
-    if total_pages > 1:
-        builder.button(
-            text="<",
-            callback_data=AdminHistoryListCallback(page=max(1, page - 1)),
-        )
-        builder.button(
-            text=f"{page}/{total_pages}",
-            callback_data=AdminHistoryNoopCallback(page=page),
-        )
-        builder.button(
-            text=">",
-            callback_data=AdminHistoryListCallback(page=min(total_pages, page + 1)),
-        )
+        row_sizes.append(1)
+    nav_size = _append_pager_buttons(
+        builder=builder,
+        page=page,
+        total_pages=total_pages,
+        callback_factory=lambda target_page: AdminHistoryListCallback(page=target_page),
+    )
+    if nav_size:
+        row_sizes.append(nav_size)
     builder.button(
         text="К NPC",
         callback_data=AdminPanelCallback(action=AdminPanelAction.LIST),
     )
-    builder.adjust(1, 1, 1, 3, 1)
+    builder.button(
+        text="Обновить",
+        callback_data=AdminHistoryListCallback(page=page),
+    )
+    row_sizes.append(2)
+    builder.adjust(*row_sizes)
     return builder.as_markup()
 
 
@@ -332,9 +393,10 @@ def _build_user_history_keyboard(
     list_page: int,
 ):
     builder = InlineKeyboardBuilder()
+    row_sizes = []
     for entry in entries:
         builder.button(
-            text=f"{entry['time'].strftime('%d.%m %H:%M')} · {_history_event_preview(entry['event'], 34)}",
+            text=_build_history_event_button_text(entry),
             callback_data=AdminHistoryEventCallback(
                 user_idpk=target_user.idpk,
                 event_index=entry["index"],
@@ -342,32 +404,33 @@ def _build_user_history_keyboard(
                 list_page=list_page,
             ),
         )
-    if total_pages > 1:
-        builder.button(
-            text="<",
-            callback_data=AdminHistoryUserCallback(
-                user_idpk=target_user.idpk,
-                page=max(1, page - 1),
-                list_page=list_page,
-            ),
-        )
-        builder.button(
-            text=f"{page}/{total_pages}",
-            callback_data=AdminHistoryNoopCallback(page=page),
-        )
-        builder.button(
-            text=">",
-            callback_data=AdminHistoryUserCallback(
-                user_idpk=target_user.idpk,
-                page=min(total_pages, page + 1),
-                list_page=list_page,
-            ),
-        )
+        row_sizes.append(1)
+    nav_size = _append_pager_buttons(
+        builder=builder,
+        page=page,
+        total_pages=total_pages,
+        callback_factory=lambda target_page: AdminHistoryUserCallback(
+            user_idpk=target_user.idpk,
+            page=target_page,
+            list_page=list_page,
+        ),
+    )
+    if nav_size:
+        row_sizes.append(nav_size)
     builder.button(
         text="К списку",
         callback_data=AdminHistoryListCallback(page=list_page),
     )
-    builder.adjust(1, 1, 1, 3, 1)
+    builder.button(
+        text="В начало",
+        callback_data=AdminHistoryUserCallback(
+            user_idpk=target_user.idpk,
+            page=1,
+            list_page=list_page,
+        ),
+    )
+    row_sizes.append(2)
+    builder.adjust(*row_sizes)
     return builder.as_markup()
 
 
@@ -379,9 +442,10 @@ def _build_user_event_detail_keyboard(
     list_page: int,
 ):
     builder = InlineKeyboardBuilder()
+    nav_size = 0
     if index > 0:
         builder.button(
-            text="< Событие",
+            text="< Новее",
             callback_data=AdminHistoryEventCallback(
                 user_idpk=target_user.idpk,
                 event_index=index - 1,
@@ -389,9 +453,10 @@ def _build_user_event_detail_keyboard(
                 list_page=list_page,
             ),
         )
+        nav_size += 1
     if index + 1 < len(entries):
         builder.button(
-            text="Событие >",
+            text="Старее >",
             callback_data=AdminHistoryEventCallback(
                 user_idpk=target_user.idpk,
                 event_index=index + 1,
@@ -399,8 +464,9 @@ def _build_user_event_detail_keyboard(
                 list_page=list_page,
             ),
         )
+        nav_size += 1
     builder.button(
-        text="Назад к истории",
+        text="К истории",
         callback_data=AdminHistoryUserCallback(
             user_idpk=target_user.idpk,
             page=return_page,
@@ -411,7 +477,11 @@ def _build_user_event_detail_keyboard(
         text="К списку",
         callback_data=AdminHistoryListCallback(page=list_page),
     )
-    builder.adjust(2, 1, 1)
+    row_sizes = []
+    if nav_size:
+        row_sizes.append(nav_size)
+    row_sizes.append(2)
+    builder.adjust(*row_sizes)
     return builder.as_markup()
 
 
@@ -423,10 +493,16 @@ async def _build_user_history_list_text(
     page_users, page, total_pages = _slice_page(
         users, page=page, per_page=USERS_PER_PAGE
     )
+    range_start, range_end = _page_bounds(
+        page=page,
+        per_page=USERS_PER_PAGE,
+        total_items=len(users),
+    )
     lines = [
         "История пользователей",
         "",
-        f"Пользователей с историей: {len(users)}",
+        f"Пользователей: {len(users)}",
+        f"Показано: {range_start}-{range_end}",
         f"Страница: {page}/{total_pages}",
         "",
     ]
@@ -437,12 +513,12 @@ async def _build_user_history_list_text(
             history_entries = _load_user_history_entries(target_user)
             last_event = history_entries[0] if history_entries else None
             lines.append(
-                f"- {target_user.nickname} | id {target_user.idpk} | событий {len(history_entries)} | ходов {target_user.moves}"
+                f"- {_short_label(target_user.nickname, 24)} · {len(history_entries)} событий"
             )
+            lines.append(f"  id: {target_user.idpk} · ходы: {target_user.moves}")
             if last_event:
-                lines.append(
-                    f"  last: {last_event['time'].strftime('%d.%m %H:%M:%S')} | {_history_event_preview(last_event['event'], 96)}"
-                )
+                lines.append(f"  last: {last_event['time'].strftime('%d.%m %H:%M')}")
+                lines.append(f"  {_history_event_preview(last_event['event'], 80)}")
     return "\n".join(lines), page_users, page, total_pages
 
 
@@ -453,10 +529,16 @@ def _build_user_history_text(
     total_pages: int,
     total_events: int,
 ) -> str:
+    range_start, range_end = _page_bounds(
+        page=page,
+        per_page=USER_EVENTS_PER_PAGE,
+        total_items=total_events,
+    )
     lines = [
         f"История: {target_user.nickname}",
-        f"Telegram ID: {target_user.id_user} | DB ID: {target_user.idpk}",
-        f"Всего событий: {total_events} | Страница: {page}/{total_pages}",
+        f"TG ID: {target_user.id_user} · DB ID: {target_user.idpk}",
+        f"События: {total_events} · Показано: {range_start}-{range_end}",
+        f"Страница: {page}/{total_pages}",
         "",
     ]
     if not page_entries:
@@ -466,7 +548,7 @@ def _build_user_history_text(
         lines.append(
             f"{entry['index'] + 1}. {entry['time'].strftime('%d.%m.%Y %H:%M:%S')}"
         )
-        lines.append(f"   {_history_event_preview(entry['event'], 180)}")
+        lines.append(f"   {_history_event_preview(entry['event'], 140)}")
     return "\n".join(lines)
 
 
@@ -504,6 +586,7 @@ async def _edit_admin_message(
 
 def _build_admin_npc_keyboard(npc: User, section: str):
     builder = InlineKeyboardBuilder()
+    row_sizes = []
     for key, label in SECTION_LABELS.items():
         prefix = "• " if key == section else ""
         builder.button(
@@ -513,6 +596,7 @@ def _build_admin_npc_keyboard(npc: User, section: str):
                 section=AdminNpcSection(key),
             ),
         )
+    row_sizes.extend([2, 2, 2])
     builder.button(
         text="Разбудить",
         callback_data=AdminNpcCallback(
@@ -524,7 +608,8 @@ def _build_admin_npc_keyboard(npc: User, section: str):
         text="К списку",
         callback_data=AdminPanelCallback(action=AdminPanelAction.LIST),
     )
-    builder.adjust(3, 2, 1)
+    row_sizes.append(2)
+    builder.adjust(*row_sizes)
     return builder.as_markup()
 
 
@@ -548,45 +633,66 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
     due = bool(
         state and (state.next_wake_at is None or state.next_wake_at <= datetime.now())
     )
+    traits = profile.get("traits", {})
+    adaptive_traits = profile.get("adaptive_traits", {})
+    adaptation_signals = profile.get("adaptation_signals", {})
+    wake_state = "готов" if due else "ждет"
 
     lines = [
         f"NPC: {npc.nickname}",
-        f"Telegram ID: {npc.id_user} | DB ID: {npc.idpk}",
+        f"TG ID: {npc.id_user} · DB ID: {npc.idpk}",
         f"Профиль: {profile.get('archetype', '-')}",
         f"Миссия: {profile.get('mission', '-')}",
-        f"Активные тактики: {', '.join(profile.get('active_tactics', [])[:3]) or '-'}",
+        f"Тактики: {', '.join(profile.get('active_tactics', [])[:3]) or '-'}",
         "",
         "Экономика:",
-        f"- USD: {_fmt_number(snapshot.get('usd'))} | RUB: {_fmt_number(snapshot.get('rub'))} | income: {_fmt_number(snapshot.get('income_per_minute_rub'))}/min",
-        f"- animals: {_fmt_number(snapshot.get('total_animals'))} | seats: {_fmt_number(snapshot.get('total_seats'))} | free: {_fmt_number(snapshot.get('remain_seats'))}",
-        f"- items: {_fmt_number(snapshot.get('active_items'))}/{_fmt_number(snapshot.get('items_owned'))} active | unity: {snapshot.get('current_unity') or '-'}",
+        f"- USD: {_fmt_number(snapshot.get('usd'))}",
+        f"- RUB: {_fmt_number(snapshot.get('rub'))}",
+        f"- Доход: {_fmt_number(snapshot.get('income_per_minute_rub'))}/мин",
+        f"- Животные: {_fmt_number(snapshot.get('total_animals'))}",
+        f"- Места: {_fmt_number(snapshot.get('total_seats'))}",
+        f"- Свободно: {_fmt_number(snapshot.get('remain_seats'))}",
+        f"- Предметы: {_fmt_number(snapshot.get('active_items'))}/{_fmt_number(snapshot.get('items_owned'))} активны",
+        f"- Союз: {snapshot.get('current_unity') or '-'}",
         "",
         "Пробуждение:",
-        f"- due: {'yes' if due else 'no'} | next: {_fmt_dt(state.next_wake_at if state else None)}",
-        f"- last source: {state.last_wake_source if state else '-'} | last sleep: {getattr(state, 'last_sleep_seconds', None) or '-'}",
-        f"- reason: {state.last_wake_reason if state else '-'}",
+        f"- Статус: {wake_state}",
+        f"- Следующее: {_fmt_dt(state.next_wake_at if state else None)}",
+        f"- Источник: {state.last_wake_source if state else '-'}",
+        f"- Сон: {getattr(state, 'last_sleep_seconds', None) or '-'} сек",
+        f"- Причина: {state.last_wake_reason if state else '-'}",
         "",
         "Трейты:",
-        f"- effective: risk {profile.get('traits', {}).get('risk_tolerance', '-')} | social {profile.get('traits', {}).get('social_drive', '-')} | economy {profile.get('traits', {}).get('economy_focus', '-')}",
-        f"- effective: expansion {profile.get('traits', {}).get('expansion_drive', '-')} | patience {profile.get('traits', {}).get('patience', '-')} | competition {profile.get('traits', {}).get('competitiveness', '-')}",
-        f"- adaptive: risk {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('risk_tolerance'))} | social {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('social_drive'))} | economy {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('economy_focus'))}",
-        f"- adaptive: expansion {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('expansion_drive'))} | patience {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('patience'))} | competition {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('competitiveness'))}",
-        f"- success streak: {profile.get('adaptation_signals', {}).get('success_streak', 0)} | failure streak: {profile.get('adaptation_signals', {}).get('failure_streak', 0)}",
+        f"- Риск: {traits.get('risk_tolerance', '-')}",
+        f"- Соц: {traits.get('social_drive', '-')}",
+        f"- Эконом: {traits.get('economy_focus', '-')}",
+        f"- Рост: {traits.get('expansion_drive', '-')}",
+        f"- Терпение: {traits.get('patience', '-')}",
+        f"- Соревн.: {traits.get('competitiveness', '-')}",
+        f"- dРиск: {_fmt_trait_delta(adaptive_traits.get('risk_tolerance'))}",
+        f"- dСоц: {_fmt_trait_delta(adaptive_traits.get('social_drive'))}",
+        f"- dЭконом: {_fmt_trait_delta(adaptive_traits.get('economy_focus'))}",
+        f"- dРост: {_fmt_trait_delta(adaptive_traits.get('expansion_drive'))}",
+        f"- dТерпение: {_fmt_trait_delta(adaptive_traits.get('patience'))}",
+        f"- dСоревн.: {_fmt_trait_delta(adaptive_traits.get('competitiveness'))}",
+        f"- Серия+: {adaptation_signals.get('success_streak', 0)}",
+        f"- Серия-: {adaptation_signals.get('failure_streak', 0)}",
         "",
-        "Активные цели:",
+        "Цели:",
     ]
     if goal_rows:
         for row in goal_rows:
             payload = _load_payload(row)
             progress = payload.get("progress", {})
+            lines.append(f"- {payload.get('title', row.topic)}")
             lines.append(
-                f"- {payload.get('title', row.topic)} | {progress.get('current', '-')} / {progress.get('target', '-')} | p={payload.get('priority', row.importance)}"
+                f"  {progress.get('current', '-')} / {progress.get('target', '-')} · p={payload.get('priority', row.importance)}"
             )
     else:
         lines.append("- нет")
 
     lines.append("")
-    lines.append("Последняя рефлексия:")
+    lines.append("Рефлексия:")
     if reflection_rows:
         payload = _load_payload(reflection_rows[0])
         lines.append(f"- {str(payload.get('summary', '-'))[:350]}")
@@ -594,14 +700,15 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
         lines.append("- нет")
 
     lines.append("")
-    lines.append("Последние события:")
+    lines.append("События:")
     if event_rows:
         for row in event_rows:
             payload = _load_payload(row)
             action = payload.get("action", {})
             result = payload.get("result", {})
+            lines.append(f"- {_fmt_iso(payload.get('time'))}")
             lines.append(
-                f"- {_fmt_iso(payload.get('time'))}: {action.get('name', '-')} -> {result.get('summary', '-')[:80]}"
+                f"  {action.get('name', '-')} -> {result.get('summary', '-')[:72]}"
             )
     else:
         lines.append("- нет")
@@ -620,31 +727,31 @@ async def _build_tactics_text(session: AsyncSession, npc: User) -> str:
     lines = [f"Тактики NPC: {npc.nickname}", ""]
     lines.append(f"Активные: {', '.join(profile.get('active_tactics', [])[:3]) or '-'}")
     lines.append("")
-    lines.append("Текущие очки тактик:")
+    lines.append("Очки:")
     for name, score in tactic_rows[:6]:
         lines.append(f"- {name}: {score}")
     lines.append("")
-    lines.append("Последние сдвиги:")
+    lines.append("Сдвиги тактик:")
     for shift in profile.get("adaptation_signals", {}).get("recent_tactic_shifts", [])[
         -6:
     ]:
         lines.append(
             f"- {_fmt_iso(shift.get('time'))} | {shift.get('tactic')} {int(shift.get('delta', 0)):+} | {shift.get('reason') or '-'}"
         )
-    if lines[-1] == "Последние сдвиги:":
+    if lines[-1] == "Сдвиги тактик:":
         lines.append("- нет")
     lines.append("")
-    lines.append("Последние сдвиги трейтов:")
+    lines.append("Сдвиги трейтов:")
     for shift in profile.get("adaptation_signals", {}).get("recent_trait_shifts", [])[
         -6:
     ]:
         lines.append(
             f"- {_fmt_iso(shift.get('time'))} | {shift.get('trait')} {int(shift.get('delta', 0)):+} | {shift.get('reason') or '-'}"
         )
-    if lines[-1] == "Последние сдвиги трейтов:":
+    if lines[-1] == "Сдвиги трейтов:":
         lines.append("- нет")
     lines.append("")
-    lines.append("Эффективность действий:")
+    lines.append("Действия:")
     ranked_actions = sorted(
         [
             (name, payload)
@@ -658,10 +765,11 @@ async def _build_tactics_text(session: AsyncSession, npc: User) -> str:
         reverse=True,
     )
     for name, payload in ranked_actions[:8]:
+        lines.append(f"- {name}")
         lines.append(
-            f"- {name}: tries {payload.get('attempts', 0)} | ok {payload.get('successes', 0)} | fail {payload.get('failures', 0)} | dIncome {int(payload.get('net_income_delta', 0)):+}"
+            f"  tries {payload.get('attempts', 0)} · ok {payload.get('successes', 0)} · fail {payload.get('failures', 0)} · dIncome {int(payload.get('net_income_delta', 0)):+}"
         )
-    if lines[-1] == "Эффективность действий:":
+    if lines[-1] == "Действия:":
         lines.append("- нет")
     return "\n".join(lines)
 
@@ -678,10 +786,11 @@ async def _build_goal_text(session: AsyncSession, npc: User) -> str:
         lines.extend(
             [
                 f"- {payload.get('title', row.topic)}",
-                f"  topic: {payload.get('topic', row.topic)} | priority: {payload.get('priority', row.importance)} | horizon: {payload.get('horizon', '-')}",
-                f"  progress: {progress.get('current', '-')} / {progress.get('target', '-')} ({progress.get('ratio', '-')})",
-                f"  actions: {', '.join(payload.get('recommended_actions', [])[:4]) or '-'}",
-                f"  success: {payload.get('success_signal', '-')}",
+                f"  тема: {payload.get('topic', row.topic)}",
+                f"  приоритет: {payload.get('priority', row.importance)} · горизонт: {payload.get('horizon', '-')}",
+                f"  прогресс: {progress.get('current', '-')} / {progress.get('target', '-')} ({progress.get('ratio', '-')})",
+                f"  действия: {', '.join(payload.get('recommended_actions', [])[:4]) or '-'}",
+                f"  успех: {payload.get('success_signal', '-')}",
                 "",
             ]
         )
@@ -705,11 +814,11 @@ async def _build_reflection_text(session: AsyncSession, npc: User) -> str:
             f"- {_fmt_iso(payload.get('generated_at'))}: {payload.get('summary', '-')}"
         )
         if payload.get("lessons"):
-            lines.append(f"  lessons: {'; '.join(payload['lessons'][:3])}")
+            lines.append(f"  уроки: {'; '.join(payload['lessons'][:2])}")
         if payload.get("opportunities"):
-            lines.append(f"  opportunities: {'; '.join(payload['opportunities'][:3])}")
+            lines.append(f"  шансы: {'; '.join(payload['opportunities'][:2])}")
         if payload.get("risks"):
-            lines.append(f"  risks: {'; '.join(payload['risks'][:3])}")
+            lines.append(f"  риски: {'; '.join(payload['risks'][:2])}")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -725,11 +834,11 @@ async def _build_event_text(session: AsyncSession, npc: User) -> str:
         action = payload.get("action", {})
         result = payload.get("result", {})
         delta = payload.get("delta", {})
+        lines.append(f"- {_fmt_iso(payload.get('time'))}")
+        lines.append(f"  {action.get('name', '-')} · {result.get('status', '-')}")
+        lines.append(f"  {result.get('summary', '-')[:72]}")
         lines.append(
-            f"- {_fmt_iso(payload.get('time'))} | {action.get('name', '-')} | {result.get('status', '-')} | {result.get('summary', '-')[:80]}"
-        )
-        lines.append(
-            f"  dUSD {delta.get('usd', 0):+} | dIncome {delta.get('income_per_minute_rub', 0):+} | dAnimals {delta.get('animals', 0):+} | sleep {action.get('sleep_seconds', '-')}"
+            f"  dUSD {delta.get('usd', 0):+} · dIncome {delta.get('income_per_minute_rub', 0):+} · dAnimals {delta.get('animals', 0):+} · сон {action.get('sleep_seconds', '-')}"
         )
     return "\n".join(lines)
 
@@ -748,11 +857,13 @@ async def _build_relationship_text(session: AsyncSession, npc: User) -> str:
     for row in rows:
         payload = _load_payload(row)
         name = payload.get("display_name") or payload.get("subject_idpk") or row.topic
+        lines.append(f"- {name}")
         lines.append(
-            f"- {name} | status {payload.get('status', '-')} | trust {payload.get('trust', '-')} | affinity {payload.get('affinity', '-')}"
+            f"  статус {payload.get('status', '-')} · trust {payload.get('trust', '-')} · affinity {payload.get('affinity', '-')}"
         )
+        lines.append(f"  последнее: {payload.get('last_event', '-')}")
         lines.append(
-            f"  last: {payload.get('last_event', '-')} at {_fmt_iso(payload.get('last_event_at'))} | interactions {payload.get('interactions', 0)}"
+            f"  {_fmt_iso(payload.get('last_event_at'))} · interactions {payload.get('interactions', 0)}"
         )
     return "\n".join(lines)
 
