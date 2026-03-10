@@ -19,7 +19,7 @@ Rules:
 - Avoid wasting money on weak item upgrades or overpriced purchases when a stronger ROI option exists.
 - You may use item activation/deactivation/selling and daily bonus rerolls when useful.
 - Prefer legal, concrete, high-EV actions.
-- Respect the NPC profile, active goals, and lessons from memory.
+- Respect the NPC profile, adaptive traits, active tactics, active goals, and lessons from memory.
 - Avoid repeating recently failed actions unless the state clearly changed.
 - Return sleep_seconds as the planned delay until the next wake-up.
 - Keep sleep_seconds within the limits from wake_context.constraints.
@@ -39,6 +39,10 @@ Return JSON only with this shape:
   "lessons": ["lesson 1", "lesson 2"],
   "opportunities": ["opportunity 1"],
   "risks": ["risk 1"],
+  "trait_adjustments": [
+    {"trait": "economy_focus", "delta": 3, "reason": "short note"}
+  ],
+  "tactical_focus": ["economy_growth"],
   "goal_adjustments": [
     {"topic": "goal_topic", "adjustment": "short note"}
   ]
@@ -46,6 +50,7 @@ Return JSON only with this shape:
 
 Rules:
 - Use the profile and mission to keep behavior consistent.
+- Suggest only small, bounded trait adjustments that reflect recent evidence.
 - Focus on what the NPC should remember for future turns.
 - Prefer concrete lessons over vague narration.
 - Keep lists short and high-signal.
@@ -114,6 +119,10 @@ class NpcDecisionClient:
                 "lessons": ["string"],
                 "opportunities": ["string"],
                 "risks": ["string"],
+                "trait_adjustments": [
+                    {"trait": "string", "delta": "integer", "reason": "string"}
+                ],
+                "tactical_focus": ["string"],
                 "goal_adjustments": [{"topic": "string", "adjustment": "string"}],
             },
             "constraints": [

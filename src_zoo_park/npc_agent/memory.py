@@ -25,6 +25,44 @@ REFLECTION_KIND = "reflection"
 GOAL_KIND = "goal"
 RELATIONSHIP_KIND = "relationship"
 
+TRAIT_NAMES = (
+    "risk_tolerance",
+    "social_drive",
+    "economy_focus",
+    "expansion_drive",
+    "patience",
+    "competitiveness",
+)
+
+TACTIC_NAMES = (
+    "economy_growth",
+    "liquidity_control",
+    "capacity_expansion",
+    "unity_leverage",
+    "item_engine",
+    "leaderboard_pressure",
+    "opportunistic_waiting",
+)
+
+ACTION_TACTIC_MAP = {
+    "invest_for_income": ["economy_growth"],
+    "buy_rarity_animal": ["economy_growth", "leaderboard_pressure"],
+    "invest_for_top_animals": ["leaderboard_pressure", "economy_growth"],
+    "exchange_bank": ["liquidity_control"],
+    "claim_daily_bonus": ["liquidity_control", "opportunistic_waiting"],
+    "wait": ["opportunistic_waiting", "liquidity_control"],
+    "buy_aviary": ["capacity_expansion"],
+    "create_unity": ["unity_leverage"],
+    "join_best_unity": ["unity_leverage"],
+    "recruit_top_player": ["unity_leverage", "leaderboard_pressure"],
+    "review_unity_request": ["unity_leverage"],
+    "upgrade_unity_level": ["unity_leverage"],
+    "create_item": ["item_engine"],
+    "optimize_items": ["item_engine"],
+    "upgrade_item": ["item_engine"],
+    "merge_items": ["item_engine"],
+}
+
 
 def _now() -> datetime:
     return datetime.now()
@@ -107,6 +145,290 @@ def _ratio(current: int, target: int) -> float:
 
 def _topic_suffix() -> str:
     return _now().strftime("%Y%m%d%H%M%S%f")
+
+
+def _trait_shift_entry(
+    trait: str,
+    delta: int,
+    reason: str,
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "trait": trait,
+        "delta": int(delta),
+        "reason": str(reason)[:180],
+        "source": source[:32],
+        "time": _now().isoformat(),
+    }
+
+
+def _tactic_shift_entry(
+    tactic: str,
+    delta: int,
+    reason: str,
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "tactic": tactic,
+        "delta": int(delta),
+        "reason": str(reason)[:180],
+        "source": source[:32],
+        "time": _now().isoformat(),
+    }
+
+
+def _limit_entries(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if len(items) <= limit:
+        return items
+    return items[-limit:]
+
+
+def _build_core_traits(user: User) -> dict[str, int]:
+    seed = f"{user.id_user}:{user.username or ''}:{user.nickname or ''}".encode("utf-8")
+    digest = hashlib.sha256(seed).digest()
+    return {
+        "risk_tolerance": _trait_from_digest(digest, 0),
+        "social_drive": _trait_from_digest(digest, 5),
+        "economy_focus": _trait_from_digest(digest, 10),
+        "expansion_drive": _trait_from_digest(digest, 15),
+        "patience": _trait_from_digest(digest, 20),
+        "competitiveness": _trait_from_digest(digest, 25),
+    }
+
+
+def _default_adaptive_traits() -> dict[str, int]:
+    return {name: 0 for name in TRAIT_NAMES}
+
+
+def _sanitize_trait_deltas(value: Any) -> dict[str, int]:
+    limit = settings.memory_trait_delta_limit
+    payload = value if isinstance(value, dict) else {}
+    return {
+        name: _clamp(int(payload.get(name, 0) or 0), -limit, limit)
+        for name in TRAIT_NAMES
+    }
+
+
+def _compute_effective_traits(
+    core_traits: dict[str, int],
+    adaptive_traits: dict[str, int],
+) -> dict[str, int]:
+    return {
+        name: _clamp(
+            int(core_traits.get(name, 50)) + int(adaptive_traits.get(name, 0)),
+            10,
+            100,
+        )
+        for name in TRAIT_NAMES
+    }
+
+
+def _build_initial_tactic_scores(traits: dict[str, int]) -> dict[str, int]:
+    return {
+        "economy_growth": _clamp(
+            360 + traits["economy_focus"] * 4 + traits["patience"],
+            120,
+            1000,
+        ),
+        "liquidity_control": _clamp(
+            320 + traits["patience"] * 4 + traits["economy_focus"] * 2,
+            120,
+            1000,
+        ),
+        "capacity_expansion": _clamp(
+            340 + traits["expansion_drive"] * 5,
+            120,
+            1000,
+        ),
+        "unity_leverage": _clamp(
+            300 + traits["social_drive"] * 5 + traits["competitiveness"],
+            120,
+            1000,
+        ),
+        "item_engine": _clamp(
+            260 + traits["economy_focus"] * 3 + traits["patience"] * 2,
+            120,
+            1000,
+        ),
+        "leaderboard_pressure": _clamp(
+            240 + traits["competitiveness"] * 5 + traits["risk_tolerance"] * 2,
+            120,
+            1000,
+        ),
+        "opportunistic_waiting": _clamp(
+            240 + traits["patience"] * 4 - traits["risk_tolerance"],
+            120,
+            1000,
+        ),
+    }
+
+
+def _sanitize_tactic_scores(
+    existing_scores: Any,
+    effective_traits: dict[str, int],
+) -> dict[str, int]:
+    initial_scores = _build_initial_tactic_scores(effective_traits)
+    payload = existing_scores if isinstance(existing_scores, dict) else {}
+    return {
+        name: _clamp(
+            int(payload.get(name, initial_scores[name]) or initial_scores[name]),
+            80,
+            1000,
+        )
+        for name in TACTIC_NAMES
+    }
+
+
+def _derive_active_tactics(tactic_scores: dict[str, int]) -> list[str]:
+    ordered = sorted(
+        tactic_scores.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    return [name for name, _ in ordered[:3]]
+
+
+def _derive_profile_story(traits: dict[str, int]) -> dict[str, Any]:
+    if traits["economy_focus"] >= 75 and traits["patience"] >= 65:
+        archetype = "compound strategist"
+        mission = (
+            "Compound income relentlessly and convert cash into durable advantage."
+        )
+    elif traits["social_drive"] >= 75 and traits["expansion_drive"] >= 65:
+        archetype = "clan architect"
+        mission = "Build a powerful unity and turn social coordination into growth."
+    elif traits["risk_tolerance"] >= 75 and traits["competitiveness"] >= 65:
+        archetype = "aggressive climber"
+        mission = "Push the leaderboard with bold, high-upside plays."
+    else:
+        archetype = "balanced zookeeper"
+        mission = "Grow the zoo steadily while staying flexible and opportunistic."
+
+    strengths = []
+    if traits["economy_focus"] >= 70:
+        strengths.append("spots compounding value")
+    if traits["social_drive"] >= 70:
+        strengths.append("builds alliances quickly")
+    if traits["expansion_drive"] >= 70:
+        strengths.append("expands capacity early")
+    if traits["competitiveness"] >= 70:
+        strengths.append("cares about rankings")
+    if traits["patience"] >= 70:
+        strengths.append("stays on long-range plans")
+    if not strengths:
+        strengths.append("adapts to mixed opportunities")
+
+    blind_spots = []
+    if traits["risk_tolerance"] >= 75:
+        blind_spots.append("can overspend for tempo")
+    if traits["patience"] <= 35:
+        blind_spots.append("may chase short-term actions")
+    if traits["social_drive"] <= 35:
+        blind_spots.append("can undervalue social leverage")
+    if traits["economy_focus"] <= 40:
+        blind_spots.append("can drift without a clear ROI path")
+    if traits["competitiveness"] <= 35:
+        blind_spots.append("may miss ranking windows")
+    if not blind_spots:
+        blind_spots.append("rarely commits fully to one line")
+
+    preferred_actions = []
+    if traits["economy_focus"] >= 60:
+        preferred_actions.extend(["invest_for_income", "buy_rarity_animal"])
+    if traits["social_drive"] >= 60:
+        preferred_actions.extend(["join_best_unity", "recruit_top_player"])
+    if traits["expansion_drive"] >= 60:
+        preferred_actions.append("buy_aviary")
+    if traits["competitiveness"] >= 60:
+        preferred_actions.append("invest_for_top_animals")
+    if traits["patience"] >= 60:
+        preferred_actions.append("wait")
+    if not preferred_actions:
+        preferred_actions = ["claim_daily_bonus", "optimize_items"]
+
+    return {
+        "archetype": archetype,
+        "mission": mission,
+        "strengths": strengths[:5],
+        "blind_spots": blind_spots[:5],
+        "preferred_actions": list(dict.fromkeys(preferred_actions))[:6],
+    }
+
+
+def _rehydrate_profile_payload(
+    user: User, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    deterministic_traits = _build_core_traits(user)
+    core_traits = {
+        name: _clamp(
+            int(
+                source.get("core_traits", {}).get(
+                    name, source.get("traits", {}).get(name, 0)
+                )
+                or 0
+            )
+            or deterministic_traits[name],
+            10,
+            100,
+        )
+        for name in TRAIT_NAMES
+    }
+    adaptive_traits = _sanitize_trait_deltas(source.get("adaptive_traits"))
+    effective_traits = _compute_effective_traits(core_traits, adaptive_traits)
+    tactic_scores = _sanitize_tactic_scores(
+        source.get("tactic_scores"), effective_traits
+    )
+    adaptation_signals = source.get("adaptation_signals")
+    if not isinstance(adaptation_signals, dict):
+        adaptation_signals = {}
+    adaptation_signals = {
+        "last_updated_at": adaptation_signals.get("last_updated_at"),
+        "last_event_action": adaptation_signals.get("last_event_action"),
+        "last_event_result": adaptation_signals.get("last_event_result"),
+        "success_streak": int(adaptation_signals.get("success_streak", 0) or 0),
+        "failure_streak": int(adaptation_signals.get("failure_streak", 0) or 0),
+        "recent_success_rate": float(
+            adaptation_signals.get("recent_success_rate", 0.0) or 0.0
+        ),
+        "recent_trait_shifts": _limit_entries(
+            [
+                item
+                for item in adaptation_signals.get("recent_trait_shifts", [])
+                if isinstance(item, dict)
+            ],
+            16,
+        ),
+        "recent_tactic_shifts": _limit_entries(
+            [
+                item
+                for item in adaptation_signals.get("recent_tactic_shifts", [])
+                if isinstance(item, dict)
+            ],
+            16,
+        ),
+        "last_reflection_summary": str(
+            adaptation_signals.get("last_reflection_summary", "")
+        )[:240],
+    }
+    action_stats = source.get("action_stats")
+    if not isinstance(action_stats, dict):
+        action_stats = {}
+    story = _derive_profile_story(effective_traits)
+    return {
+        **story,
+        "identity": {
+            "npc_id_user": int(user.id_user),
+            "nickname": user.nickname,
+        },
+        "core_traits": core_traits,
+        "adaptive_traits": adaptive_traits,
+        "traits": effective_traits,
+        "tactic_scores": tactic_scores,
+        "active_tactics": _derive_active_tactics(tactic_scores),
+        "adaptation_signals": adaptation_signals,
+        "action_stats": action_stats,
+    }
 
 
 async def _get_memory_row(
@@ -192,83 +514,27 @@ async def _append_memory_row(
 
 
 def build_npc_profile_payload(user: User) -> dict[str, Any]:
-    seed = f"{user.id_user}:{user.username or ''}:{user.nickname or ''}".encode("utf-8")
-    digest = hashlib.sha256(seed).digest()
-    traits = {
-        "risk_tolerance": _trait_from_digest(digest, 0),
-        "social_drive": _trait_from_digest(digest, 5),
-        "economy_focus": _trait_from_digest(digest, 10),
-        "expansion_drive": _trait_from_digest(digest, 15),
-        "patience": _trait_from_digest(digest, 20),
-        "competitiveness": _trait_from_digest(digest, 25),
-    }
-    if traits["economy_focus"] >= 75 and traits["patience"] >= 65:
-        archetype = "compound strategist"
-        mission = (
-            "Compound income relentlessly and convert cash into durable advantage."
-        )
-    elif traits["social_drive"] >= 75 and traits["expansion_drive"] >= 65:
-        archetype = "clan architect"
-        mission = "Build a powerful unity and turn social coordination into growth."
-    elif traits["risk_tolerance"] >= 75 and traits["competitiveness"] >= 65:
-        archetype = "aggressive climber"
-        mission = "Push the leaderboard with bold, high-upside plays."
-    else:
-        archetype = "balanced zookeeper"
-        mission = "Grow the zoo steadily while staying flexible and opportunistic."
-
-    strengths = []
-    if traits["economy_focus"] >= 70:
-        strengths.append("spots compounding value")
-    if traits["social_drive"] >= 70:
-        strengths.append("builds alliances quickly")
-    if traits["expansion_drive"] >= 70:
-        strengths.append("expands capacity early")
-    if traits["competitiveness"] >= 70:
-        strengths.append("cares about rankings")
-    if not strengths:
-        strengths.append("adapts to mixed opportunities")
-
-    blind_spots = []
-    if traits["risk_tolerance"] >= 75:
-        blind_spots.append("can overspend for tempo")
-    if traits["patience"] <= 35:
-        blind_spots.append("may chase short-term actions")
-    if traits["social_drive"] <= 35:
-        blind_spots.append("can undervalue social leverage")
-    if traits["economy_focus"] <= 40:
-        blind_spots.append("can drift without a clear ROI path")
-    if not blind_spots:
-        blind_spots.append("rarely commits fully to one line")
-
-    preferred_actions = []
-    if traits["economy_focus"] >= 60:
-        preferred_actions.extend(["invest_for_income", "buy_rarity_animal"])
-    if traits["social_drive"] >= 60:
-        preferred_actions.extend(["join_best_unity", "recruit_top_player"])
-    if traits["expansion_drive"] >= 60:
-        preferred_actions.append("buy_aviary")
-    if traits["competitiveness"] >= 60:
-        preferred_actions.append("invest_for_top_animals")
-    if not preferred_actions:
-        preferred_actions = ["claim_daily_bonus", "optimize_items"]
-
-    return {
-        "archetype": archetype,
-        "mission": mission,
-        "traits": traits,
-        "strengths": strengths[:4],
-        "blind_spots": blind_spots[:4],
-        "preferred_actions": list(dict.fromkeys(preferred_actions))[:6],
-        "identity": {
-            "npc_id_user": int(user.id_user),
-            "nickname": user.nickname,
-        },
-    }
+    return _rehydrate_profile_payload(user=user)
 
 
 async def ensure_npc_profile_memory(session: AsyncSession, user: User) -> NpcMemory:
-    payload = build_npc_profile_payload(user)
+    row = await _get_memory_row(
+        session=session,
+        user_idpk=user.idpk,
+        kind=PROFILE_KIND,
+        topic="core",
+    )
+    payload = _rehydrate_profile_payload(
+        user=user,
+        payload=_json_loads(row.payload) if row else None,
+    )
+    if row:
+        row.payload = _json_dumps(payload)
+        row.importance = 950
+        row.confidence = 950
+        row.status = "active"
+        row.updated_at = _now()
+        return row
     return await _upsert_memory_row(
         session=session,
         user_idpk=user.idpk,
@@ -866,6 +1132,459 @@ async def _update_relationship_memories(
         )
 
 
+def _action_tactics(action_name: str) -> list[str]:
+    return ACTION_TACTIC_MAP.get(action_name, ["economy_growth"])
+
+
+def _keyword_trait_adjustments(
+    reflection_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    adjustments: list[dict[str, Any]] = []
+    combined_text = " ".join(
+        [
+            str(reflection_payload.get("summary", "")),
+            *[str(item) for item in reflection_payload.get("lessons", [])],
+            *[str(item) for item in reflection_payload.get("opportunities", [])],
+            *[str(item) for item in reflection_payload.get("risks", [])],
+        ]
+    ).lower()
+    keyword_map = {
+        "social leverage": [("social_drive", 2, "reflection_social_leverage")],
+        "liquidity": [
+            ("patience", 1, "reflection_liquidity"),
+            ("economy_focus", 1, "reflection_liquidity"),
+            ("risk_tolerance", -1, "reflection_liquidity"),
+        ],
+        "seat pressure": [("expansion_drive", 2, "reflection_capacity")],
+        "leaderboard": [("competitiveness", 2, "reflection_leaderboard")],
+        "income": [("economy_focus", 1, "reflection_income")],
+    }
+    for keyword, mapped in keyword_map.items():
+        if keyword not in combined_text:
+            continue
+        for trait, delta, reason in mapped:
+            adjustments.append(
+                {
+                    "trait": trait,
+                    "delta": delta,
+                    "reason": reason,
+                    "source": "reflection_keywords",
+                }
+            )
+    return adjustments
+
+
+def _validated_reflection_trait_adjustments(
+    reflection_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in reflection_payload.get("trait_adjustments", []):
+        if not isinstance(item, dict):
+            continue
+        trait = str(item.get("trait", "")).strip()
+        if trait not in TRAIT_NAMES:
+            continue
+        delta = _clamp(
+            int(item.get("delta", 0) or 0),
+            -settings.memory_trait_step_limit,
+            settings.memory_trait_step_limit,
+        )
+        if delta == 0:
+            continue
+        result.append(
+            {
+                "trait": trait,
+                "delta": delta,
+                "reason": str(item.get("reason", "reflection_adjustment"))[:180],
+                "source": "reflection_model",
+            }
+        )
+    return result
+
+
+def _validated_reflection_tactics(reflection_payload: dict[str, Any]) -> list[str]:
+    tactics = []
+    for item in reflection_payload.get("tactical_focus", []):
+        tactic = str(item).strip()
+        if tactic not in TACTIC_NAMES or tactic in tactics:
+            continue
+        tactics.append(tactic)
+    return tactics
+
+
+def _derive_event_trait_adjustments(
+    current_event: dict[str, Any],
+    after_snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    action_name = str(current_event.get("action", {}).get("name", "wait"))
+    result_status = str(current_event.get("result", {}).get("status", ""))
+    wake_reason = str(current_event.get("wake_context", {}).get("reason", ""))
+    delta = current_event.get("delta", {})
+    shifts: list[dict[str, Any]] = []
+
+    if result_status == "ok":
+        if int(delta.get("income_per_minute_rub", 0)) > 0:
+            shifts.append(
+                {
+                    "trait": "economy_focus",
+                    "delta": 2,
+                    "reason": "positive_income_delta",
+                    "source": "event",
+                }
+            )
+            shifts.append(
+                {
+                    "trait": "patience",
+                    "delta": 1,
+                    "reason": "positive_income_delta",
+                    "source": "event",
+                }
+            )
+        if int(delta.get("animals", 0)) > 0:
+            shifts.append(
+                {
+                    "trait": "expansion_drive",
+                    "delta": 2,
+                    "reason": "zoo_growth",
+                    "source": "event",
+                }
+            )
+            shifts.append(
+                {
+                    "trait": "competitiveness",
+                    "delta": 1,
+                    "reason": "zoo_growth",
+                    "source": "event",
+                }
+            )
+        if action_name in {
+            "create_unity",
+            "join_best_unity",
+            "recruit_top_player",
+            "review_unity_request",
+            "upgrade_unity_level",
+        }:
+            shifts.append(
+                {
+                    "trait": "social_drive",
+                    "delta": 2,
+                    "reason": f"successful_{action_name}",
+                    "source": "event",
+                }
+            )
+        if action_name == "buy_aviary":
+            shifts.append(
+                {
+                    "trait": "expansion_drive",
+                    "delta": 3,
+                    "reason": "successful_capacity_expansion",
+                    "source": "event",
+                }
+            )
+        if (
+            action_name in {"exchange_bank", "wait"}
+            and int(after_snapshot.get("usd", 0)) < 450
+        ):
+            shifts.append(
+                {
+                    "trait": "patience",
+                    "delta": 2,
+                    "reason": "low_liquidity_survival",
+                    "source": "event",
+                }
+            )
+            shifts.append(
+                {
+                    "trait": "risk_tolerance",
+                    "delta": -1,
+                    "reason": "low_liquidity_survival",
+                    "source": "event",
+                }
+            )
+    else:
+        if action_name in {"buy_rarity_animal", "invest_for_top_animals", "buy_aviary"}:
+            shifts.append(
+                {
+                    "trait": "risk_tolerance",
+                    "delta": -2,
+                    "reason": f"failed_{action_name}",
+                    "source": "event",
+                }
+            )
+        if action_name in {
+            "create_unity",
+            "join_best_unity",
+            "recruit_top_player",
+            "review_unity_request",
+        }:
+            shifts.append(
+                {
+                    "trait": "social_drive",
+                    "delta": -1,
+                    "reason": f"failed_{action_name}",
+                    "source": "event",
+                }
+            )
+        shifts.append(
+            {
+                "trait": "patience",
+                "delta": 1,
+                "reason": "failed_turn_adjustment",
+                "source": "event",
+            }
+        )
+
+    if int(after_snapshot.get("remain_seats", 0)) <= 0:
+        shifts.append(
+            {
+                "trait": "expansion_drive",
+                "delta": 2,
+                "reason": "seat_pressure",
+                "source": "state",
+            }
+        )
+    if not after_snapshot.get("current_unity"):
+        shifts.append(
+            {
+                "trait": "social_drive",
+                "delta": 1,
+                "reason": "no_unity_pressure",
+                "source": "state",
+            }
+        )
+    if wake_reason.startswith("unity_request:") or wake_reason.startswith(
+        "npc_invite_accepted:"
+    ):
+        shifts.append(
+            {
+                "trait": "social_drive",
+                "delta": 2,
+                "reason": "social_event_trigger",
+                "source": "wake",
+            }
+        )
+    income_rank = after_snapshot.get("income_rank")
+    if (
+        isinstance(income_rank, int)
+        and income_rank > 3
+        and int(delta.get("income_per_minute_rub", 0)) > 0
+    ):
+        shifts.append(
+            {
+                "trait": "competitiveness",
+                "delta": 2,
+                "reason": "leaderboard_progress",
+                "source": "event",
+            }
+        )
+    return shifts
+
+
+def _derive_event_tactic_adjustments(
+    current_event: dict[str, Any],
+    after_snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    action_name = str(current_event.get("action", {}).get("name", "wait"))
+    result_status = str(current_event.get("result", {}).get("status", ""))
+    delta = current_event.get("delta", {})
+    tactics = _action_tactics(action_name)
+    updates: list[dict[str, Any]] = []
+    base_shift = 8 if result_status == "ok" else -6
+    for tactic in tactics:
+        delta_value = base_shift
+        if tactic == "economy_growth":
+            delta_value += min(
+                8, max(0, int(delta.get("income_per_minute_rub", 0)) // 25)
+            )
+        elif tactic == "capacity_expansion":
+            delta_value += 4 if int(delta.get("seats", 0)) > 0 else 0
+        elif tactic == "unity_leverage":
+            delta_value += 5 if int(delta.get("unity_members", 0)) > 0 else 0
+        elif tactic == "liquidity_control":
+            delta_value += 4 if int(after_snapshot.get("usd", 0)) < 450 else 0
+        updates.append(
+            {
+                "tactic": tactic,
+                "delta": _clamp(
+                    delta_value,
+                    -settings.memory_tactic_step_limit,
+                    settings.memory_tactic_step_limit,
+                ),
+                "reason": f"event_{action_name}",
+                "source": "event",
+            }
+        )
+    if int(after_snapshot.get("remain_seats", 0)) <= 0:
+        updates.append(
+            {
+                "tactic": "capacity_expansion",
+                "delta": settings.memory_tactic_step_limit,
+                "reason": "seat_pressure",
+                "source": "state",
+            }
+        )
+    return updates
+
+
+def _update_action_stats(
+    profile: dict[str, Any], current_event: dict[str, Any]
+) -> None:
+    action_name = str(current_event.get("action", {}).get("name", "wait"))
+    stats = profile.setdefault("action_stats", {})
+    if not isinstance(stats, dict):
+        stats = {}
+        profile["action_stats"] = stats
+    action_stats = stats.setdefault(action_name, {})
+    action_stats["attempts"] = int(action_stats.get("attempts", 0)) + 1
+    if current_event.get("result", {}).get("status") == "ok":
+        action_stats["successes"] = int(action_stats.get("successes", 0)) + 1
+    else:
+        action_stats["failures"] = int(action_stats.get("failures", 0)) + 1
+    action_stats["net_usd_delta"] = int(action_stats.get("net_usd_delta", 0)) + int(
+        current_event.get("delta", {}).get("usd", 0)
+    )
+    action_stats["net_income_delta"] = int(
+        action_stats.get("net_income_delta", 0)
+    ) + int(current_event.get("delta", {}).get("income_per_minute_rub", 0))
+    action_stats["net_animals_delta"] = int(
+        action_stats.get("net_animals_delta", 0)
+    ) + int(current_event.get("delta", {}).get("animals", 0))
+    action_stats["last_used_at"] = current_event.get("time")
+    action_stats["last_result"] = current_event.get("result", {}).get("status")
+
+
+async def evolve_npc_profile(
+    session: AsyncSession,
+    user: User,
+    current_event: dict[str, Any],
+    after_snapshot: dict[str, Any],
+    reflection_payload: dict[str, Any] | None = None,
+) -> None:
+    row = await ensure_npc_profile_memory(session=session, user=user)
+    profile = _rehydrate_profile_payload(user=user, payload=_json_loads(row.payload))
+    adaptive_traits = profile["adaptive_traits"]
+    tactic_scores = profile["tactic_scores"]
+    adaptation_signals = profile["adaptation_signals"]
+
+    trait_updates = _derive_event_trait_adjustments(
+        current_event=current_event,
+        after_snapshot=after_snapshot,
+    )
+    if reflection_payload:
+        trait_updates.extend(
+            _validated_reflection_trait_adjustments(reflection_payload)
+        )
+        trait_updates.extend(_keyword_trait_adjustments(reflection_payload))
+
+    trait_shift_log = list(adaptation_signals.get("recent_trait_shifts", []))
+    for update in trait_updates:
+        trait = str(update.get("trait", ""))
+        if trait not in TRAIT_NAMES:
+            continue
+        delta_value = _clamp(
+            int(update.get("delta", 0) or 0),
+            -settings.memory_trait_step_limit,
+            settings.memory_trait_step_limit,
+        )
+        if delta_value == 0:
+            continue
+        adaptive_traits[trait] = _clamp(
+            int(adaptive_traits.get(trait, 0)) + delta_value,
+            -settings.memory_trait_delta_limit,
+            settings.memory_trait_delta_limit,
+        )
+        trait_shift_log.append(
+            _trait_shift_entry(
+                trait=trait,
+                delta=delta_value,
+                reason=str(update.get("reason", "adjustment")),
+                source=str(update.get("source", "event")),
+            )
+        )
+
+    tactic_updates = _derive_event_tactic_adjustments(
+        current_event=current_event,
+        after_snapshot=after_snapshot,
+    )
+    if reflection_payload:
+        tactic_updates.extend(
+            {
+                "tactic": tactic,
+                "delta": max(2, settings.memory_tactic_step_limit // 2),
+                "reason": "reflection_focus",
+                "source": "reflection_model",
+            }
+            for tactic in _validated_reflection_tactics(reflection_payload)
+        )
+
+    tactic_shift_log = list(adaptation_signals.get("recent_tactic_shifts", []))
+    for update in tactic_updates:
+        tactic = str(update.get("tactic", ""))
+        if tactic not in TACTIC_NAMES:
+            continue
+        delta_value = _clamp(
+            int(update.get("delta", 0) or 0),
+            -settings.memory_tactic_step_limit,
+            settings.memory_tactic_step_limit,
+        )
+        if delta_value == 0:
+            continue
+        tactic_scores[tactic] = _clamp(
+            int(tactic_scores.get(tactic, 400)) + delta_value,
+            80,
+            1000,
+        )
+        tactic_shift_log.append(
+            _tactic_shift_entry(
+                tactic=tactic,
+                delta=delta_value,
+                reason=str(update.get("reason", "tactic_adjustment")),
+                source=str(update.get("source", "event")),
+            )
+        )
+
+    _update_action_stats(profile=profile, current_event=current_event)
+    effective_traits = _compute_effective_traits(
+        profile["core_traits"], adaptive_traits
+    )
+    profile.update(_derive_profile_story(effective_traits))
+    profile["traits"] = effective_traits
+    profile["adaptive_traits"] = adaptive_traits
+    profile["tactic_scores"] = _sanitize_tactic_scores(tactic_scores, effective_traits)
+    profile["active_tactics"] = _derive_active_tactics(profile["tactic_scores"])
+
+    result_status = str(current_event.get("result", {}).get("status", ""))
+    if result_status == "ok":
+        adaptation_signals["success_streak"] = (
+            int(adaptation_signals.get("success_streak", 0)) + 1
+        )
+        adaptation_signals["failure_streak"] = 0
+    else:
+        adaptation_signals["failure_streak"] = (
+            int(adaptation_signals.get("failure_streak", 0)) + 1
+        )
+        adaptation_signals["success_streak"] = 0
+    adaptation_signals["last_updated_at"] = _now().isoformat()
+    adaptation_signals["last_event_action"] = current_event.get("action", {}).get(
+        "name"
+    )
+    adaptation_signals["last_event_result"] = result_status
+    adaptation_signals["recent_success_rate"] = round(
+        _build_progress_summary([current_event]).get("success_rate", 0.0),
+        3,
+    )
+    adaptation_signals["recent_trait_shifts"] = _limit_entries(trait_shift_log, 16)
+    adaptation_signals["recent_tactic_shifts"] = _limit_entries(tactic_shift_log, 16)
+    if reflection_payload:
+        adaptation_signals["last_reflection_summary"] = str(
+            reflection_payload.get("summary", "")
+        )[:240]
+    profile["adaptation_signals"] = adaptation_signals
+
+    row.payload = _json_dumps(profile)
+    row.updated_at = _now()
+
+
 def _build_event_payload(
     user: User,
     observation: dict[str, Any],
@@ -966,10 +1685,14 @@ def _deterministic_reflection(
         animal_delta_total += int(delta.get("animals", 0))
 
     best_action = (
-        max(success_actions, key=success_actions.get) if success_actions else "wait"
+        max(success_actions, key=lambda name: success_actions[name])
+        if success_actions
+        else "wait"
     )
     worst_action = (
-        max(failed_actions, key=failed_actions.get) if failed_actions else None
+        max(failed_actions, key=lambda name: failed_actions[name])
+        if failed_actions
+        else None
     )
     summary_parts = []
     if income_delta_total > 0:
@@ -1057,7 +1780,7 @@ async def _maybe_create_reflection(
     client: "NpcDecisionClient | None",
     current_event: dict[str, Any],
     after_snapshot: dict[str, Any],
-) -> None:
+) -> dict[str, Any] | None:
     last_reflection = await session.scalar(
         select(NpcMemory)
         .where(
@@ -1091,7 +1814,7 @@ async def _maybe_create_reflection(
         and int(current_event.get("importance", 0))
         < settings.memory_reflection_min_importance
     ):
-        return
+        return None
 
     profile = _json_loads(
         (await ensure_npc_profile_memory(session=session, user=user)).payload
@@ -1157,6 +1880,14 @@ async def _maybe_create_reflection(
             llm_reflection.get("goal_adjustments"),
             4,
         )
+        reflection_payload["trait_adjustments"] = _pick_dicts(
+            llm_reflection.get("trait_adjustments"),
+            6,
+        )
+        reflection_payload["tactical_focus"] = _pick_strings(
+            llm_reflection.get("tactical_focus"),
+            4,
+        )
     reflection_payload["covered_event_count"] = len(recent_events)
     reflection_payload["generated_at"] = _now().isoformat()
     importance = max(
@@ -1172,6 +1903,7 @@ async def _maybe_create_reflection(
         importance=_clamp(importance, 0, 1000),
         confidence=820,
     )
+    return reflection_payload
 
 
 async def trim_npc_memory(session: AsyncSession, user: User) -> None:
@@ -1251,12 +1983,19 @@ async def remember_npc_turn(
         snapshot=after_snapshot,
         observation=observation,
     )
-    await _maybe_create_reflection(
+    reflection_payload = await _maybe_create_reflection(
         session=session,
         user=user,
         client=client,
         current_event=current_event,
         after_snapshot=after_snapshot,
+    )
+    await evolve_npc_profile(
+        session=session,
+        user=user,
+        current_event=current_event,
+        after_snapshot=after_snapshot,
+        reflection_payload=reflection_payload,
     )
     await trim_npc_memory(session=session, user=user)
 
@@ -1299,10 +2038,12 @@ def _build_progress_summary(recent_events: list[dict[str, Any]]) -> dict[str, An
         "usd_delta_total": usd_delta_total,
         "income_delta_total": income_delta_total,
         "animals_delta_total": animals_delta_total,
-        "most_successful_action": max(success_actions, key=success_actions.get)
+        "most_successful_action": max(
+            success_actions, key=lambda name: success_actions[name]
+        )
         if success_actions
         else None,
-        "most_failed_action": max(failed_actions, key=failed_actions.get)
+        "most_failed_action": max(failed_actions, key=lambda name: failed_actions[name])
         if failed_actions
         else None,
     }
@@ -1411,8 +2152,9 @@ async def build_npc_memory_context(
                     "last_event": relationship.get("last_event"),
                 }
             )
+    profile = _json_loads(profile_row.payload)
     return {
-        "profile": _json_loads(profile_row.payload),
+        "profile": profile,
         "active_goals": active_goals[: settings.memory_goal_limit],
         "recent_events": recent_events,
         "reflections": reflections,
@@ -1420,4 +2162,5 @@ async def build_npc_memory_context(
         "relationships": selected_relationships,
         "progress_summary": _build_progress_summary(recent_events),
         "open_loops": open_loops[: settings.memory_relationship_limit],
+        "active_tactics": profile.get("active_tactics", []),
     }

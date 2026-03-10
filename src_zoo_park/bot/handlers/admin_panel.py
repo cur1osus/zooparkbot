@@ -29,6 +29,7 @@ flags = {"throttling_key": "default"}
 
 SECTION_LABELS = {
     "overview": "Обзор",
+    "tactics": "Тактики",
     "goals": "Цели",
     "reflections": "Рефлексия",
     "events": "События",
@@ -60,6 +61,11 @@ def _fmt_iso(value: str | None) -> str:
     except ValueError:
         return value
     return parsed.strftime("%d.%m %H:%M:%S")
+
+
+def _fmt_trait_delta(value: int | None) -> str:
+    numeric = int(value or 0)
+    return f"{numeric:+}"
 
 
 def _load_payload(row: NpcMemory | None) -> dict:
@@ -190,6 +196,7 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
         f"Telegram ID: {npc.id_user} | DB ID: {npc.idpk}",
         f"Профиль: {profile.get('archetype', '-')}",
         f"Миссия: {profile.get('mission', '-')}",
+        f"Активные тактики: {', '.join(profile.get('active_tactics', [])[:3]) or '-'}",
         "",
         "Экономика:",
         f"- USD: {_fmt_number(snapshot.get('usd'))} | RUB: {_fmt_number(snapshot.get('rub'))} | income: {_fmt_number(snapshot.get('income_per_minute_rub'))}/min",
@@ -202,8 +209,11 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
         f"- reason: {state.last_wake_reason if state else '-'}",
         "",
         "Трейты:",
-        f"- risk {profile.get('traits', {}).get('risk_tolerance', '-')} | social {profile.get('traits', {}).get('social_drive', '-')} | economy {profile.get('traits', {}).get('economy_focus', '-')}",
-        f"- expansion {profile.get('traits', {}).get('expansion_drive', '-')} | patience {profile.get('traits', {}).get('patience', '-')} | competition {profile.get('traits', {}).get('competitiveness', '-')}",
+        f"- effective: risk {profile.get('traits', {}).get('risk_tolerance', '-')} | social {profile.get('traits', {}).get('social_drive', '-')} | economy {profile.get('traits', {}).get('economy_focus', '-')}",
+        f"- effective: expansion {profile.get('traits', {}).get('expansion_drive', '-')} | patience {profile.get('traits', {}).get('patience', '-')} | competition {profile.get('traits', {}).get('competitiveness', '-')}",
+        f"- adaptive: risk {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('risk_tolerance'))} | social {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('social_drive'))} | economy {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('economy_focus'))}",
+        f"- adaptive: expansion {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('expansion_drive'))} | patience {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('patience'))} | competition {_fmt_trait_delta(profile.get('adaptive_traits', {}).get('competitiveness'))}",
+        f"- success streak: {profile.get('adaptation_signals', {}).get('success_streak', 0)} | failure streak: {profile.get('adaptation_signals', {}).get('failure_streak', 0)}",
         "",
         "Активные цели:",
     ]
@@ -236,6 +246,64 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
                 f"- {_fmt_iso(payload.get('time'))}: {action.get('name', '-')} -> {result.get('summary', '-')[:80]}"
             )
     else:
+        lines.append("- нет")
+    return "\n".join(lines)
+
+
+async def _build_tactics_text(session: AsyncSession, npc: User) -> str:
+    profile = _load_payload(await ensure_npc_profile_memory(session=session, user=npc))
+    action_stats = profile.get("action_stats", {})
+    tactic_scores = profile.get("tactic_scores", {})
+    tactic_rows = sorted(
+        tactic_scores.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    lines = [f"Тактики NPC: {npc.nickname}", ""]
+    lines.append(f"Активные: {', '.join(profile.get('active_tactics', [])[:3]) or '-'}")
+    lines.append("")
+    lines.append("Текущие очки тактик:")
+    for name, score in tactic_rows[:6]:
+        lines.append(f"- {name}: {score}")
+    lines.append("")
+    lines.append("Последние сдвиги:")
+    for shift in profile.get("adaptation_signals", {}).get("recent_tactic_shifts", [])[
+        -6:
+    ]:
+        lines.append(
+            f"- {_fmt_iso(shift.get('time'))} | {shift.get('tactic')} {int(shift.get('delta', 0)):+} | {shift.get('reason') or '-'}"
+        )
+    if lines[-1] == "Последние сдвиги:":
+        lines.append("- нет")
+    lines.append("")
+    lines.append("Последние сдвиги трейтов:")
+    for shift in profile.get("adaptation_signals", {}).get("recent_trait_shifts", [])[
+        -6:
+    ]:
+        lines.append(
+            f"- {_fmt_iso(shift.get('time'))} | {shift.get('trait')} {int(shift.get('delta', 0)):+} | {shift.get('reason') or '-'}"
+        )
+    if lines[-1] == "Последние сдвиги трейтов:":
+        lines.append("- нет")
+    lines.append("")
+    lines.append("Эффективность действий:")
+    ranked_actions = sorted(
+        [
+            (name, payload)
+            for name, payload in action_stats.items()
+            if isinstance(payload, dict)
+        ],
+        key=lambda item: (
+            int(item[1].get("successes", 0)) - int(item[1].get("failures", 0)),
+            int(item[1].get("net_income_delta", 0)),
+        ),
+        reverse=True,
+    )
+    for name, payload in ranked_actions[:8]:
+        lines.append(
+            f"- {name}: tries {payload.get('attempts', 0)} | ok {payload.get('successes', 0)} | fail {payload.get('failures', 0)} | dIncome {int(payload.get('net_income_delta', 0)):+}"
+        )
+    if lines[-1] == "Эффективность действий:":
         lines.append("- нет")
     return "\n".join(lines)
 
@@ -338,6 +406,8 @@ async def _build_npc_section_text(
 ) -> str:
     if section == "goals":
         return await _build_goal_text(session=session, npc=npc)
+    if section == "tactics":
+        return await _build_tactics_text(session=session, npc=npc)
     if section == "reflections":
         return await _build_reflection_text(session=session, npc=npc)
     if section == "events":

@@ -42,6 +42,9 @@ class NpcAgentSettings:
     memory_reflection_event_window: int
     memory_reflection_min_importance: int
     memory_use_llm_reflection: bool
+    memory_trait_delta_limit: int
+    memory_trait_step_limit: int
+    memory_tactic_step_limit: int
     cli_bin: str
     cli_workdir: str
 
@@ -113,6 +116,15 @@ def load_npc_agent_settings() -> NpcAgentSettings:
             100, int(os.getenv("NPC_MEMORY_REFLECTION_MIN_IMPORTANCE", "700"))
         ),
         memory_use_llm_reflection=_get_bool("NPC_MEMORY_USE_LLM_REFLECTION", True),
+        memory_trait_delta_limit=max(
+            8, int(os.getenv("NPC_MEMORY_TRAIT_DELTA_LIMIT", "28"))
+        ),
+        memory_trait_step_limit=max(
+            1, int(os.getenv("NPC_MEMORY_TRAIT_STEP_LIMIT", "6"))
+        ),
+        memory_tactic_step_limit=max(
+            2, int(os.getenv("NPC_MEMORY_TACTIC_STEP_LIMIT", "14"))
+        ),
         cli_bin=os.getenv("NPC_KIMI_CLI_BIN", "/root/kimi-cli-venv/bin/kimi").strip(),
         cli_workdir=os.getenv("NPC_KIMI_CLI_WORKDIR", "/root/zooparkbot").strip(),
     )
