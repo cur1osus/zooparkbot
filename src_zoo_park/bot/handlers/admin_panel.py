@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.filters import CompareDataByIndex
 from bot.keyboards import ADMIN_PANEL_BUTTON
+from bot.states import UserState
 from config import ADMIN_ID
 from db import NpcMemory, NpcState, User
 from npc_agent.memory import (
