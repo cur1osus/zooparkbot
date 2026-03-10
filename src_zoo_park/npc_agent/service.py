@@ -360,15 +360,17 @@ async def maybe_send_npc_chat_comment(
             "goal": "sound funny, strategic, and slightly dramatic",
         },
     }
+    signature = f"{user.nickname}: "
+    max_message_length = max(0, settings.chat_max_length - len(signature))
     message = (await client.generate_chat_comment(payload=payload))[
-        : settings.chat_max_length
+        :max_message_length
     ].strip()
     if not message:
         return
 
     await bot.send_message(
         chat_id=CHAT_ID,
-        text=html.escape(message, quote=False),
+        text=html.escape(f"{signature}{message}", quote=False),
         disable_notification=True,
     )
 
