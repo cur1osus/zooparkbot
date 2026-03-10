@@ -1,9 +1,9 @@
 import contextlib
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ReplyParameters
-from bot.filters import CompareDataByIndex
+from bot.callbacks import SupportAction, SupportTakeCallback
 from bot.keyboards import (
     ik_confirm_or_cancel,
     ik_im_take,
@@ -23,14 +23,15 @@ flags = {"throttling_key": "default"}
 router = Router()
 
 
-@router.callback_query(CompareDataByIndex("im_take"))
+@router.callback_query(SupportTakeCallback.filter(F.action == SupportAction.take))
 async def im_take(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: SupportTakeCallback,
 ):
-    idpk_message_to_support = int(query.data.split(":")[0])
+    idpk_message_to_support = callback_data.message_idpk
     message_to_support = await session.get(MessageToSupport, idpk_message_to_support)
     await query.bot.copy_message(
         chat_id=user.id_user,
@@ -54,14 +55,15 @@ async def im_take(
     )
 
 
-@router.callback_query(CompareDataByIndex("cancel_im_take"))
+@router.callback_query(SupportTakeCallback.filter(F.action == SupportAction.cancel))
 async def cancel_im_take(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: SupportTakeCallback,
 ):
-    idpk_message_to_support = int(query.data.split(":")[0])
+    idpk_message_to_support = callback_data.message_idpk
     message_to_support = await session.get(MessageToSupport, idpk_message_to_support)
     user_to_answer = await session.get(User, message_to_support.idpk_user)
     func = {
@@ -100,14 +102,15 @@ async def cancel_im_take(
     await session.commit()
 
 
-@router.callback_query(CompareDataByIndex("confirm_im_take"))
+@router.callback_query(SupportTakeCallback.filter(F.action == SupportAction.confirm))
 async def cancel_im_take(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: SupportTakeCallback,
 ):
-    idpk_message_to_support = int(query.data.split(":")[0])
+    idpk_message_to_support = callback_data.message_idpk
     await state.set_state(UserState.answer_on_question)
     await state.update_data(
         idpk_message_to_support=idpk_message_to_support,
@@ -141,7 +144,7 @@ async def get_answer_on_question(
         await message.bot.edit_message_text(
             chat_id=CHAT_SUPPORT_ID,
             message_id=message_to_support.id_message,
-            text='[...]'
+            text="[...]",
         )
     except Exception as e:
         await message.answer(text=str(e))

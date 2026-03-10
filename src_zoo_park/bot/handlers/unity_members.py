@@ -3,7 +3,12 @@ import contextlib
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from bot.filters import CompareDataByIndex, GetTextButton
+from bot.callbacks import (
+    UnityMemberPageCallback,
+    UnityMemberViewCallback,
+    UnityMembersBackCallback,
+)
+from bot.filters import GetTextButton
 from bot.keyboards import (
     ik_back_member,
     ik_member_menu,
@@ -33,10 +38,14 @@ async def unity_members(
 ):
     await disable_not_main_window(data=await state.get_data(), message=message)
     data = await state.get_data()
-    q_page = await count_page_unity_members(session=session, idpk_unity=data["idpk_unity"])
+    q_page = await count_page_unity_members(
+        session=session, idpk_unity=data["idpk_unity"]
+    )
     msg = await message.answer(
         text=await get_text_message("menu_unity_members"),
-        reply_markup=await ik_menu_unity_members(session=session, unity_idpk=data["idpk_unity"]),
+        reply_markup=await ik_menu_unity_members(
+            session=session, unity_idpk=data["idpk_unity"]
+        ),
     )
     await state.update_data(
         active_window=msg.message_id,
@@ -45,16 +54,17 @@ async def unity_members(
     )
 
 
-@router.callback_query(UserState.unity_menu, CompareDataByIndex("unity_member"))
+@router.callback_query(UserState.unity_menu, UnityMemberPageCallback.filter())
 async def process_turn_unity_members(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: UnityMemberPageCallback,
 ) -> None:
     data = await state.get_data()
     page = data["page"]
-    side = query.data.split(":")[0]
+    side = callback_data.direction.value
     if side == "left":
         page = page - 1 if page > 1 else data["q_page"]
     else:
@@ -62,20 +72,21 @@ async def process_turn_unity_members(
     await state.update_data(page=page)
     with contextlib.suppress(Exception):
         await query.message.edit_reply_markup(
-            reply_markup=await ik_menu_unity_members(session=session,
-                unity_idpk=data["idpk_unity"], page=page
+            reply_markup=await ik_menu_unity_members(
+                session=session, unity_idpk=data["idpk_unity"], page=page
             )
         )
 
 
-@router.callback_query(UserState.unity_menu, CompareDataByIndex("tap_member"))
+@router.callback_query(UserState.unity_menu, UnityMemberViewCallback.filter())
 async def process_viewing_member_bio(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: UnityMemberViewCallback,
 ) -> None:
-    idpk = int(query.data.split(":")[0])
+    idpk = callback_data.member_idpk
     member = await session.get(User, idpk)
     rule = user.current_unity.split(":")[0]
     await state.update_data(idpk_member=idpk, id_member=member.id_user)
@@ -97,23 +108,26 @@ async def process_viewing_member_bio(
     )
 
 
-@router.callback_query(UserState.unity_menu, CompareDataByIndex("back_unity_members"))
+@router.callback_query(UserState.unity_menu, UnityMembersBackCallback.filter())
 async def process_back_to_menu_all_members(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: UnityMembersBackCallback,
 ) -> None:
-    back_to = query.data.split(":")[0]
+    back_to = callback_data.target
     match back_to:
         case "to_all_members":
             data = await state.get_data()
-            q_page = await count_page_unity_members(session=session, idpk_unity=data["idpk_unity"])
+            q_page = await count_page_unity_members(
+                session=session, idpk_unity=data["idpk_unity"]
+            )
             await state.update_data(q_page=q_page)
             await query.message.edit_text(
                 text=await get_text_message("menu_unity_members"),
-                reply_markup=await ik_menu_unity_members(session=session,
-                    unity_idpk=data["idpk_unity"], page=data["page"]
+                reply_markup=await ik_menu_unity_members(
+                    session=session, unity_idpk=data["idpk_unity"], page=data["page"]
                 ),
             )
 
@@ -133,7 +147,9 @@ async def delete_from_members(
     await session.commit()
     await query.message.edit_text(
         text=await get_text_message("menu_unity_members"),
-        reply_markup=await ik_menu_unity_members(session=session, unity_idpk=data["idpk_unity"], page=1),
+        reply_markup=await ik_menu_unity_members(
+            session=session, unity_idpk=data["idpk_unity"], page=1
+        ),
     )
     await query.bot.send_message(
         chat_id=data["id_member"],

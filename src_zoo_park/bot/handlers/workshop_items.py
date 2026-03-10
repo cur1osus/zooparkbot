@@ -1,6 +1,7 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from bot.callbacks import WorkshopBackCallback
 from bot.filters import CompareDataByIndex, GetTextButton
 from bot.keyboards import (
     ik_buy_item,
@@ -65,14 +66,15 @@ async def witems_menu_choice_item(
     )
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("back_witems"))
+@router.callback_query(UserState.zoomarket_menu, WorkshopBackCallback.filter())
 async def distribution_back_witems(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: WorkshopBackCallback,
 ):
-    back_to = query.data.split(":")[0]
+    back_to = callback_data.target
     match back_to:
         case "to_witems_menu":
             await query.message.edit_text(

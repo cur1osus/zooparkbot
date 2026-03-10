@@ -6,7 +6,15 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import any_state
 from aiogram.types import CallbackQuery, Message
-from bot.filters import CompareDataByIndex, GetTextButton
+from bot.callbacks import (
+    NpcUnityInviteDecisionCallback,
+    UnityBackCallback,
+    UnityPageCallback,
+    UnityRequestDecision,
+    UnityRequestDecisionCallback,
+    UnityViewCallback,
+)
+from bot.filters import GetTextButton
 from bot.keyboards import (
     ik_menu_unity_to_join,
     ik_npc_unity_invitation,
@@ -190,16 +198,17 @@ async def join_to_unity(
     )
 
 
-@router.callback_query(UserState.main_menu, CompareDataByIndex("unity"))
+@router.callback_query(UserState.main_menu, UnityPageCallback.filter())
 async def process_turn_unity(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: UnityPageCallback,
 ) -> None:
     data = await state.get_data()
     page = data["page"]
-    side = query.data.split(":")[0]
+    side = callback_data.direction.value
     if side == "left":
         page = page - 1 if page > 1 else data["q_page"]
     else:
@@ -211,14 +220,15 @@ async def process_turn_unity(
         )
 
 
-@router.callback_query(UserState.main_menu, CompareDataByIndex("back_unity"))
+@router.callback_query(UserState.main_menu, UnityBackCallback.filter())
 async def process_back_to_menu_all_unity(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: UnityBackCallback,
 ) -> None:
-    back_to = query.data.split(":")[0]
+    back_to = callback_data.target.value
     match back_to:
         case "to_menu_unity":
             data = await state.get_data()
@@ -235,14 +245,15 @@ async def process_back_to_menu_all_unity(
             )
 
 
-@router.callback_query(UserState.main_menu, CompareDataByIndex("tap_unity"))
+@router.callback_query(UserState.main_menu, UnityViewCallback.filter())
 async def process_viewing_unity_bio(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: UnityViewCallback,
 ) -> None:
-    idpk_owner = int(query.data.split(":")[0])
+    idpk_owner = callback_data.owner_idpk
     unity = await session.scalar(select(Unity).where(Unity.idpk_user == idpk_owner))
     owner = await session.get(User, idpk_owner)
     await state.update_data(idpk_owner=idpk_owner)
@@ -310,17 +321,21 @@ async def process_send_request(
     )
 
 
-@router.callback_query(StateFilter(any_state), CompareDataByIndex("accept_to_unity"))
+@router.callback_query(
+    StateFilter(any_state),
+    UnityRequestDecisionCallback.filter(F.decision == UnityRequestDecision.accept),
+)
 async def process_accept_to_unity(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: UnityRequestDecisionCallback,
 ) -> None:
     unity: Unity = await session.scalar(
         select(Unity).where(Unity.idpk_user == user.idpk)
     )
-    member: int = int(query.data.split(":")[0])
+    member: int = callback_data.user_idpk
     member: User = await session.get(User, member)
     member.current_unity = f"member:{unity.idpk}"
     r = await session.scalar(
@@ -340,14 +355,18 @@ async def process_accept_to_unity(
     )
 
 
-@router.callback_query(StateFilter(any_state), CompareDataByIndex("rejected_to_unity"))
+@router.callback_query(
+    StateFilter(any_state),
+    UnityRequestDecisionCallback.filter(F.decision == UnityRequestDecision.reject),
+)
 async def process_rejected_to_unity(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: UnityRequestDecisionCallback,
 ) -> None:
-    member: int = int(query.data.split(":")[0])
+    member: int = callback_data.user_idpk
     member: User = await session.get(User, member)
     r = await session.scalar(
         select(RequestToUnity).where(RequestToUnity.idpk_user == member.idpk)
@@ -365,21 +384,22 @@ async def process_rejected_to_unity(
 
 
 @router.callback_query(
-    StateFilter(any_state), CompareDataByIndex("accept_npc_unity_invite")
+    StateFilter(any_state),
+    NpcUnityInviteDecisionCallback.filter(F.decision == UnityRequestDecision.accept),
 )
 async def accept_npc_unity_invite(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: NpcUnityInviteDecisionCallback,
 ) -> None:
     if user.current_unity:
         await query.answer(text="Вы уже состоите в объединении", show_alert=True)
         return
 
-    unity_idpk, owner_idpk, _ = query.data.split(":")
-    unity = await session.get(Unity, int(unity_idpk))
-    owner = await session.get(User, int(owner_idpk))
+    unity = await session.get(Unity, callback_data.unity_idpk)
+    owner = await session.get(User, callback_data.owner_idpk)
     if not unity or not owner or unity.idpk_user != owner.idpk:
         await query.answer(text="Приглашение больше неактуально", show_alert=True)
         return
@@ -405,20 +425,21 @@ async def accept_npc_unity_invite(
 
 
 @router.callback_query(
-    StateFilter(any_state), CompareDataByIndex("reject_npc_unity_invite")
+    StateFilter(any_state),
+    NpcUnityInviteDecisionCallback.filter(F.decision == UnityRequestDecision.reject),
 )
 async def reject_npc_unity_invite(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: NpcUnityInviteDecisionCallback,
 ) -> None:
-    _, owner_idpk, _ = query.data.split(":")
-    invite_key = npc_unity_invite_key(int(owner_idpk), user.idpk)
+    invite_key = npc_unity_invite_key(callback_data.owner_idpk, user.idpk)
     await redis.delete(invite_key)
     await wake_npc_now(
         session=session,
-        user_idpk=int(owner_idpk),
+        user_idpk=callback_data.owner_idpk,
         reason=f"npc_invite_rejected:{user.idpk}",
     )
     await session.commit()

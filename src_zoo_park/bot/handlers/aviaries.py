@@ -1,7 +1,12 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from bot.filters import CompareDataByIndex, GetTextButton
+from bot.callbacks import (
+    AviaryBackCallback,
+    AviaryChoiceCallback,
+    AviaryQuantityCallback,
+)
+from bot.filters import GetTextButton
 from bot.keyboards import (
     ik_choice_aviary,
     ik_choice_quantity_aviary_avi,
@@ -39,16 +44,15 @@ async def aviaries_menu(
     await state.update_data(active_window=msg.message_id)
 
 
-@router.callback_query(
-    UserState.zoomarket_menu, CompareDataByIndex("choice_aviary_aviaries")
-)
+@router.callback_query(UserState.zoomarket_menu, AviaryChoiceCallback.filter())
 async def choice_quantity_avi(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: AviaryChoiceCallback,
 ):
-    aviary = query.data.split(":")[0]
+    aviary = callback_data.aviary
     await m_choice_quantity_avi(
         session=session,
         aviary=aviary,
@@ -58,17 +62,16 @@ async def choice_quantity_avi(
     )
 
 
-@router.callback_query(
-    UserState.zoomarket_menu, CompareDataByIndex("choice_quantity_avi")
-)
+@router.callback_query(UserState.zoomarket_menu, AviaryQuantityCallback.filter())
 async def get_qa_to_buy_avi(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: AviaryQuantityCallback,
 ):
     data = await state.get_data()
-    quantity = int(query.data.split(":")[0])
+    quantity = callback_data.quantity
     finite_price = data["aviary_price"] * quantity
     if user.usd < finite_price:
         return await query.answer(
@@ -96,14 +99,15 @@ async def get_qa_to_buy_avi(
     )
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("back_avi"))
+@router.callback_query(UserState.zoomarket_menu, AviaryBackCallback.filter())
 async def back_distributor_avi(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: AviaryBackCallback,
 ):
-    back_to = query.data.split(":")[0]
+    back_to = callback_data.target
     match back_to:
         case "to_choice_aviary":
             return await query.message.edit_text(

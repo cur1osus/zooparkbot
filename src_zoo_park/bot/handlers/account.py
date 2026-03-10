@@ -5,7 +5,13 @@ import json
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from bot.filters import CompareDataByIndex, GetTextButton
+from bot.callbacks import (
+    AccountBackCallback,
+    AccountBackTarget,
+    AccountItemPageCallback,
+    AccountItemViewCallback,
+)
+from bot.filters import GetTextButton
 from bot.keyboards import (
     ik_account_menu,
     ik_back,
@@ -154,16 +160,17 @@ async def account_items(
     )
 
 
-@router.callback_query(UserState.main_menu, F.data.in_(["right", "left"]))
+@router.callback_query(UserState.main_menu, AccountItemPageCallback.filter())
 async def process_turn_right(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: AccountItemPageCallback,
 ) -> None:
     data = await state.get_data()
     page = data["page"]
-    if query.data == "left":
+    if callback_data.direction.value == "left":
         page = page - 1 if page > 1 else data["q_page"]
     else:
         page = page + 1 if page < data["q_page"] else 1
@@ -184,16 +191,17 @@ async def process_turn_right(
         )
 
 
-@router.callback_query(UserState.main_menu, CompareDataByIndex("back_account"))
+@router.callback_query(UserState.main_menu, AccountBackCallback.filter())
 async def process_back_to_menu(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: AccountBackCallback,
 ) -> None:
-    back_to = query.data.split(":")[0]
+    back_to = callback_data.target
     match back_to:
-        case "to_account":
+        case AccountBackTarget.account:
             await query.message.edit_text(
                 text=await get_text_message(
                     "account_info",
@@ -205,7 +213,7 @@ async def process_back_to_menu(
                 ),
                 reply_markup=await ik_account_menu(),
             )
-        case "to_items":
+        case AccountBackTarget.items:
             data = await state.get_data()
             await query.message.edit_text(
                 text=await get_text_message(
@@ -220,14 +228,15 @@ async def process_back_to_menu(
             )
 
 
-@router.callback_query(UserState.main_menu, CompareDataByIndex("tap_item"))
+@router.callback_query(UserState.main_menu, AccountItemViewCallback.filter())
 async def process_viewing_item(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: AccountItemViewCallback,
 ) -> None:
-    id_item = query.data.split(":")[0]
+    id_item = callback_data.item_id
     item: Item = await session.scalar(select(Item).where(Item.id_item == id_item))
     await state.update_data(id_item=id_item)
     props = await ft_item_props(item_props=item.properties)
@@ -337,7 +346,11 @@ async def sell_item_yes(
     )
     if amount_items == 0:
         await query.message.edit_reply_markup(
-            reply_markup=await ik_back(custom_callback_data="to_account:back_account"),
+            reply_markup=await ik_back(
+                custom_callback_data=AccountBackCallback(
+                    target=AccountBackTarget.account
+                ).pack()
+            ),
         )
         return
     q_page = await count_page_items(session=session, amount_items=amount_items)

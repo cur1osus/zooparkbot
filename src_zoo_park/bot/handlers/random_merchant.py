@@ -5,7 +5,14 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ReactionTypeEmoji, ReplyKeyboardRemove
 from aiogram.utils.chat_action import ChatActionSender
-from bot.filters import CompareDataByIndex, GetTextButton
+from bot.callbacks import (
+    RandomMerchantAnimalCallback,
+    RandomMerchantBackCallback,
+    RandomMerchantBackTarget,
+    RandomMerchantOfferCallback,
+    RandomMerchantQuantityCallback,
+)
+from bot.filters import GetTextButton
 from bot.keyboards import (
     ik_choice_animal_rmerchant,
     ik_choice_quantity_animals_rmerchant,
@@ -95,14 +102,15 @@ async def update_user_data(user, merchant, price, quantity_animals):
     )
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("offer"))
+@router.callback_query(UserState.zoomarket_menu, RandomMerchantOfferCallback.filter())
 async def buy_one_of_offer(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RandomMerchantOfferCallback,
 ):
-    offer = query.data.split(":")[0]
+    offer = str(callback_data.offer)
     merchant = await session.scalar(
         select(RandomMerchant).where(RandomMerchant.id_user == user.id_user)
     )
@@ -181,17 +189,15 @@ async def buy_one_of_offer(
             )
 
 
-@router.callback_query(
-    UserState.zoomarket_menu,
-    CompareDataByIndex("choice_animal_rmerchant"),
-)
+@router.callback_query(UserState.zoomarket_menu, RandomMerchantAnimalCallback.filter())
 async def choice_animal_to_buy(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RandomMerchantAnimalCallback,
 ):
-    animal = query.data.split(":")[0]
+    animal = callback_data.animal
     animal_price = await session.scalar(
         select(Animal.price).where(Animal.code_name == f"{animal}-")
     )
@@ -213,17 +219,18 @@ async def choice_animal_to_buy(
 
 
 @router.callback_query(
-    UserState.zoomarket_menu, CompareDataByIndex("choice_qa_rmerchant")
+    UserState.zoomarket_menu, RandomMerchantQuantityCallback.filter()
 )
 async def choice_qa_to_buy(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RandomMerchantQuantityCallback,
 ):
     data = await state.get_data()
     animal_price = data["animal_price"]
-    quantity = int(query.data.split(":")[0])
+    quantity = callback_data.quantity
     finite_price = animal_price * quantity
 
     remain_seats = data["remain_seats"]
@@ -285,16 +292,17 @@ async def random_merchant_menu_(
     await message.react(reaction=[ReactionTypeEmoji(emoji="🗿")])
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("back"))
+@router.callback_query(UserState.zoomarket_menu, RandomMerchantBackCallback.filter())
 async def back_distributor(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RandomMerchantBackCallback,
 ):
-    back_to = query.data.split(":")[0]
+    back_to = callback_data.target
     match back_to:
-        case "to_all_offers":
+        case RandomMerchantBackTarget.all_offers:
             merchant = await session.scalar(
                 select(RandomMerchant).where(RandomMerchant.id_user == user.id_user)
             )
@@ -313,7 +321,7 @@ async def back_distributor(
                     first_offer_bought=merchant.first_offer_bought,
                 ),
             )
-        case "to_choice_animal":
+        case RandomMerchantBackTarget.choice_animal:
             await query.message.edit_text(
                 text=await get_text_message("merchant_choise_animal"),
                 reply_markup=await ik_choice_animal_rmerchant(session=session),

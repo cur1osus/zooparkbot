@@ -3,7 +3,7 @@ from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import any_state
 from aiogram.types import CallbackQuery, Message
-from bot.filters import CompareDataByIndex
+from bot.callbacks import CalculatorRateCallback
 from bot.keyboards import ik_choice_rate_calculator
 from db import User
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,14 +44,15 @@ async def calculator(
     )
 
 
-@router.callback_query(StateFilter(any_state), CompareDataByIndex("calculator"))
+@router.callback_query(StateFilter(any_state), CalculatorRateCallback.filter())
 async def calculator_rate(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: CalculatorRateCallback,
 ):
-    rate = int(query.data.split(":")[0])
+    rate = callback_data.rate
     data = await state.get_data()
     if data.get("calculator_rate") == rate:
         await calculator(

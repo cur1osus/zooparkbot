@@ -8,7 +8,15 @@ from aiogram.types import (
     InputMediaPhoto,
     Message,
 )
-from bot.filters import CompareDataByIndex, GetTextButton
+from bot.callbacks import (
+    RarityShopAnimalCallback,
+    RarityShopBackCallback,
+    RarityShopBackTarget,
+    RarityShopQuantityCallback,
+    RarityShopRarityCallback,
+    RarityShopSwitchCallback,
+)
+from bot.filters import GetTextButton
 from bot.keyboards import (
     ik_choice_animal_rshop,
     ik_choice_quantity_animals_rshop,
@@ -159,16 +167,15 @@ async def rarity_shop_menu(
     await state.update_data(active_window=msg.message_id)
 
 
-@router.callback_query(
-    UserState.zoomarket_menu, CompareDataByIndex("rshop_choice_animal")
-)
+@router.callback_query(UserState.zoomarket_menu, RarityShopAnimalCallback.filter())
 async def get_animal_rshop(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RarityShopAnimalCallback,
 ):
-    animal = query.data.split(":")[0]
+    animal = callback_data.animal
     await state.update_data(animal=animal)
     await query.message.edit_text(
         text=await get_text_message("choice_rarity_shop_menu"),
@@ -176,17 +183,16 @@ async def get_animal_rshop(
     )
 
 
-@router.callback_query(
-    UserState.zoomarket_menu, CompareDataByIndex("rshop_choice_rarity")
-)
+@router.callback_query(UserState.zoomarket_menu, RarityShopRarityCallback.filter())
 async def get_rarity_rshop(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RarityShopRarityCallback,
 ):
     data = await state.get_data()
-    rarity = query.data.split(":")[0]
+    rarity = callback_data.rarity
     unity_idpk = int(user.current_unity.split(":")[-1]) if user.current_unity else None
     animal_price = await get_price_animal(
         session=session,
@@ -229,24 +235,23 @@ async def get_rarity_rshop(
     await state.update_data(active_window=msg.message_id)
 
 
-@router.callback_query(
-    UserState.zoomarket_menu, CompareDataByIndex("rshop_switch_rarity")
-)
+@router.callback_query(UserState.zoomarket_menu, RarityShopSwitchCallback.filter())
 async def rshop_switch_rarity(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RarityShopSwitchCallback,
 ):
     data = await state.get_data()
-    switch_to = query.data.split(":")[0]
-    if switch_to == "next_rarity":
+    switch_to = callback_data.direction.value
+    if switch_to == "right":
         rarity = (
             rarities[rarities.index(data["rarity"]) + 1]
             if data["rarity"] != rarities[-1]
             else rarities[0]
         )
-    elif switch_to == "prev_rarity":
+    elif switch_to == "left":
         rarity = (
             rarities[rarities.index(data["rarity"]) - 1]
             if data["rarity"] != rarities[0]
@@ -285,21 +290,22 @@ async def rshop_switch_rarity(
     )
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("back_rshop"))
+@router.callback_query(UserState.zoomarket_menu, RarityShopBackCallback.filter())
 async def back_to_rarity_shop_menu(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RarityShopBackCallback,
 ):
-    back_to = query.data.split(":")[0]
+    back_to = callback_data.target
     match back_to:
-        case "to_choice_animal":
+        case RarityShopBackTarget.choice_animal:
             return await query.message.edit_text(
                 text=await get_text_message("rarity_shop_menu"),
                 reply_markup=await ik_choice_animal_rshop(session=session),
             )
-        case "to_choice_rarity":
+        case RarityShopBackTarget.choice_rarity:
             await query.message.delete()
             msg = await query.message.answer(
                 text=await get_text_message("choice_rarity_shop_menu"),
@@ -308,16 +314,15 @@ async def back_to_rarity_shop_menu(
             await state.update_data(active_window=msg.message_id)
 
 
-@router.callback_query(
-    UserState.zoomarket_menu, CompareDataByIndex("rshop_choice_quantity")
-)
+@router.callback_query(UserState.zoomarket_menu, RarityShopQuantityCallback.filter())
 async def get_quantity_rshop(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: RarityShopQuantityCallback,
 ):
-    quantity_animal = int(query.data.split(":")[0])
+    quantity_animal = callback_data.quantity
     data = await state.get_data()
     remain_seats = data["remain_seats"]
     if remain_seats < quantity_animal:

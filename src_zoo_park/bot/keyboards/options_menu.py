@@ -2,6 +2,47 @@ from itertools import islice
 
 import tools
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from bot.callbacks import (
+    AccountBackCallback,
+    AccountBackTarget,
+    AccountItemPageCallback,
+    AccountItemViewCallback,
+    AviaryBackCallback,
+    AviaryChoiceCallback,
+    AviaryQuantityCallback,
+    CalculatorRateCallback,
+    Direction,
+    ForgeBackCallback,
+    ForgeBackTarget,
+    ForgeItemSelectCallback,
+    ForgeItemsPageCallback,
+    ForgePageMode,
+    NpcUnityInviteDecisionCallback,
+    RandomMerchantAnimalCallback,
+    RandomMerchantBackCallback,
+    RandomMerchantBackTarget,
+    RandomMerchantOfferCallback,
+    RandomMerchantQuantityCallback,
+    RarityShopAnimalCallback,
+    RarityShopBackCallback,
+    RarityShopBackTarget,
+    RarityShopQuantityCallback,
+    RarityShopRarityCallback,
+    RarityShopSwitchCallback,
+    SupportAction,
+    SupportTakeCallback,
+    TransferActivateCallback,
+    WorkshopBackCallback,
+    UnityBackCallback,
+    UnityBackTarget,
+    UnityMemberPageCallback,
+    UnityMemberViewCallback,
+    UnityMembersBackCallback,
+    UnityPageCallback,
+    UnityRequestDecision,
+    UnityRequestDecisionCallback,
+    UnityViewCallback,
+)
 from game_variables import colors_rarities, rarities
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,14 +65,15 @@ async def ik_merchant_menu(
                 dnt=discount,
                 pwd=price_with_discount,
             ),
-            callback_data="1:offer",
+            callback_data=RandomMerchantOfferCallback(offer=1),
         )
     builder.button(
         text=await tools.get_text_button("second_offer", p=price),
-        callback_data="2:offer",
+        callback_data=RandomMerchantOfferCallback(offer=2),
     )
     builder.button(
-        text=await tools.get_text_button("third_offer"), callback_data="3:offer"
+        text=await tools.get_text_button("third_offer"),
+        callback_data=RandomMerchantOfferCallback(offer=3),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -43,10 +85,15 @@ async def ik_choice_animal_rmerchant(session: AsyncSession):
     for animal in all_animals:
         builder.button(
             text=animal.name,
-            callback_data=f"{animal.code_name.strip('-')}:choice_animal_rmerchant",
+            callback_data=RandomMerchantAnimalCallback(
+                animal=animal.code_name.strip("-")
+            ),
         )
     builder.button(
-        text=await tools.get_text_button("back"), callback_data="to_all_offers:back"
+        text=await tools.get_text_button("back"),
+        callback_data=RandomMerchantBackCallback(
+            target=RandomMerchantBackTarget.all_offers
+        ),
     )
     quantity_names = len(all_animals)
     aj = 2
@@ -73,7 +120,7 @@ async def ik_choice_quantity_animals_rmerchant(
             text=await tools.get_text_button(
                 "pattern_quantity_animals", qa=quantity_animal, pr=price
             ),
-            callback_data=f"{quantity_animal}:choice_qa_rmerchant",
+            callback_data=RandomMerchantQuantityCallback(quantity=quantity_animal),
         )
     if magic_count_animal != 0:
         pr = magic_count_animal * animal_price
@@ -81,14 +128,17 @@ async def ik_choice_quantity_animals_rmerchant(
             text=await tools.get_text_button(
                 "pattern_quantity_animals_magic", qa=magic_count_animal, pr=pr
             ),
-            callback_data=f"{magic_count_animal}:choice_qa_rmerchant",
+            callback_data=RandomMerchantQuantityCallback(quantity=magic_count_animal),
         )
     builder.button(
         text=await tools.get_text_button("custom_quantity_animals"),
         callback_data="cqa",  # custom_quantity_animals
     )
     builder.button(
-        text=await tools.get_text_button("back"), callback_data="to_choice_animal:back"
+        text=await tools.get_text_button("back"),
+        callback_data=RandomMerchantBackCallback(
+            target=RandomMerchantBackTarget.choice_animal
+        ),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -100,7 +150,7 @@ async def ik_choice_animal_rshop(session: AsyncSession):
     for animal in all_animals:
         builder.button(
             text=animal.name,
-            callback_data=f"{animal.code_name.strip('-')}:rshop_choice_animal",
+            callback_data=RarityShopAnimalCallback(animal=animal.code_name.strip("-")),
         )
     builder.adjust(2)
     return builder.as_markup()
@@ -109,10 +159,13 @@ async def ik_choice_animal_rshop(session: AsyncSession):
 async def ik_choice_rarity_rshop():
     builder = InlineKeyboardBuilder()
     for rarity, color_rarity in zip(rarities, colors_rarities):
-        builder.button(text=color_rarity, callback_data=f"{rarity}:rshop_choice_rarity")
+        builder.button(
+            text=color_rarity,
+            callback_data=RarityShopRarityCallback(rarity=rarity),
+        )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_choice_animal:back_rshop",
+        callback_data=RarityShopBackCallback(target=RarityShopBackTarget.choice_animal),
     )
     builder.adjust(4, 1)
     return builder.as_markup()
@@ -128,18 +181,18 @@ async def ik_choice_quantity_animals_rshop(
     prices = [animal_price * q for q in all_quantity_animals]
     builder.button(
         text=await tools.get_text_button("prev_rarity"),
-        callback_data="prev_rarity:rshop_switch_rarity",
+        callback_data=RarityShopSwitchCallback(direction=Direction.left),
     )
     builder.button(
         text=await tools.get_text_button("next_rarity"),
-        callback_data="next_rarity:rshop_switch_rarity",
+        callback_data=RarityShopSwitchCallback(direction=Direction.right),
     )
     for quantity_animal, price in zip(all_quantity_animals, prices):
         builder.button(
             text=await tools.get_text_button(
                 "pattern_quantity_animals_rshop", qa=quantity_animal, pr=price
             ),
-            callback_data=f"{quantity_animal}:rshop_choice_quantity",
+            callback_data=RarityShopQuantityCallback(quantity=quantity_animal),
         )
     if magic_count_animal != 0:
         all_quantity_animals.append(magic_count_animal)
@@ -148,7 +201,7 @@ async def ik_choice_quantity_animals_rshop(
             text=await tools.get_text_button(
                 "pattern_quantity_animals_magic", qa=magic_count_animal, pr=pr
             ),
-            callback_data=f"{magic_count_animal}:rshop_choice_quantity",
+            callback_data=RarityShopQuantityCallback(quantity=magic_count_animal),
         )
     builder.button(
         text=await tools.get_text_button("custom_quantity_animals"),
@@ -156,7 +209,7 @@ async def ik_choice_quantity_animals_rshop(
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_choice_rarity:back_rshop",
+        callback_data=RarityShopBackCallback(target=RarityShopBackTarget.choice_rarity),
     )
     builder.adjust(2, *[1 for _ in range(len(all_quantity_animals))], 1, 1)
     return builder.as_markup()
@@ -170,7 +223,7 @@ async def ik_buy_item(bought: bool):
         )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_witems_menu:back_witems",
+        callback_data=WorkshopBackCallback(target="to_witems_menu"),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -203,7 +256,7 @@ async def ik_choice_aviary(
     for name, code_name in all_aviaries:
         builder.button(
             text=f"{name}",
-            callback_data=f"{code_name}:choice_aviary_aviaries",
+            callback_data=AviaryChoiceCallback(aviary=code_name),
         )
     builder.adjust(1)
     return builder.as_markup()
@@ -220,7 +273,7 @@ async def ik_choice_quantity_aviary_avi(session: AsyncSession, aviary_price: int
             text=await tools.get_text_button(
                 "pattern_quantity_aviary_avi", qa=quantity_aviary, pr=price
             ),
-            callback_data=f"{quantity_aviary}:choice_quantity_avi",
+            callback_data=AviaryQuantityCallback(quantity=quantity_aviary),
         )
     builder.button(
         text=await tools.get_text_button("custom_quantity_aviary"),
@@ -228,7 +281,7 @@ async def ik_choice_quantity_aviary_avi(session: AsyncSession, aviary_price: int
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_choice_aviary:back_avi",
+        callback_data=AviaryBackCallback(target="to_choice_aviary"),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -314,7 +367,7 @@ async def ik_menu_items(
     for name, id_item in sliced_items_name:
         builder.button(
             text=await tools.get_text_button(name="pattern_button_name_item", n=name),
-            callback_data=f"{id_item}:tap_item",
+            callback_data=AccountItemViewCallback(item_id=id_item),
         )
         count_items += 1
     whole_pairs = count_items // row_keyboard
@@ -327,14 +380,15 @@ async def ik_menu_items(
 
     builder.button(
         text=await tools.get_text_button("arrow_left"),
-        callback_data="left",
+        callback_data=AccountItemPageCallback(direction=Direction.left),
     )
     builder.button(
-        text=await tools.get_text_button("arrow_right"), callback_data="right"
+        text=await tools.get_text_button("arrow_right"),
+        callback_data=AccountItemPageCallback(direction=Direction.right),
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_account:back_account",
+        callback_data=AccountBackCallback(target=AccountBackTarget.account),
     )
     builder.adjust(*row, 2, 1)
 
@@ -358,7 +412,8 @@ async def ik_item_activate_menu(is_activate: bool):
                 text=await tools.get_text_button("sell_item"), callback_data="sell_item"
             )
     builder.button(
-        text=await tools.get_text_button("back"), callback_data="to_items:back_account"
+        text=await tools.get_text_button("back"),
+        callback_data=AccountBackCallback(target=AccountBackTarget.items),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -404,7 +459,7 @@ async def ik_menu_unity_to_join(
                 name="pattern_button_name_unity",
                 n=name,
             ),
-            callback_data=f"{idpk_owner}:tap_unity",
+            callback_data=UnityViewCallback(owner_idpk=idpk_owner),
         )
         counter += 1
     whole_pairs = counter // row_keyboard
@@ -417,14 +472,15 @@ async def ik_menu_unity_to_join(
 
     builder.button(
         text=await tools.get_text_button("arrow_left"),
-        callback_data="left:unity",
+        callback_data=UnityPageCallback(direction=Direction.left),
     )
     builder.button(
-        text=await tools.get_text_button("arrow_right"), callback_data="right:unity"
+        text=await tools.get_text_button("arrow_right"),
+        callback_data=UnityPageCallback(direction=Direction.right),
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_menu_unity:back_unity",
+        callback_data=UnityBackCallback(target=UnityBackTarget.menu),
     )
     builder.adjust(*row, 2, 1)
 
@@ -439,7 +495,7 @@ async def ik_unity_send_request():
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_all_unity:back_unity",
+        callback_data=UnityBackCallback(target=UnityBackTarget.all_unity),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -449,11 +505,17 @@ async def ik_unity_invitation(idpk_user: int | str):
     builder = InlineKeyboardBuilder()
     builder.button(
         text=await tools.get_text_button("accept_to_unity"),
-        callback_data=f"{idpk_user}:accept_to_unity",
+        callback_data=UnityRequestDecisionCallback(
+            user_idpk=int(idpk_user),
+            decision=UnityRequestDecision.accept,
+        ),
     )
     builder.button(
         text=await tools.get_text_button("rejected_to_unity"),
-        callback_data=f"{idpk_user}:rejected_to_unity",
+        callback_data=UnityRequestDecisionCallback(
+            user_idpk=int(idpk_user),
+            decision=UnityRequestDecision.reject,
+        ),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -463,11 +525,19 @@ async def ik_npc_unity_invitation(unity_idpk: int, owner_idpk: int):
     builder = InlineKeyboardBuilder()
     builder.button(
         text=await tools.get_text_button("accept_to_unity"),
-        callback_data=f"{unity_idpk}:{owner_idpk}:accept_npc_unity_invite",
+        callback_data=NpcUnityInviteDecisionCallback(
+            unity_idpk=unity_idpk,
+            owner_idpk=owner_idpk,
+            decision=UnityRequestDecision.accept,
+        ),
     )
     builder.button(
         text=await tools.get_text_button("rejected_to_unity"),
-        callback_data=f"{unity_idpk}:{owner_idpk}:reject_npc_unity_invite",
+        callback_data=NpcUnityInviteDecisionCallback(
+            unity_idpk=unity_idpk,
+            owner_idpk=owner_idpk,
+            decision=UnityRequestDecision.reject,
+        ),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -494,7 +564,7 @@ async def ik_menu_unity_members(
                 name="pattern_name_unity_member",
                 n=name,
             ),
-            callback_data=f"{idpk}:tap_member",
+            callback_data=UnityMemberViewCallback(member_idpk=idpk),
         )
         counter += 1
     whole_pairs = counter // row_keyboard
@@ -507,11 +577,11 @@ async def ik_menu_unity_members(
 
     builder.button(
         text=await tools.get_text_button("arrow_left"),
-        callback_data="left:unity_member",
+        callback_data=UnityMemberPageCallback(direction=Direction.left),
     )
     builder.button(
         text=await tools.get_text_button("arrow_right"),
-        callback_data="right:unity_member",
+        callback_data=UnityMemberPageCallback(direction=Direction.right),
     )
     builder.adjust(*row, 2, 1)
 
@@ -526,7 +596,7 @@ async def ik_member_menu():
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_all_members:back_unity_members",
+        callback_data=UnityMembersBackCallback(target="to_all_members"),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -536,7 +606,7 @@ async def ik_back_member():
     builder = InlineKeyboardBuilder()
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_all_members:back_unity_members",
+        callback_data=UnityMembersBackCallback(target="to_all_members"),
     )
     return builder.as_markup()
 
@@ -568,7 +638,7 @@ async def ik_referrals_menu(promo_text: str):
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_account:back_account",
+        callback_data=AccountBackCallback(target=AccountBackTarget.account),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -580,7 +650,7 @@ async def ik_get_money(one_piece: int, remain_pieces: int, idpk_tr: int):
         text=await tools.get_text_button(
             "get_money", remain_pieces=remain_pieces, one_piece=one_piece
         ),
-        callback_data=f"{idpk_tr}:activate_tr",
+        callback_data=TransferActivateCallback(transfer_idpk=idpk_tr),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -591,7 +661,7 @@ async def ik_get_money_one_piece(idpk_tr: int):
     builder = InlineKeyboardBuilder()
     builder.button(
         text=await tools.get_text_button("get_money_one_piece"),
-        callback_data=f"{idpk_tr}:activate_tr",
+        callback_data=TransferActivateCallback(transfer_idpk=idpk_tr),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -693,7 +763,7 @@ async def ik_choice_rate_calculator(
             text=await tools.get_text_button(
                 "calculator", rate=int(rate), is_chosen=is_chosen
             ),
-            callback_data=f"{rate}:calculator",
+            callback_data=CalculatorRateCallback(rate=int(rate)),
         )
     builder.adjust(3)
     return builder.as_markup()
@@ -703,7 +773,10 @@ async def ik_im_take(idpk_message_to_support: int):
     builder = InlineKeyboardBuilder()
     builder.button(
         text=await tools.get_text_button("im_take"),
-        callback_data=f"{idpk_message_to_support}:im_take",
+        callback_data=SupportTakeCallback(
+            message_idpk=idpk_message_to_support,
+            action=SupportAction.take,
+        ),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -713,11 +786,17 @@ async def ik_confirm_or_cancel(idpk_message_to_support: int):
     builder = InlineKeyboardBuilder()
     builder.button(
         text=await tools.get_text_button("confirm"),
-        callback_data=f"{idpk_message_to_support}:confirm_im_take",
+        callback_data=SupportTakeCallback(
+            message_idpk=idpk_message_to_support,
+            action=SupportAction.confirm,
+        ),
     )
     builder.button(
         text=await tools.get_text_button("cancel"),
-        callback_data=f"{idpk_message_to_support}:cancel_im_take",
+        callback_data=SupportTakeCallback(
+            message_idpk=idpk_message_to_support,
+            action=SupportAction.cancel,
+        ),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -766,7 +845,7 @@ async def ik_create_item(uci: int = None, is_sell: bool = False):
         )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_forge_items_menu:back_forge_items",
+        callback_data=ForgeBackCallback(target=ForgeBackTarget.forge_menu),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -780,7 +859,7 @@ async def ik_up_lvl_item():
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_forge_items_menu:back_forge_items",
+        callback_data=ForgeBackCallback(target=ForgeBackTarget.forge_menu),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -806,7 +885,10 @@ async def ik_menu_items_for_up(
     for name, id_item in sliced_items_name:
         builder.button(
             text=await tools.get_text_button(name="pattern_button_name_item", n=name),
-            callback_data=f"{id_item}:tap_to_up_item",
+            callback_data=ForgeItemSelectCallback(
+                mode=ForgePageMode.upgrade,
+                item_id=id_item,
+            ),
         )
         count_items += 1
     whole_pairs = count_items // row_keyboard
@@ -819,14 +901,21 @@ async def ik_menu_items_for_up(
 
     builder.button(
         text=await tools.get_text_button("arrow_left"),
-        callback_data="left:up_items",
+        callback_data=ForgeItemsPageCallback(
+            mode=ForgePageMode.upgrade,
+            direction=Direction.left,
+        ),
     )
     builder.button(
-        text=await tools.get_text_button("arrow_right"), callback_data="right:up_items"
+        text=await tools.get_text_button("arrow_right"),
+        callback_data=ForgeItemsPageCallback(
+            mode=ForgePageMode.upgrade,
+            direction=Direction.right,
+        ),
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_up_lvl_item_info:back_forge_items",
+        callback_data=ForgeBackCallback(target=ForgeBackTarget.upgrade_info),
     )
     builder.adjust(*row, 2, 1)
 
@@ -841,7 +930,7 @@ async def ik_upgrade_item():
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_choice_item:back_forge_items",
+        callback_data=ForgeBackCallback(target=ForgeBackTarget.choice_item),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -855,7 +944,7 @@ async def ik_choice_items_to_merge():
     )
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_forge_items_menu:back_forge_items",
+        callback_data=ForgeBackCallback(target=ForgeBackTarget.forge_menu),
     )
     builder.adjust(1)
     return builder.as_markup()
@@ -884,7 +973,10 @@ async def ik_menu_items_for_merge(
     for name, id_item in sliced_items_name:
         builder.button(
             text=await tools.get_text_button(name="pattern_button_name_item", n=name),
-            callback_data=f"{id_item}:tap_to_merge_item",
+            callback_data=ForgeItemSelectCallback(
+                mode=ForgePageMode.merge,
+                item_id=id_item,
+            ),
         )
         count_items += 1
     whole_pairs = count_items // row_keyboard
@@ -897,11 +989,17 @@ async def ik_menu_items_for_merge(
     tail_row = [2, 1]
     builder.button(
         text=await tools.get_text_button("arrow_left"),
-        callback_data="left:turn_merge_items",
+        callback_data=ForgeItemsPageCallback(
+            mode=ForgePageMode.merge,
+            direction=Direction.left,
+        ),
     )
     builder.button(
         text=await tools.get_text_button("arrow_right"),
-        callback_data="right:turn_merge_items",
+        callback_data=ForgeItemsPageCallback(
+            mode=ForgePageMode.merge,
+            direction=Direction.right,
+        ),
     )
     if len(id_chosen_items) == 2:
         builder.button(
@@ -911,7 +1009,7 @@ async def ik_menu_items_for_merge(
         tail_row.append(1)
     builder.button(
         text=await tools.get_text_button("back"),
-        callback_data="to_merge_items_info:back_forge_items",
+        callback_data=ForgeBackCallback(target=ForgeBackTarget.merge_info),
     )
     builder.adjust(*row, *tail_row)
 

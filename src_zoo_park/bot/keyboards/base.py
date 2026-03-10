@@ -1,5 +1,8 @@
+import base64
+
 import tools
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+from bot.callbacks import InlineRateUpdateCallback
 
 
 async def ik_back(custom_callback_data: str = "back"):
@@ -50,8 +53,11 @@ async def ik_update_inline_rate(inline_message_id: str):
             callback_data="loading_inline_rate",
         )
     else:
+        token = base64.urlsafe_b64encode(inline_message_id.encode("utf-8")).decode(
+            "ascii"
+        )
         builder.button(
             text=await tools.get_text_button("update_inline_rate"),
-            callback_data=f"{inline_message_id}:update_inline_rate",
+            callback_data=InlineRateUpdateCallback(token=token),
         )
     return builder.as_markup()

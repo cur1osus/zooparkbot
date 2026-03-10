@@ -4,7 +4,14 @@ import json
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from bot.filters import CompareDataByIndex, GetTextButton
+from bot.callbacks import (
+    ForgeBackCallback,
+    ForgeBackTarget,
+    ForgeItemSelectCallback,
+    ForgeItemsPageCallback,
+    ForgePageMode,
+)
+from bot.filters import GetTextButton
 from bot.keyboards import (
     ik_choice_items_to_merge,
     ik_create_item,
@@ -186,21 +193,22 @@ async def sell_item_yes_in_create(
     )
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("back_forge_items"))
+@router.callback_query(UserState.zoomarket_menu, ForgeBackCallback.filter())
 async def process_back_forge_items(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: ForgeBackCallback,
 ) -> None:
-    back_to = query.data.split(":")[0]
+    back_to = callback_data.target
     match back_to:
-        case "to_forge_items_menu":
+        case ForgeBackTarget.forge_menu:
             await query.message.edit_text(
                 text=await get_text_message("forge_items_menu", usd=user.usd),
                 reply_markup=await ik_forge_items_menu(),
             )
-        case "to_up_lvl_item_info":
+        case ForgeBackTarget.upgrade_info:
             PERCENTAGE_DECREASE_ENHANCE_BY_LVL = await get_value(
                 session=session, value_name="PERCENTAGE_DECREASE_ENHANCE_BY_LVL"
             )
@@ -212,7 +220,7 @@ async def process_back_forge_items(
                 ),
                 reply_markup=await ik_up_lvl_item(),
             )
-        case "to_choice_item":
+        case ForgeBackTarget.choice_item:
             data = await state.get_data()
             page = data["page"]
             await query.message.edit_text(
@@ -223,7 +231,7 @@ async def process_back_forge_items(
                     page=page,
                 ),
             )
-        case "to_merge_items_info":
+        case ForgeBackTarget.merge_info:
             PERCENT_MERGE_BY_PROP = await get_value(
                 session=session, value_name="PERCENT_MERGE_BY_PROP"
             )
@@ -280,16 +288,20 @@ async def fi_choice_item_for_upgrade(
     )
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("up_items"))
+@router.callback_query(
+    UserState.zoomarket_menu,
+    ForgeItemsPageCallback.filter(F.mode == ForgePageMode.upgrade),
+)
 async def process_turn_up_item(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: ForgeItemsPageCallback,
 ) -> None:
     data = await state.get_data()
     page = data["page"]
-    turn_to = query.data.split(":")[0]
+    turn_to = callback_data.direction.value
     if turn_to == "left":
         page = page - 1 if page > 1 else data["q_page"]
     else:
@@ -305,14 +317,18 @@ async def process_turn_up_item(
         )
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("tap_to_up_item"))
+@router.callback_query(
+    UserState.zoomarket_menu,
+    ForgeItemSelectCallback.filter(F.mode == ForgePageMode.upgrade),
+)
 async def process_viewing_to_up_item(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: ForgeItemSelectCallback,
 ) -> None:
-    id_item = query.data.split(":")[0]
+    id_item = callback_data.item_id
     item: Item = await session.scalar(select(Item).where(Item.id_item == id_item))
     MAX_LVL_ITEM = await get_value(session=session, value_name="MAX_LVL_ITEM")
     if item.lvl == MAX_LVL_ITEM:
@@ -459,16 +475,20 @@ async def fi_choice_item_to_merge(
     )
 
 
-@router.callback_query(UserState.zoomarket_menu, CompareDataByIndex("turn_merge_items"))
+@router.callback_query(
+    UserState.zoomarket_menu,
+    ForgeItemsPageCallback.filter(F.mode == ForgePageMode.merge),
+)
 async def process_turn_merge_items(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: ForgeItemsPageCallback,
 ) -> None:
     data = await state.get_data()
     page = data["page"]
-    turn_to = query.data.split(":")[0]
+    turn_to = callback_data.direction.value
     if turn_to == "left":
         page = page - 1 if page > 1 else data["q_page"]
     else:
@@ -486,15 +506,17 @@ async def process_turn_merge_items(
 
 
 @router.callback_query(
-    UserState.zoomarket_menu, CompareDataByIndex("tap_to_merge_item")
+    UserState.zoomarket_menu,
+    ForgeItemSelectCallback.filter(F.mode == ForgePageMode.merge),
 )
 async def process_viewing_to_merge_item(
     query: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    callback_data: ForgeItemSelectCallback,
 ) -> None:
-    id_item = query.data.split(":")[0]
+    id_item = callback_data.item_id
     data = await state.get_data()
     if len(data["id_chosen_items"]) == 2 and id_item not in data["id_chosen_items"]:
         await query.answer(

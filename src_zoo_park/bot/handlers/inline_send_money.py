@@ -9,7 +9,8 @@ from aiogram.types import (
     InputTextMessageContent,
     LinkPreviewOptions,
 )
-from bot.filters import CompareDataByIndex, FindIntegers
+from bot.callbacks import TransferActivateCallback
+from bot.filters import FindIntegers
 from bot.keyboards import ik_get_money, ik_get_money_one_piece
 from db import TransferMoney, User
 from game_variables import translated_currencies
@@ -215,18 +216,19 @@ async def pagination_demo(chosen_result: ChosenInlineResult, session: AsyncSessi
     await session.commit()
 
 
-@router.callback_query(CompareDataByIndex("activate_tr"))
+@router.callback_query(TransferActivateCallback.filter())
 async def activate_tr(
     query: CallbackQuery,
     session: AsyncSession,
     user: User,
+    callback_data: TransferActivateCallback,
 ):
     if not user:
         await query.answer(
             text=await get_text_message("error_user_not_found"), show_alert=True
         )
         return
-    idpk_tr = query.data.split(":")[0]
+    idpk_tr = callback_data.transfer_idpk
     tr = await session.get(TransferMoney, idpk_tr)
     if not tr:
         await query.bot.edit_message_reply_markup(

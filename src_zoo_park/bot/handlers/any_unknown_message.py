@@ -1,4 +1,5 @@
 import contextlib
+import base64
 from datetime import datetime
 
 from aiogram import F, Router
@@ -6,7 +7,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import any_state
 from aiogram.types import CallbackQuery, Message
-from bot.filters import CompareDataByIndex
+from bot.callbacks import InlineRateUpdateCallback
 from bot.keyboards import ik_update_inline_rate
 from config import ADMIN_ID, CHAT_ID
 from db import Photo, User
@@ -78,13 +79,13 @@ async def any_unknown_message(message: Message, state: FSMContext) -> None:
     # print(message.effect_id)
 
 
-
-@router.callback_query(CompareDataByIndex("update_inline_rate"))
+@router.callback_query(InlineRateUpdateCallback.filter())
 async def update_inline_rate(
     query: CallbackQuery,
     session: AsyncSession,
     state: FSMContext,
     user: User,
+    callback_data: InlineRateUpdateCallback,
 ) -> None:
     rate = await get_value(session=session, value_name="RATE_RUB_USD", cache_=False)
     time_to_update_bank = 60 - datetime.now().second
@@ -92,7 +93,7 @@ async def update_inline_rate(
         session=session, value_name="BANK_STORAGE", cache_=False, value_type="str"
     )
     bank_storage = formatter.format_large_number(float(bank_storage))
-    inline_message_id = query.data.split(":")[0]
+    inline_message_id = base64.urlsafe_b64decode(callback_data.token).decode("utf-8")
     with contextlib.suppress(Exception):
         await query.bot.edit_message_text(
             inline_message_id=inline_message_id,
