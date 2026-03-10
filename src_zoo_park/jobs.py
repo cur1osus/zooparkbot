@@ -1,7 +1,4 @@
 import asyncio
-import contextlib
-from decimal import Decimal
-import json
 import random
 from datetime import datetime, timedelta
 
@@ -40,7 +37,6 @@ from tools import (
     get_id_for_edit_message,
     factory_text_account_animals,
     formatter,
-    ft_inaction,
 )
 
 job_minute_lock = asyncio.Lock()
@@ -351,124 +347,4 @@ async def edit_text_game_in_chat(session: AsyncSession, game: Game):
 
 
 async def check_inaction(session: AsyncSession):
-    now_hour = datetime.now().hour
-    if now_hour < 10 and now_hour > 0:
-        return
-    users = await session.scalars(select(User).where(User.history_moves != "{}"))
-    notifications = []
-    for user in users.all():
-        last_online = get_last_online(user.history_moves)
-        if not_time_yet(last_online=last_online):
-            continue
-        user.history_moves = gen_online(user.history_moves)
-        updated_animals, dict_of_dead_animal = process_of_dead_animal(user.animals)
-        user.animals = updated_animals
-        usd, usd_burned = process_of_burning_usd(user.usd)
-        rub, rub_burned = process_of_burning_rub(user.rub)
-        user.usd = usd
-        user.rub = rub
-        notifications.append(
-            {
-                "dict_of_dead_animal": dict_of_dead_animal,
-                "usd_burned": usd_burned,
-                "rub_burned": rub_burned,
-                "id_user": user.id_user,
-            }
-        )
-
-    if not notifications:
-        return
-
-    await session.commit()
-
-    for notification in notifications:
-        await send_info_about_inaction(session=session, **notification)
-
-
-def process_of_dead_animal(user_animals: str):
-    percent_of_dead_animal = 0.2
-    dict_of_dead_animal = {}
-
-    animals_dict: dict = json.loads(user_animals)
-    count_num_of_dead_animal = int(sum(animals_dict.values()) * percent_of_dead_animal)
-    count_num_of_dead_animal = max(count_num_of_dead_animal, 1)
-    for animal, count in animals_dict.items():
-        if count_num_of_dead_animal == 0:
-            break
-        if count == 0:
-            continue
-        count = min(count, count_num_of_dead_animal)
-        count_num_of_dead_animal -= count
-        dict_of_dead_animal[animal] = count
-        animals_dict[animal] -= count
-    return json.dumps(animals_dict), dict_of_dead_animal
-
-
-def process_of_burning_usd(usd: Decimal):
-    usd = int(usd)
-    if not usd:
-        return 0, 0
-    percent_of_burning_usd = 0.3
-    usd_burned = usd * percent_of_burning_usd
-    usd_burned = max(usd_burned, 1)
-    return int(usd - usd_burned), int(usd_burned)
-
-
-def process_of_burning_rub(rub: Decimal):
-    rub = int(rub)
-    if not rub:
-        return 0, 0
-    percent_of_burning_rub = 0.5
-    rub_burned = rub * percent_of_burning_rub
-    rub_burned = max(rub_burned, 1)
-    return int(rub - rub_burned), int(rub_burned)
-
-
-async def send_info_about_inaction(
-    session: AsyncSession,
-    dict_of_dead_animal: dict,
-    usd_burned: int,
-    rub_burned: int,
-    id_user: int,
-):
-    text = await ft_inaction(
-        session=session,
-        dict_of_dead_animal=dict_of_dead_animal,
-        usd_burned=usd_burned,
-        rub_burned=rub_burned,
-    )
-    if not text:
-        return
-    with contextlib.suppress(Exception):
-        await bot.send_message(
-            chat_id=id_user,
-            text=await get_text_message(
-                "info_about_inaction",
-                t=text,
-            ),
-        )
-
-
-def get_last_online(user_history_moves: str):
-    history_moves_dict: dict = json.loads(user_history_moves)
-    last_online = sorted(
-        list(history_moves_dict.keys()),
-        key=lambda x: datetime.strptime(x, "%d.%m.%Y %H:%M:%S.%f"),
-    )[-1]
-    return last_online
-
-
-def not_time_yet(last_online: str):
-    hour_inaction = 4
-    min_ = 60
-    r = (
-        datetime.now() - datetime.strptime(last_online, "%d.%m.%Y %H:%M:%S.%f")
-    ) < timedelta(minutes=hour_inaction * min_)
-    return r
-
-
-def gen_online(user_history_moves: str):
-    history_moves = json.loads(user_history_moves)
-    time_inaction = datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")
-    history_moves[time_inaction] = "__inaction__"
-    return json.dumps(history_moves)
+    return
