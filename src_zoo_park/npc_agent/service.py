@@ -93,6 +93,7 @@ async def run_npc_players_turn() -> None:
                             user=npc_user,
                             action=action,
                             observation=observation,
+                            client=client,
                         )
                     except Exception as exc:
                         result = {
@@ -500,19 +501,69 @@ def find_cheapest_affordable_animal(observation: dict[str, Any]) -> str | None:
 
 
 async def generate_npc_unity_name(session: AsyncSession, user: User) -> str:
-    base_name = f"{settings.npc_unity_prefix} {user.nickname}".strip()
     limit_length_max = await get_value(
         session=session, value_name="NAME_UNITY_LENGTH_MAX"
     )
-    base_name = base_name[: int(limit_length_max)].strip()
+    base_name = f"{settings.npc_unity_prefix} {user.nickname}".strip()
+    base_name = sanitize_unity_name(base_name, int(limit_length_max))
     if not base_name:
-        base_name = settings.npc_unity_prefix[: int(limit_length_max)].strip()
+        base_name = sanitize_unity_name(
+            settings.npc_unity_prefix, int(limit_length_max)
+        )
     candidate = base_name
     suffix = 1
     while await session.scalar(select(Unity).where(Unity.name == candidate)):
         suffix += 1
         candidate = f"{base_name[: max(1, int(limit_length_max) - len(str(suffix)) - 1)]}-{suffix}"
     return candidate
+
+
+def sanitize_unity_name(name: str, max_length: int) -> str:
+    clean_name = " ".join(name.replace("\n", " ").replace("\r", " ").split())
+    clean_name = clean_name.strip("\"'` ")
+    return clean_name[:max_length].strip()
+
+
+async def generate_npc_unity_name_via_llm(
+    session: AsyncSession,
+    user: User,
+    observation: dict[str, Any],
+    client: NpcDecisionClient | None,
+) -> str:
+    limit_length_max = int(
+        await get_value(session=session, value_name="NAME_UNITY_LENGTH_MAX")
+    )
+    if client:
+        try:
+            generated_name = await client.generate_unity_name(
+                context={
+                    "npc_nickname": user.nickname,
+                    "money_rank": observation.get("standings", {})
+                    .get("self", {})
+                    .get("money_rank"),
+                    "income_rank": observation.get("standings", {})
+                    .get("self", {})
+                    .get("income_rank"),
+                    "top_animals": observation.get("standings", {}).get(
+                        "top_animals", []
+                    ),
+                    "theme": "zoo economy AI clan",
+                    "max_length": limit_length_max,
+                }
+            )
+            generated_name = sanitize_unity_name(generated_name, limit_length_max)
+            if generated_name:
+                candidate = generated_name
+                suffix = 1
+                while await session.scalar(
+                    select(Unity).where(Unity.name == candidate)
+                ):
+                    suffix += 1
+                    candidate = f"{generated_name[: max(1, limit_length_max - len(str(suffix)) - 1)]}-{suffix}"
+                return candidate
+        except Exception:
+            pass
+    return await generate_npc_unity_name(session=session, user=user)
 
 
 async def build_observation(session: AsyncSession, user: User) -> dict[str, Any]:
@@ -832,6 +883,7 @@ async def execute_action(
     user: User,
     action: dict[str, Any],
     observation: dict[str, Any],
+    client: NpcDecisionClient | None = None,
 ) -> dict[str, Any]:
     action_name = action["action"]
     params = action["params"]
@@ -861,11 +913,15 @@ async def execute_action(
         "review_unity_request": execute_review_unity_request,
     }
     handler = handlers.get(action_name, execute_wait)
+    extra_kwargs = {}
+    if handler is execute_create_unity:
+        extra_kwargs["client"] = client
     return await handler(
         session=session,
         user=user,
         params=params,
         observation=observation,
+        **extra_kwargs,
     )
 
 
@@ -1397,6 +1453,7 @@ async def execute_create_unity(
     user: User,
     params: dict[str, Any],
     observation: dict[str, Any],
+    client: NpcDecisionClient | None = None,
 ) -> dict[str, Any]:
     if user.current_unity:
         return {"status": "skipped", "summary": "already_in_unity"}
@@ -1407,9 +1464,15 @@ async def execute_create_unity(
     if int(user.usd) < price_for_create_unity:
         return {"status": "skipped", "summary": "not_enough_usd"}
 
-    name = str(params.get("name", "")).strip() or await generate_npc_unity_name(
+    provided_name = sanitize_unity_name(
+        str(params.get("name", "")).strip(),
+        int(await get_value(session=session, value_name="NAME_UNITY_LENGTH_MAX")),
+    )
+    name = provided_name or await generate_npc_unity_name_via_llm(
         session=session,
         user=user,
+        observation=observation,
+        client=client,
     )
     unity = Unity(idpk_user=user.idpk, name=name)
     user.usd -= price_for_create_unity
