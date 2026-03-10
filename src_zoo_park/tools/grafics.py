@@ -1,8 +1,13 @@
 import tempfile
+from dataclasses import dataclass
+from heapq import nlargest
 from pathlib import Path
+from typing import Awaitable, Callable
 from uuid import uuid4
 
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 from cache import plot_cache
 from db import User
 from sqlalchemy import select
@@ -12,10 +17,36 @@ import tools
 
 PLOT_DIR = Path(tempfile.gettempdir()) / "zooparkbot_plots"
 TOP_LIMIT = 10
+FIGURE_SIZE = (12.5, 6.5)
+
+THEME = {
+    "figure_bg": "#F5EFE2",
+    "axes_bg": "#FFF9EF",
+    "grid": "#D8C9AE",
+    "text": "#2F241F",
+    "muted": "#7A685C",
+    "border": "#D9C2A3",
+    "value_bg": "#FFFDF8",
+    "leader": "#D9A441",
+}
 
 
-async def remove_file_plot(pattern: str):
+@dataclass(frozen=True, slots=True)
+class PlotSpec:
+    accent: str
+    title: str
+    subtitle: str
+    xlabel: str
+    ylabel: str
+    data_loader: Callable[[AsyncSession], Awaitable[list[tuple[str, int]]]]
+
+
+def ensure_plot_dir() -> None:
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def remove_plot_files(pattern: str) -> None:
+    ensure_plot_dir()
     for file_path in PLOT_DIR.glob(pattern):
         if file_path.is_file():
             file_path.unlink()
@@ -27,20 +58,50 @@ async def get_users_with_animals(session: AsyncSession) -> list[User]:
 
 
 def prepare_top_data(data: list[tuple[str, int]]) -> list[tuple[str, int]]:
-    data.sort(key=lambda x: x[1], reverse=True)
-    return data[:TOP_LIMIT][::-1]
+    top_data = nlargest(TOP_LIMIT, data, key=lambda item: item[1])
+    top_data.reverse()
+    return top_data
 
 
-async def get_top_income_data(session: AsyncSession):
+async def build_user_top_data(
+    session: AsyncSession,
+    metric_loader: Callable[[AsyncSession, User], Awaitable[int]],
+) -> list[tuple[str, int]]:
     users = await get_users_with_animals(session=session)
-    data = [
-        (user.nickname, await tools.income_(session=session, user=user))
-        for user in users
-    ]
+    data: list[tuple[str, int]] = []
+
+    for user in users:
+        value = await metric_loader(session, user)
+        data.append((user.nickname, int(value)))
+
     return prepare_top_data(data)
 
 
-async def get_top_referrals_data(session: AsyncSession):
+def build_local_top_data(
+    users: list[User], metric_loader: Callable[[User], int]
+) -> list[tuple[str, int]]:
+    return prepare_top_data(
+        [(user.nickname, int(metric_loader(user))) for user in users]
+    )
+
+
+async def get_user_income(session: AsyncSession, user: User) -> int:
+    return await tools.income_(session=session, user=user)
+
+
+def get_user_animals(user: User) -> int:
+    return sum(tools.get_numbers_animals(self=user))
+
+
+def get_user_money(user: User) -> int:
+    return int(user.usd)
+
+
+async def get_top_income_data(session: AsyncSession) -> list[tuple[str, int]]:
+    return await build_user_top_data(session=session, metric_loader=get_user_income)
+
+
+async def get_top_referrals_data(session: AsyncSession) -> list[tuple[str, int]]:
     users = await get_users_with_animals(session=session)
     referrals_count = await tools.get_referrals_count_map(
         session=session,
@@ -50,61 +111,166 @@ async def get_top_referrals_data(session: AsyncSession):
     return prepare_top_data(data)
 
 
-async def get_top_animals_data(session: AsyncSession):
+async def get_top_animals_data(session: AsyncSession) -> list[tuple[str, int]]:
     users = await get_users_with_animals(session=session)
-    data = [
-        (user.nickname, await tools.get_total_number_animals(self=user))
-        for user in users
-    ]
-    return prepare_top_data(data)
+    return build_local_top_data(users=users, metric_loader=get_user_animals)
 
 
-async def get_top_money_data(session: AsyncSession):
+async def get_top_money_data(session: AsyncSession) -> list[tuple[str, int]]:
     users = await get_users_with_animals(session=session)
-    data = [(user.nickname, int(user.usd)) for user in users]
-    return prepare_top_data(data)
+    return build_local_top_data(users=users, metric_loader=get_user_money)
 
 
-async def gen_plot(
-    nicks: list[str],
-    values: list[int],
-    color: str,
-    xlabel: str,
-    ylabel: str,
-    plot_type: str,
-):
-    PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(12, 5))
-    float_values = [float(value) for value in values]
-    plt.grid(True, axis="x", linestyle="--", alpha=0.5)
-    bars = ax.barh(nicks, float_values, color=color)
-    ax.set(xlabel=xlabel, ylabel=ylabel, title="ТОП")
-    max_width = max(float_values)
+PLOT_SPECS = {
+    "income": PlotSpec(
+        accent="#4A7BD1",
+        title="Топ по доходу",
+        subtitle="Лучшие игроки зоопарка по пассивному доходу",
+        xlabel="Доход",
+        ylabel="Игроки",
+        data_loader=get_top_income_data,
+    ),
+    "referrals": PlotSpec(
+        accent="#2F9D8F",
+        title="Топ по рефералам",
+        subtitle="Самые активные игроки по приглашениям",
+        xlabel="Рефералы",
+        ylabel="Игроки",
+        data_loader=get_top_referrals_data,
+    ),
+    "animals": PlotSpec(
+        accent="#D96D4D",
+        title="Топ по животным",
+        subtitle="Коллекционеры с самым большим зоопарком",
+        xlabel="Животные",
+        ylabel="Игроки",
+        data_loader=get_top_animals_data,
+    ),
+    "money": PlotSpec(
+        accent="#4D8F4B",
+        title="Топ по долларам",
+        subtitle="Самые обеспеченные владельцы зоопарка",
+        xlabel="Доллары",
+        ylabel="Игроки",
+        data_loader=get_top_money_data,
+    ),
+}
+
+
+def format_nickname(nickname: str, max_length: int = 18) -> str:
+    if len(nickname) <= max_length:
+        return nickname
+    return f"{nickname[: max_length - 3]}..."
+
+
+def format_value(value: float, _: int) -> str:
+    return f"{value:,.0f}".replace(",", " ")
+
+
+def build_bar_colors(
+    accent: str, amount: int
+) -> list[tuple[float, float, float, float]]:
+    base_rgb = mcolors.to_rgb(accent)
+    colors = []
+
+    for index in range(amount):
+        alpha = 0.35 + (0.45 * (index + 1) / max(amount, 1))
+        colors.append((*base_rgb, alpha))
+
+    if colors:
+        colors[-1] = mcolors.to_rgba(THEME["leader"])
+
+    return colors
+
+
+def apply_axes_style(ax, spec: PlotSpec, max_width: float) -> None:
+    ax.set_facecolor(THEME["axes_bg"])
+    ax.grid(
+        True,
+        axis="x",
+        linestyle=(0, (4, 4)),
+        linewidth=0.9,
+        color=THEME["grid"],
+        zorder=0,
+    )
+    ax.set_xlabel(spec.xlabel, fontsize=12, color=THEME["muted"], labelpad=12)
+    ax.set_ylabel(spec.ylabel, fontsize=12, color=THEME["muted"], labelpad=12)
+    ax.set_title(
+        spec.title,
+        fontsize=22,
+        fontweight="bold",
+        color=THEME["text"],
+        loc="left",
+        pad=18,
+    )
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
+    ax.xaxis.set_major_formatter(FuncFormatter(format_value))
+    ax.tick_params(axis="x", colors=THEME["muted"], labelsize=11)
+    ax.tick_params(axis="y", colors=THEME["text"], labelsize=12, length=0)
+    ax.set_xlim(0, max_width * 1.18 if max_width else 1)
+
+    for spine_name in ("top", "right"):
+        ax.spines[spine_name].set_visible(False)
+
+    ax.spines["left"].set_color(THEME["border"])
+    ax.spines["bottom"].set_color(THEME["border"])
+
+
+def add_value_labels(ax, bars, max_width: float) -> None:
     for bar in bars:
         width = bar.get_width()
-        if width > 0:
-            is_small_value = (max_width // width) > 7
-            label_x_pos = 0.01 * max_width if is_small_value else width / 2
-            alignment = "left" if is_small_value else "center"
-            label_color = "black" if is_small_value else "white"
-        else:
-            label_x_pos = 0.01 * max_width
-            alignment = "left"
-            label_color = "black"
-        plt.text(
+        label_x_pos = width + max_width * 0.02
+        ax.text(
             label_x_pos,
             bar.get_y() + bar.get_height() / 2,
-            f"{width:,.0f}",
-            ha=alignment,
+            format_value(width, 0),
+            ha="left",
             va="center",
-            color=label_color,
+            color=THEME["text"],
+            fontsize=11,
+            fontweight="bold",
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "facecolor": THEME["value_bg"],
+                "edgecolor": THEME["border"],
+                "linewidth": 1,
+            },
         )
 
-    await remove_file_plot(pattern=f"plot_{plot_type}_*.png")
+
+def render_plot(
+    nicks: list[str],
+    values: list[int],
+    spec: PlotSpec,
+    plot_type: str,
+) -> str:
+    ensure_plot_dir()
+    fig, ax = plt.subplots(figsize=FIGURE_SIZE)
+    fig.patch.set_facecolor(THEME["figure_bg"])
+
+    display_nicks = [format_nickname(nick) for nick in nicks]
+    float_values = [float(value) for value in values]
+    max_width = max(float_values, default=1)
+    bar_colors = build_bar_colors(spec.accent, len(float_values))
+
+    apply_axes_style(ax=ax, spec=spec, max_width=max_width)
+    bars = ax.barh(
+        display_nicks,
+        float_values,
+        color=bar_colors,
+        edgecolor=THEME["border"],
+        linewidth=1.2,
+        height=0.62,
+        zorder=3,
+    )
+    add_value_labels(ax=ax, bars=bars, max_width=max_width)
+    fig.text(0.125, 0.905, spec.subtitle, fontsize=11, color=THEME["muted"])
+    fig.subplots_adjust(left=0.22, right=0.94, top=0.84, bottom=0.16)
+
+    remove_plot_files(pattern=f"plot_{plot_type}_*.png")
     filename = PLOT_DIR / f"plot_{plot_type}_{uuid4().hex}.png"
-    plt.savefig(filename, dpi=300, bbox_inches="tight")
+    plt.savefig(filename, dpi=300, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
-    plot_cache[plot_type] = str(filename)
     return str(filename)
 
 
@@ -113,27 +279,20 @@ async def get_plot(session: AsyncSession, type: str):
     if cached_path and Path(cached_path).exists():
         return cached_path
 
-    config = {
-        "income": ("royalblue", "Доход", "Игроки", get_top_income_data),
-        "referrals": ("teal", "Рефералы", "Игроки", get_top_referrals_data),
-        "animals": ("indianred", "Животные", "Игроки", get_top_animals_data),
-        "money": ("darkgreen", "Доллары", "Игроки", get_top_money_data),
-    }
-
-    if type not in config:
+    spec = PLOT_SPECS.get(type)
+    if spec is None:
         return None
 
-    color, xlabel, ylabel, data_func = config[type]
-    data = await data_func(session)
+    data = await spec.data_loader(session)
     if not data:
         return None
 
     nicks, values = zip(*data)
-    return await gen_plot(
+    filename = render_plot(
         nicks=list(nicks),
         values=list(values),
-        color=color,
-        xlabel=xlabel,
-        ylabel=ylabel,
+        spec=spec,
         plot_type=type,
     )
+    plot_cache[type] = filename
+    return filename
