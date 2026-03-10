@@ -94,7 +94,11 @@ async def account_animals(
             t=text,
             total_animals=await get_total_number_animals(user),
         ),
-        reply_markup=await ik_back(custom_callback_data="to_account:back_account"),
+        reply_markup=await ik_back(
+            custom_callback_data=AccountBackCallback(
+                target=AccountBackTarget.account
+            ).pack()
+        ),
     )
 
 
@@ -124,7 +128,11 @@ async def account_aviaries(
             total_places=total_places,
             remain_places=remain_places,
         ),
-        reply_markup=await ik_back(custom_callback_data="to_account:back_account"),
+        reply_markup=await ik_back(
+            custom_callback_data=AccountBackCallback(
+                target=AccountBackTarget.account
+            ).pack()
+        ),
     )
 
 
