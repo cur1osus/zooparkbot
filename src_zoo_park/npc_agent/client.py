@@ -30,6 +30,27 @@ Rules:
 - If no action is attractive, return {"action": "wait", "params": {}, "reason": "...", "sleep_seconds": 300}
 """.strip()
 
+CHAT_SYSTEM_PROMPT = """
+You are the public voice of an autonomous AI NPC in a Telegram zoo economy game.
+
+Write one short message in Russian for the shared game chat.
+
+Style:
+- funny, cocky, self-aware
+- vibe: one AI versus the whole zoo
+- playful trash talk, no toxic slurs, no harassment
+- comment on the real game state, action, result, rank, money, animals, or rivals
+- sound like the AI is analyzing everyone and plotting its comeback
+
+Rules:
+- Return JSON only
+- JSON shape: {"message": "text"}
+- Keep it under 220 characters
+- Do not use hashtags
+- Do not use markdown or HTML
+- Do not include quotes around the full response outside JSON
+""".strip()
+
 REFLECTION_SYSTEM_PROMPT = """
 You are generating strategic memory for an autonomous NPC in a Telegram zoo economy game.
 
@@ -141,6 +162,35 @@ class NpcDecisionClient:
             max_tokens=min(700, self.settings.max_tokens),
             temperature=0.4,
         )
+
+    async def generate_chat_comment(self, payload: dict[str, Any]) -> str:
+        prompt_payload = {
+            "task": "Write one short in-character chat message for the game group.",
+            "required_output": {"message": "string"},
+            "constraints": [
+                "Return JSON only.",
+                "Keep it short and witty.",
+                "Stay in Russian.",
+                f"Maximum length: {self.settings.chat_max_length} characters.",
+            ],
+            "context": payload,
+        }
+        if self.settings.transport == "cli":
+            content = await self._run_cli_prompt(
+                prompt_payload={
+                    "system": CHAT_SYSTEM_PROMPT,
+                    **prompt_payload,
+                }
+            )
+            return str(self._parse_json(content).get("message", "")).strip()
+
+        data = await self._request_json(
+            system_prompt=CHAT_SYSTEM_PROMPT,
+            user_payload=prompt_payload,
+            max_tokens=min(180, self.settings.max_tokens),
+            temperature=0.8,
+        )
+        return str(data.get("message", "")).strip()
 
     async def _request_json(
         self,

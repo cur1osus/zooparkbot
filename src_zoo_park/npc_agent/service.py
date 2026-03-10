@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
+import html
 import json
 from datetime import datetime, timedelta
 from itertools import combinations
 from typing import Any
 
+from config import CHAT_ID
 from db import Animal, Aviary, Item, RandomMerchant, RequestToUnity, Unity, User
 from game_variables import prop_quantity_by_rarity
 from init_bot import bot
@@ -66,6 +69,10 @@ from .settings import settings
 NPC_LOCK = asyncio.Lock()
 
 
+def npc_chat_cooldown_key(user_idpk: int) -> str:
+    return f"npc_chat_comment:{user_idpk}"
+
+
 async def run_npc_players_turn() -> None:
     if not settings.enabled or not settings.api_key:
         return
@@ -88,6 +95,9 @@ async def run_npc_players_turn() -> None:
                 await ensure_random_merchant_for_user(session=session, user=npc_user)
                 last_action = None
                 last_result = None
+                last_before_snapshot = None
+                last_after_snapshot = None
+                last_observation = None
                 for decision_index in range(1, settings.max_actions_per_cycle + 1):
                     before_snapshot = await build_npc_snapshot(
                         session=session,
@@ -130,6 +140,9 @@ async def run_npc_players_turn() -> None:
                     )
                     last_action = action
                     last_result = result
+                    last_before_snapshot = before_snapshot
+                    last_after_snapshot = after_snapshot
+                    last_observation = observation
                     print(
                         "NPC_DECISION",
                         json.dumps(
@@ -205,6 +218,23 @@ async def run_npc_players_turn() -> None:
                 if wake_trigger["source"] == "event":
                     await clear_npc_event_wake(npc_user.idpk)
                 await session.commit()
+                if (
+                    last_action
+                    and last_result
+                    and last_observation
+                    and last_after_snapshot
+                ):
+                    with contextlib.suppress(Exception):
+                        await maybe_send_npc_chat_comment(
+                            client=client,
+                            user=npc_user,
+                            observation=last_observation,
+                            before_snapshot=last_before_snapshot or {},
+                            after_snapshot=last_after_snapshot,
+                            action=last_action,
+                            result=last_result,
+                            planned_sleep_seconds=planned_sleep_seconds,
+                        )
 
 
 async def get_npc_users(session: AsyncSession) -> list[User]:
@@ -249,6 +279,98 @@ def build_npc_wake_reason(
     if result_summary:
         return f"{action_name}:{result_summary}"[:255]
     return action_name[:255]
+
+
+async def maybe_send_npc_chat_comment(
+    client: NpcDecisionClient,
+    user: User,
+    observation: dict[str, Any],
+    before_snapshot: dict[str, Any],
+    after_snapshot: dict[str, Any],
+    action: dict[str, Any],
+    result: dict[str, Any],
+    planned_sleep_seconds: int,
+) -> None:
+    cooldown_seconds = settings.chat_min_interval_seconds
+    if cooldown_seconds <= 0:
+        return
+
+    cooldown_set = await redis.set(
+        npc_chat_cooldown_key(user.idpk),
+        str(datetime.now().timestamp()),
+        ex=cooldown_seconds,
+        nx=True,
+    )
+    if not cooldown_set:
+        return
+
+    standings = observation.get("standings", {})
+    self_standings = standings.get("self", {})
+    top_income = (standings.get("top_income") or [{}])[0]
+    top_money = (standings.get("top_money") or [{}])[0]
+    top_animals = (standings.get("top_animals") or [{}])[0]
+    top_referrals = (standings.get("top_referrals") or [{}])[0]
+    payload = {
+        "npc": {
+            "nickname": user.nickname,
+            "usd": int(user.usd),
+            "rub": int(user.rub),
+            "paw_coins": int(user.paw_coins),
+            "moves": int(user.moves),
+        },
+        "action": {
+            "name": action.get("action", "wait"),
+            "reason": str(action.get("reason", ""))[:220],
+            "sleep_seconds": int(action.get("sleep_seconds") or planned_sleep_seconds),
+        },
+        "result": {
+            "status": result.get("status", "unknown"),
+            "summary": str(result.get("summary", ""))[:220],
+        },
+        "progress": {
+            "income_rank": self_standings.get("income_rank"),
+            "money_rank": self_standings.get("money_rank"),
+            "animals_rank": self_standings.get("animals_rank"),
+            "referrals_rank": self_standings.get("referrals_rank"),
+            "leader_income": top_income,
+            "leader_money": top_money,
+            "leader_animals": top_animals,
+            "leader_referrals": top_referrals,
+        },
+        "economy": {
+            "before": {
+                "usd": int(before_snapshot.get("usd", 0) or 0),
+                "rub": int(before_snapshot.get("rub", 0) or 0),
+                "income_per_minute_rub": int(
+                    before_snapshot.get("income_per_minute_rub", 0) or 0
+                ),
+                "total_animals": int(before_snapshot.get("total_animals", 0) or 0),
+            },
+            "after": {
+                "usd": int(after_snapshot.get("usd", 0) or 0),
+                "rub": int(after_snapshot.get("rub", 0) or 0),
+                "income_per_minute_rub": int(
+                    after_snapshot.get("income_per_minute_rub", 0) or 0
+                ),
+                "total_animals": int(after_snapshot.get("total_animals", 0) or 0),
+            },
+        },
+        "tone": {
+            "persona": "AI alone against the whole zoo",
+            "goal": "sound funny, strategic, and slightly dramatic",
+        },
+    }
+    message = (await client.generate_chat_comment(payload=payload))[
+        : settings.chat_max_length
+    ].strip()
+    if not message:
+        return
+
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=html.escape(message, quote=False),
+        disable_notification=True,
+    )
 
 
 def resolve_npc_sleep_seconds(

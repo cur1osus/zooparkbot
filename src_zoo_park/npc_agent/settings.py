@@ -33,6 +33,8 @@ class NpcAgentSettings:
     log_path: str
     unity_invite_ttl_seconds: int
     event_wake_ttl_seconds: int
+    chat_min_interval_seconds: int
+    chat_max_length: int
     memory_recent_events_limit: int
     memory_reflections_limit: int
     memory_goal_limit: int
@@ -93,6 +95,10 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         event_wake_ttl_seconds=max(
             60, int(os.getenv("NPC_EVENT_WAKE_TTL_SECONDS", "21600"))
         ),
+        chat_min_interval_seconds=max(
+            300, int(os.getenv("NPC_CHAT_MIN_INTERVAL_SECONDS", "1800"))
+        ),
+        chat_max_length=max(80, int(os.getenv("NPC_CHAT_MAX_LENGTH", "220"))),
         memory_recent_events_limit=max(
             5, int(os.getenv("NPC_MEMORY_RECENT_EVENTS_LIMIT", "12"))
         ),
