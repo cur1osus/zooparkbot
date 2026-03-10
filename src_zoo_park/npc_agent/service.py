@@ -74,51 +74,72 @@ async def run_npc_players_turn() -> None:
                 if not await npc_ready_for_step(session=session, user=npc_user):
                     continue
                 await ensure_random_merchant_for_user(session=session, user=npc_user)
-                observation = await build_observation(session=session, user=npc_user)
-                try:
-                    decision = await client.choose_action(observation=observation)
-                except Exception as exc:
-                    decision = {
-                        "action": "wait",
-                        "params": {},
-                        "reason": f"llm_error:{type(exc).__name__}",
-                    }
-                action = validate_action(decision=decision)
-                try:
-                    result = await execute_action(
+                for decision_index in range(1, settings.max_actions_per_cycle + 1):
+                    observation = await build_observation(
+                        session=session, user=npc_user
+                    )
+                    try:
+                        decision = await client.choose_action(observation=observation)
+                    except Exception as exc:
+                        decision = {
+                            "action": "wait",
+                            "params": {},
+                            "reason": f"llm_error:{str(exc)[:250]}",
+                        }
+                    action = validate_action(decision=decision)
+                    try:
+                        result = await execute_action(
+                            session=session,
+                            user=npc_user,
+                            action=action,
+                            observation=observation,
+                        )
+                    except Exception as exc:
+                        result = {
+                            "status": "error",
+                            "summary": f"execution_error:{type(exc).__name__}",
+                        }
+                    print(
+                        "NPC_DECISION",
+                        json.dumps(
+                            {
+                                "time": datetime.now().isoformat(),
+                                "npc": npc_user.nickname,
+                                "step": decision_index,
+                                "action": action,
+                                "result": result,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        flush=True,
+                    )
+                    await register_npc_move(
                         session=session,
                         user=npc_user,
                         action=action,
-                        observation=observation,
+                        result=result,
                     )
-                except Exception as exc:
-                    result = {
-                        "status": "error",
-                        "summary": f"execution_error:{type(exc).__name__}",
-                    }
-                await register_npc_move(
-                    session=session,
-                    user=npc_user,
-                    action=action,
-                    result=result,
-                )
-                await session.commit()
-                try:
-                    await log_npc_decision(
-                        log_path=settings.log_path,
-                        payload={
-                            "time": datetime.now().isoformat(),
-                            "npc": {
-                                "id_user": npc_user.id_user,
-                                "nickname": npc_user.nickname,
+                    await session.commit()
+                    try:
+                        await log_npc_decision(
+                            log_path=settings.log_path,
+                            payload={
+                                "time": datetime.now().isoformat(),
+                                "npc": {
+                                    "id_user": npc_user.id_user,
+                                    "nickname": npc_user.nickname,
+                                },
+                                "step": decision_index,
+                                "action": action,
+                                "result": result,
+                                "observation": observation,
                             },
-                            "action": action,
-                            "result": result,
-                            "observation": observation,
-                        },
-                    )
-                except Exception:
-                    pass
+                        )
+                    except Exception:
+                        pass
+
+                    if should_stop_npc_cycle(action=action, result=result):
+                        break
 
 
 async def get_npc_users(session: AsyncSession) -> list[User]:
@@ -786,6 +807,14 @@ def validate_action(decision: dict[str, Any]) -> dict[str, Any]:
         "params": params,
         "reason": str(decision.get("reason", ""))[:300],
     }
+
+
+def should_stop_npc_cycle(action: dict[str, Any], result: dict[str, Any]) -> bool:
+    if action["action"] == "wait":
+        return True
+    if result.get("status") != "ok":
+        return True
+    return False
 
 
 def safe_int(value: Any, default: int = 0, min_value: int | None = None) -> int:

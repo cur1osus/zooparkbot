@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Any
 
@@ -25,11 +26,19 @@ Rules:
 """.strip()
 
 
+class NpcLlmError(RuntimeError):
+    pass
+
+
 class NpcDecisionClient:
     def __init__(self, settings: NpcAgentSettings):
         self.settings = settings
 
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
+        if self.settings.transport == "cli":
+            return await self._choose_action_via_cli(observation=observation)
+
+        request_url = self._build_request_url()
         payload = {
             "model": self.settings.model,
             "temperature": self.settings.temperature,
@@ -62,14 +71,102 @@ class NpcDecisionClient:
         }
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                self.settings.base_url,
+                request_url,
                 headers=headers,
                 json=payload,
             ) as response:
-                response.raise_for_status()
+                if response.status >= 400:
+                    error_body = await response.text()
+                    raise NpcLlmError(f"http_{response.status}:{error_body[:500]}")
                 data = await response.json()
         content = self._extract_content(data)
         return self._parse_json(content)
+
+    def _build_request_url(self) -> str:
+        base_url = self.settings.base_url.rstrip("/")
+        if base_url.endswith("/chat/completions"):
+            return base_url
+        if base_url.endswith("/v1"):
+            return f"{base_url}/chat/completions"
+        return f"{base_url}/v1/chat/completions"
+
+    async def _choose_action_via_cli(
+        self, observation: dict[str, Any]
+    ) -> dict[str, Any]:
+        config = {
+            "default_model": "kimi-for-coding",
+            "default_thinking": False,
+            "default_yolo": True,
+            "providers": {
+                "npc-kimi": {
+                    "type": "kimi",
+                    "base_url": self.settings.base_url,
+                    "api_key": self.settings.api_key,
+                }
+            },
+            "models": {
+                "kimi-for-coding": {
+                    "provider": "npc-kimi",
+                    "model": self.settings.model,
+                    "max_context_size": 262144,
+                }
+            },
+            "loop_control": {
+                "max_steps_per_turn": 1,
+                "max_retries_per_step": 1,
+                "max_ralph_iterations": 0,
+                "reserved_context_size": 50000,
+                "compaction_trigger_ratio": 0.85,
+            },
+        }
+        prompt = json.dumps(
+            {
+                "system": SYSTEM_PROMPT,
+                "task": "Choose the single best next action for this NPC.",
+                "required_output": {
+                    "action": "string",
+                    "params": "object",
+                    "reason": "short string",
+                },
+                "constraints": [
+                    "Do not use tools.",
+                    "Do not inspect the filesystem.",
+                    "Use only the provided observation.",
+                    "Return JSON only.",
+                ],
+                "observation": observation,
+            },
+            ensure_ascii=False,
+        )
+        process = await asyncio.create_subprocess_exec(
+            self.settings.cli_bin,
+            "--quiet",
+            "--config",
+            json.dumps(config, ensure_ascii=False),
+            "-w",
+            self.settings.cli_workdir,
+            "-p",
+            prompt,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self.settings.timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            raise NpcLlmError("cli_timeout")
+
+        stdout_text = stdout.decode("utf-8", errors="ignore").strip()
+        stderr_text = stderr.decode("utf-8", errors="ignore").strip()
+        if process.returncode != 0:
+            raise NpcLlmError(
+                f"cli_exit_{process.returncode}:{stderr_text[:500] or stdout_text[:500]}"
+            )
+        if not stdout_text:
+            raise NpcLlmError(f"cli_empty_output:{stderr_text[:500]}")
+        return self._parse_json(stdout_text)
 
     def _extract_content(self, data: dict[str, Any]) -> str:
         choices = data.get("choices") or []

@@ -12,6 +12,7 @@ def _get_bool(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class NpcAgentSettings:
     enabled: bool
+    transport: str
     api_key: str
     base_url: str
     model: str
@@ -21,29 +22,37 @@ class NpcAgentSettings:
     npc_nickname: str
     npc_unity_prefix: str
     step_seconds: int
+    max_actions_per_cycle: int
     timeout_seconds: int
     temperature: float
     max_observation_animals: int
     top_candidates_limit: int
     log_path: str
     unity_invite_ttl_seconds: int
+    cli_bin: str
+    cli_workdir: str
 
 
 def load_npc_agent_settings() -> NpcAgentSettings:
     return NpcAgentSettings(
         enabled=_get_bool("NPC_AGENT_ENABLED", False),
-        api_key=os.getenv("KIMI_API_KEY", os.getenv("NPC_LLM_API_KEY", "")).strip(),
+        transport=os.getenv("NPC_LLM_TRANSPORT", "http").strip().lower(),
+        api_key=os.getenv(
+            "MOONSHOT_API_KEY",
+            os.getenv("KIMI_API_KEY", os.getenv("NPC_LLM_API_KEY", "")),
+        ).strip(),
         base_url=os.getenv(
             "NPC_LLM_BASE_URL",
-            "https://api.moonshot.cn/v1/chat/completions",
+            "https://api.moonshot.ai/v1",
         ).strip(),
-        model=os.getenv("NPC_LLM_MODEL", "moonshot-v1-8k").strip(),
+        model=os.getenv("NPC_LLM_MODEL", "kimi-k2-0711-preview").strip(),
         max_tokens=max(256, int(os.getenv("NPC_LLM_MAX_TOKENS", "900"))),
         npc_id=int(os.getenv("NPC_USER_ID", "-1001")),
         npc_username=os.getenv("NPC_USERNAME", "npc_kimi"),
         npc_nickname=os.getenv("NPC_NICKNAME", "Kimi Keeper"),
         npc_unity_prefix=os.getenv("NPC_UNITY_PREFIX", "Kimi Clan").strip(),
         step_seconds=max(300, int(os.getenv("NPC_STEP_SECONDS", "300"))),
+        max_actions_per_cycle=max(1, int(os.getenv("NPC_MAX_ACTIONS_PER_CYCLE", "3"))),
         timeout_seconds=max(5, int(os.getenv("NPC_LLM_TIMEOUT_SECONDS", "30"))),
         temperature=float(os.getenv("NPC_LLM_TEMPERATURE", "0.2")),
         max_observation_animals=max(
@@ -57,6 +66,8 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         unity_invite_ttl_seconds=max(
             300, int(os.getenv("NPC_UNITY_INVITE_TTL_SECONDS", "21600"))
         ),
+        cli_bin=os.getenv("NPC_KIMI_CLI_BIN", "/root/kimi-cli-venv/bin/kimi").strip(),
+        cli_workdir=os.getenv("NPC_KIMI_CLI_WORKDIR", "/root/zooparkbot").strip(),
     )
 
 

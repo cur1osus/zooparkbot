@@ -54,7 +54,7 @@ async def scheduler() -> None:
         now = datetime.now()
         await run_task(name="job_minute", coro=job_minute())
 
-        if now.second == 0:
+        if now.second < 10:
             minute_key = now.strftime("%Y-%m-%d %H:%M")
             clock = now.strftime("%H:%M")
 
