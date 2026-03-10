@@ -1,4 +1,5 @@
 import json
+import math
 from datetime import datetime
 
 from aiogram import F, Router
@@ -37,6 +38,8 @@ SECTION_LABELS = {
 }
 
 MAX_ADMIN_TEXT = 3900
+USERS_PER_PAGE = 8
+USER_EVENTS_PER_PAGE = 6
 
 
 def _is_admin(user: User | None, telegram_id: int) -> bool:
@@ -84,6 +87,55 @@ def _clip_text(text: str) -> str:
     return text[: MAX_ADMIN_TEXT - 20].rstrip() + "\n\n...[truncated]"
 
 
+def _history_time_sort_key(value: str) -> datetime:
+    return datetime.strptime(value, "%d.%m.%Y %H:%M:%S.%f")
+
+
+def _safe_total_pages(total_items: int, per_page: int) -> int:
+    return max(1, math.ceil(total_items / max(1, per_page)))
+
+
+def _slice_page(items: list, page: int, per_page: int) -> tuple[list, int, int]:
+    total_pages = _safe_total_pages(len(items), per_page)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    end = start + per_page
+    return items[start:end], page, total_pages
+
+
+def _load_user_history_entries(target_user: User) -> list[dict]:
+    if not target_user.history_moves or target_user.history_moves == "{}":
+        return []
+    try:
+        payload = json.loads(target_user.history_moves)
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    entries = []
+    for raw_time, event_text in payload.items():
+        try:
+            parsed_time = _history_time_sort_key(str(raw_time))
+        except Exception:
+            continue
+        entries.append(
+            {
+                "raw_time": str(raw_time),
+                "time": parsed_time,
+                "event": str(event_text),
+            }
+        )
+    entries.sort(key=lambda item: item["time"], reverse=True)
+    return entries
+
+
+def _history_event_preview(event_text: str, limit: int = 56) -> str:
+    compact = " ".join(str(event_text).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
+
+
 async def _get_npc_users(session: AsyncSession) -> list[User]:
     rows = await session.scalars(
         select(User)
@@ -91,6 +143,28 @@ async def _get_npc_users(session: AsyncSession) -> list[User]:
         .order_by(User.id_user.asc())
     )
     return list(rows.all())
+
+
+async def _get_users_with_history(session: AsyncSession) -> list[User]:
+    rows = await session.scalars(
+        select(User)
+        .where(
+            User.id_user > 0,
+            User.history_moves != "{}",
+        )
+        .order_by(User.moves.desc(), User.idpk.desc())
+    )
+    users = list(rows.all())
+    users.sort(
+        key=lambda item: (
+            _load_user_history_entries(item)[0]["time"]
+            if _load_user_history_entries(item)
+            else datetime.min,
+            item.moves,
+        ),
+        reverse=True,
+    )
+    return users
 
 
 async def _get_memory_rows(
@@ -146,6 +220,7 @@ async def _build_admin_panel_text(session: AsyncSession) -> str:
 
 def _build_admin_panel_keyboard(npcs: list[User]):
     builder = InlineKeyboardBuilder()
+    builder.button(text="История пользователей", callback_data="admin_history:list:1")
     for npc in npcs:
         builder.button(
             text=npc.nickname or f"NPC {npc.idpk}",
@@ -154,6 +229,180 @@ def _build_admin_panel_keyboard(npcs: list[User]):
     builder.button(text="Обновить", callback_data="admin_panel:refresh")
     builder.adjust(2)
     return builder.as_markup()
+
+
+def _build_user_history_list_keyboard(users: list[User], page: int, total_pages: int):
+    builder = InlineKeyboardBuilder()
+    for target_user in users:
+        history_entries = _load_user_history_entries(target_user)
+        last_time = (
+            history_entries[0]["time"].strftime("%d.%m %H:%M")
+            if history_entries
+            else "-"
+        )
+        builder.button(
+            text=f"{target_user.nickname} ({len(history_entries)}) · {last_time}",
+            callback_data=f"admin_history:user:{target_user.idpk}:1:{page}",
+        )
+    if total_pages > 1:
+        builder.button(
+            text="<",
+            callback_data=f"admin_history:list:{max(1, page - 1)}",
+        )
+        builder.button(
+            text=f"{page}/{total_pages}", callback_data="admin_history:noop:0"
+        )
+        builder.button(
+            text=">",
+            callback_data=f"admin_history:list:{min(total_pages, page + 1)}",
+        )
+    builder.button(text="К NPC", callback_data="admin_panel:list")
+    builder.adjust(1, 1, 1, 3, 1)
+    return builder.as_markup()
+
+
+def _build_user_history_keyboard(
+    target_user: User,
+    page: int,
+    total_pages: int,
+    entries: list[dict],
+    list_page: int,
+):
+    builder = InlineKeyboardBuilder()
+    for entry in entries:
+        builder.button(
+            text=f"{entry['time'].strftime('%d.%m %H:%M')} · {_history_event_preview(entry['event'], 34)}",
+            callback_data=f"admin_history:event:{target_user.idpk}:{entry['index']}:{page}:{list_page}",
+        )
+    if total_pages > 1:
+        builder.button(
+            text="<",
+            callback_data=f"admin_history:user:{target_user.idpk}:{max(1, page - 1)}:{list_page}",
+        )
+        builder.button(
+            text=f"{page}/{total_pages}", callback_data="admin_history:noop:0"
+        )
+        builder.button(
+            text=">",
+            callback_data=f"admin_history:user:{target_user.idpk}:{min(total_pages, page + 1)}:{list_page}",
+        )
+    builder.button(text="К списку", callback_data=f"admin_history:list:{list_page}")
+    builder.adjust(1, 1, 1, 3, 1)
+    return builder.as_markup()
+
+
+def _build_user_event_detail_keyboard(
+    target_user: User,
+    entries: list[dict],
+    index: int,
+    return_page: int,
+    list_page: int,
+):
+    builder = InlineKeyboardBuilder()
+    if index > 0:
+        builder.button(
+            text="< Событие",
+            callback_data=f"admin_history:event:{target_user.idpk}:{index - 1}:{return_page}:{list_page}",
+        )
+    if index + 1 < len(entries):
+        builder.button(
+            text="Событие >",
+            callback_data=f"admin_history:event:{target_user.idpk}:{index + 1}:{return_page}:{list_page}",
+        )
+    builder.button(
+        text="Назад к истории",
+        callback_data=f"admin_history:user:{target_user.idpk}:{return_page}:{list_page}",
+    )
+    builder.button(text="К списку", callback_data=f"admin_history:list:{list_page}")
+    builder.adjust(2, 1, 1)
+    return builder.as_markup()
+
+
+async def _build_user_history_list_text(
+    session: AsyncSession,
+    page: int,
+) -> tuple[str, list[User], int, int]:
+    users = await _get_users_with_history(session=session)
+    page_users, page, total_pages = _slice_page(
+        users, page=page, per_page=USERS_PER_PAGE
+    )
+    lines = [
+        "История пользователей",
+        "",
+        f"Пользователей с историей: {len(users)}",
+        f"Страница: {page}/{total_pages}",
+        "",
+    ]
+    if not users:
+        lines.append("История пользователей пока пуста.")
+    else:
+        for target_user in page_users:
+            history_entries = _load_user_history_entries(target_user)
+            last_event = history_entries[0] if history_entries else None
+            lines.append(
+                f"- {target_user.nickname} | id {target_user.idpk} | событий {len(history_entries)} | ходов {target_user.moves}"
+            )
+            if last_event:
+                lines.append(
+                    f"  last: {last_event['time'].strftime('%d.%m %H:%M:%S')} | {_history_event_preview(last_event['event'], 96)}"
+                )
+    return "\n".join(lines), page_users, page, total_pages
+
+
+def _build_user_history_text(
+    target_user: User,
+    page_entries: list[dict],
+    page: int,
+    total_pages: int,
+    total_events: int,
+) -> str:
+    lines = [
+        f"История: {target_user.nickname}",
+        f"Telegram ID: {target_user.id_user} | DB ID: {target_user.idpk}",
+        f"Всего событий: {total_events} | Страница: {page}/{total_pages}",
+        "",
+    ]
+    if not page_entries:
+        lines.append("У пользователя пока нет событий.")
+        return "\n".join(lines)
+    for entry in page_entries:
+        lines.append(
+            f"{entry['index'] + 1}. {entry['time'].strftime('%d.%m.%Y %H:%M:%S')}"
+        )
+        lines.append(f"   {_history_event_preview(entry['event'], 180)}")
+    return "\n".join(lines)
+
+
+def _build_user_event_detail_text(
+    target_user: User,
+    entries: list[dict],
+    index: int,
+) -> str:
+    entry = entries[index]
+    lines = [
+        f"Событие пользователя: {target_user.nickname}",
+        f"Запись: {index + 1}/{len(entries)}",
+        f"Время: {entry['time'].strftime('%d.%m.%Y %H:%M:%S.%f')}",
+        "",
+        str(entry["event"]),
+    ]
+    return "\n".join(lines)
+
+
+async def _edit_admin_message(
+    query: CallbackQuery,
+    text: str,
+    reply_markup,
+) -> None:
+    if not query.message:
+        return
+    try:
+        await query.message.edit_text(
+            text=_clip_text(text),
+            reply_markup=reply_markup,
+        )
+    except Exception:
+        pass
 
 
 def _build_admin_npc_keyboard(npc: User, section: str):
@@ -465,7 +714,8 @@ async def admin_panel_callbacks(
     if action not in {"list", "refresh"}:
         await query.answer("Неизвестное действие", show_alert=True)
         return
-    await query.message.edit_text(
+    await _edit_admin_message(
+        query=query,
         text=text,
         reply_markup=_build_admin_panel_keyboard(npcs=npcs),
     )
@@ -501,9 +751,121 @@ async def admin_npc_callbacks(
         await query.answer("NPC разбужен")
     else:
         await query.answer()
-    await query.message.edit_text(
-        text=_clip_text(
-            await _build_npc_section_text(session=session, npc=npc, section=section)
-        ),
+    await _edit_admin_message(
+        query=query,
+        text=await _build_npc_section_text(session=session, npc=npc, section=section),
         reply_markup=_build_admin_npc_keyboard(npc=npc, section=section),
     )
+
+
+@router.callback_query(CompareDataByIndex("admin_history", index=0), flags=flags)
+async def admin_user_history_callbacks(
+    query: CallbackQuery,
+    session: AsyncSession,
+    user: User | None,
+) -> None:
+    if not _is_admin(user=user, telegram_id=query.from_user.id):
+        await query.answer("У вас нет прав", show_alert=True)
+        return
+    parts = (query.data or "").split(":")
+    action = parts[1] if len(parts) > 1 else "list"
+
+    if action == "noop":
+        await query.answer()
+        return
+
+    if action == "list":
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+        text, page_users, page, total_pages = await _build_user_history_list_text(
+            session=session,
+            page=page,
+        )
+        await _edit_admin_message(
+            query=query,
+            text=text,
+            reply_markup=_build_user_history_list_keyboard(
+                users=page_users,
+                page=page,
+                total_pages=total_pages,
+            ),
+        )
+        await query.answer("История пользователей")
+        return
+
+    if action == "user":
+        if len(parts) < 4 or not parts[2].isdigit():
+            await query.answer("Некорректный пользователь", show_alert=True)
+            return
+        target_user = await session.get(User, int(parts[2]))
+        if not target_user:
+            await query.answer("Пользователь не найден", show_alert=True)
+            return
+        entries = _load_user_history_entries(target_user)
+        indexed_entries = [
+            {
+                **entry,
+                "index": index,
+            }
+            for index, entry in enumerate(entries)
+        ]
+        page = int(parts[3]) if parts[3].isdigit() else 1
+        list_page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 1
+        page_entries, page, total_pages = _slice_page(
+            indexed_entries,
+            page=page,
+            per_page=USER_EVENTS_PER_PAGE,
+        )
+        await _edit_admin_message(
+            query=query,
+            text=_build_user_history_text(
+                target_user=target_user,
+                page_entries=page_entries,
+                page=page,
+                total_pages=total_pages,
+                total_events=len(entries),
+            ),
+            reply_markup=_build_user_history_keyboard(
+                target_user=target_user,
+                page=page,
+                total_pages=total_pages,
+                entries=page_entries,
+                list_page=list_page,
+            ),
+        )
+        await query.answer()
+        return
+
+    if action == "event":
+        if len(parts) < 5 or not parts[2].isdigit() or not parts[3].isdigit():
+            await query.answer("Некорректное событие", show_alert=True)
+            return
+        target_user = await session.get(User, int(parts[2]))
+        if not target_user:
+            await query.answer("Пользователь не найден", show_alert=True)
+            return
+        entries = _load_user_history_entries(target_user)
+        if not entries:
+            await query.answer("У пользователя нет истории", show_alert=True)
+            return
+        index = max(0, min(len(entries) - 1, int(parts[3])))
+        return_page = int(parts[4]) if parts[4].isdigit() else 1
+        list_page = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 1
+        await _edit_admin_message(
+            query=query,
+            text=_build_user_event_detail_text(
+                target_user=target_user,
+                entries=entries,
+                index=index,
+            ),
+            reply_markup=_build_user_event_detail_keyboard(
+                target_user=target_user,
+                entries=entries,
+                index=index,
+                return_page=return_page,
+                list_page=list_page,
+            ),
+        )
+        await query.answer()
+        return
+
+    await query.answer("Неизвестное действие", show_alert=True)
