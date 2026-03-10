@@ -22,6 +22,7 @@ class NpcAgentSettings:
     npc_nickname: str
     npc_unity_prefix: str
     step_seconds: int
+    step_jitter_seconds: int
     max_actions_per_cycle: int
     timeout_seconds: int
     temperature: float
@@ -52,6 +53,7 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         npc_nickname=os.getenv("NPC_NICKNAME", "Kimi Keeper"),
         npc_unity_prefix=os.getenv("NPC_UNITY_PREFIX", "Kimi Clan").strip(),
         step_seconds=max(300, int(os.getenv("NPC_STEP_SECONDS", "300"))),
+        step_jitter_seconds=max(0, int(os.getenv("NPC_STEP_JITTER_SECONDS", "180"))),
         max_actions_per_cycle=max(1, int(os.getenv("NPC_MAX_ACTIONS_PER_CYCLE", "3"))),
         timeout_seconds=max(5, int(os.getenv("NPC_LLM_TIMEOUT_SECONDS", "30"))),
         temperature=float(os.getenv("NPC_LLM_TEMPERATURE", "0.2")),

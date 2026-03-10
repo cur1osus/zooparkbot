@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from datetime import datetime, timedelta
 from itertools import combinations
@@ -181,7 +182,18 @@ async def npc_ready_for_step(session: AsyncSession, user: User) -> bool:
         key=lambda value: datetime.strptime(value, "%d.%m.%Y %H:%M:%S.%f"),
     )
     elapsed = datetime.now() - datetime.strptime(last_event, "%d.%m.%Y %H:%M:%S.%f")
-    return elapsed.total_seconds() >= settings.step_seconds
+    required_delay = get_npc_step_delay_seconds(user=user, last_event=last_event)
+    return elapsed.total_seconds() >= required_delay
+
+
+def get_npc_step_delay_seconds(user: User, last_event: str) -> int:
+    if settings.step_jitter_seconds <= 0:
+        return settings.step_seconds
+
+    seed = f"{user.id_user}:{last_event}".encode("utf-8")
+    digest = hashlib.sha256(seed).digest()
+    jitter = int.from_bytes(digest[:4], "big") % (settings.step_jitter_seconds + 1)
+    return settings.step_seconds + jitter
 
 
 async def ensure_random_merchant_for_user(
