@@ -15,6 +15,7 @@ from game_variables import (
 )
 from init_bot import bot
 from init_db import _sessionmaker_for_func
+from npc_agent.schedule import wake_all_npcs_now
 from sqlalchemy import and_, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
@@ -76,7 +77,14 @@ async def job_minute() -> None:
 
         async with _sessionmaker_for_func() as session:
             await accrual_of_income(session=session)
-            await update_rate_bank(session=session)
+            rate_update = await update_rate_bank(session=session)
+            if abs(int(rate_update["delta"])) >= max(
+                3, int(rate_update["previous"]) // 8
+            ):
+                await wake_all_npcs_now(
+                    session=session,
+                    reason=f"bank_rate_shift:{rate_update['current']}",
+                )
             await check_inaction(session=session)
             await deleter_request_to_unity(session=session)
             await session.commit()
@@ -119,12 +127,14 @@ async def verification_referrals():
 async def reset_first_offer_bought() -> None:
     async with _sessionmaker_for_func() as session:
         await session.execute(delete(RandomMerchant))
+        await wake_all_npcs_now(session=session, reason="merchant_reset")
         await session.commit()
 
 
 async def add_bonus_to_users() -> None:
     async with _sessionmaker_for_func() as session:
         await session.execute(update(User).where(User.bonus == False).values(bonus=1))
+        await wake_all_npcs_now(session=session, reason="daily_bonus_reset")
         await session.commit()
 
 
@@ -146,6 +156,7 @@ async def update_rate_bank(session: AsyncSession):
     current_rate = await get_value(
         session=session, value_name="RATE_RUB_USD", cache_=False
     )
+    previous_rate = int(current_rate)
     sign = random.choices([1, -1], weights=[weight_plus, weight_minus])[0]
     if sign == 1:
         increase = random.choice(increase_plus)
@@ -160,6 +171,11 @@ async def update_rate_bank(session: AsyncSession):
     await session.execute(
         update(Value).where(Value.name == "RATE_RUB_USD").values(value_int=current_rate)
     )
+    return {
+        "previous": int(previous_rate),
+        "current": int(current_rate),
+        "delta": int(current_rate) - int(previous_rate),
+    }
 
 
 async def accrual_of_income(

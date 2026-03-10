@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 from db import NpcState, User
 from init_db_redis import redis
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .settings import settings
@@ -80,6 +80,24 @@ async def wake_npc_now(
         (reason or "event")[:255],
         ex=settings.event_wake_ttl_seconds,
     )
+
+
+async def wake_all_npcs_now(
+    session: AsyncSession,
+    reason: str,
+) -> int:
+    npc_ids = await session.scalars(
+        select(User.idpk).where(or_(User.id_user < 0, User.username.like("npc_%")))
+    )
+    woken = 0
+    for user_idpk in npc_ids.all():
+        await wake_npc_now(
+            session=session,
+            user_idpk=int(user_idpk),
+            reason=reason,
+        )
+        woken += 1
+    return woken
 
 
 async def schedule_next_npc_wake(

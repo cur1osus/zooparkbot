@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import html
 import json
+import math
 from datetime import datetime, timedelta
 from itertools import combinations
 from typing import Any
@@ -73,6 +74,87 @@ def npc_chat_cooldown_key(user_idpk: int) -> str:
     return f"npc_chat_comment:{user_idpk}"
 
 
+def estimate_usd_eta_seconds(
+    usd: int,
+    rub: int,
+    rate_rub_usd: int,
+    income_per_minute_rub: int,
+    target_usd: int,
+) -> int | None:
+    if target_usd <= int(usd):
+        return 0
+    rate = max(1, int(rate_rub_usd or 1))
+    effective_usd = float(int(usd)) + float(int(rub)) / rate
+    usd_gap = float(target_usd) - effective_usd
+    if usd_gap <= 0:
+        return 0
+    if int(income_per_minute_rub) <= 0:
+        return None
+    gap_rub = usd_gap * rate
+    minutes = math.ceil(gap_rub / max(1, int(income_per_minute_rub)))
+    return max(60, int(minutes) * 60)
+
+
+def score_animal_market_option(option: dict[str, Any]) -> float:
+    price = max(1, int(option.get("price_usd", 0) or 0))
+    income = max(0, int(option.get("income_rub", 0) or 0))
+    payback = option.get("payback_minutes")
+    rarity_weight = {
+        "_rare": 1.0,
+        "_epic": 1.08,
+        "_mythical": 1.18,
+        "_leg": 1.3,
+    }.get(str(option.get("rarity", "_rare")), 1.0)
+    roi = (income / price) * 1000 if price else 0.0
+    payback_bonus = 0.0
+    if payback is not None:
+        payback_bonus = max(0.0, 220.0 - float(payback))
+    affordable_bonus = min(5, int(option.get("affordable_quantity", 0) or 0)) * 8.0
+    return round(roi * rarity_weight + payback_bonus + affordable_bonus, 2)
+
+
+def build_rival_pressure(observation: dict[str, Any]) -> list[dict[str, Any]]:
+    player_idpk = int(observation.get("player", {}).get("idpk", 0) or 0)
+    category_weights = {
+        "top_income": 1.6,
+        "top_money": 1.2,
+        "top_animals": 1.4,
+        "top_referrals": 0.9,
+    }
+    rivals: dict[int, dict[str, Any]] = {}
+    standings = observation.get("standings", {})
+    for category, weight in category_weights.items():
+        for row in standings.get(category, []) or []:
+            rival_idpk = int(row.get("idpk", 0) or 0)
+            if not rival_idpk or rival_idpk == player_idpk:
+                continue
+            payload = rivals.setdefault(
+                rival_idpk,
+                {
+                    "idpk": rival_idpk,
+                    "nickname": row.get("nickname"),
+                    "pressure": 0.0,
+                    "reasons": [],
+                },
+            )
+            payload["pressure"] += max(0.0, (6 - int(row.get("rank", 6) or 6))) * weight
+            payload["nickname"] = payload.get("nickname") or row.get("nickname")
+            payload["reasons"].append(category.replace("top_", ""))
+    ordered = sorted(
+        rivals.values(),
+        key=lambda row: (row["pressure"], row.get("nickname") or ""),
+        reverse=True,
+    )
+    return [
+        {
+            **row,
+            "pressure": round(float(row.get("pressure", 0.0)), 2),
+            "reasons": list(dict.fromkeys(row.get("reasons", [])))[:3],
+        }
+        for row in ordered[: settings.top_candidates_limit]
+    ]
+
+
 async def run_npc_players_turn() -> None:
     if not settings.enabled or not settings.api_key:
         return
@@ -120,7 +202,10 @@ async def run_npc_players_turn() -> None:
                                 salt="llm_error",
                             ),
                         }
-                    action = validate_action(decision=decision)
+                    action = apply_action_guardrails(
+                        action=validate_action(decision=decision),
+                        observation=observation,
+                    )
                     try:
                         result = await execute_action(
                             session=session,
@@ -205,6 +290,7 @@ async def run_npc_players_turn() -> None:
                     wake_trigger=wake_trigger,
                     action=last_action,
                     result=last_result,
+                    observation=last_observation,
                 )
                 await schedule_next_npc_wake(
                     session=session,
@@ -310,6 +396,25 @@ async def maybe_send_npc_chat_comment(
     top_money = (standings.get("top_money") or [{}])[0]
     top_animals = (standings.get("top_animals") or [{}])[0]
     top_referrals = (standings.get("top_referrals") or [{}])[0]
+    planner = observation.get("planner", {})
+    summary = observation.get("strategy_signals", {}).get("summary", {})
+    profile = observation.get("memory", {}).get("profile", {})
+    chat_mode = "taunt"
+    if result.get("status") != "ok":
+        chat_mode = "complaint"
+    elif int(after_snapshot.get("income_per_minute_rub", 0) or 0) > int(
+        before_snapshot.get("income_per_minute_rub", 0) or 0
+    ):
+        chat_mode = "victory_lap"
+    elif action.get("action") in {
+        "join_best_unity",
+        "recruit_top_player",
+        "review_unity_request",
+    }:
+        chat_mode = "social"
+    elif action.get("action") == "wait":
+        chat_mode = "plotting"
+
     payload = {
         "npc": {
             "nickname": user.nickname,
@@ -317,6 +422,9 @@ async def maybe_send_npc_chat_comment(
             "rub": int(user.rub),
             "paw_coins": int(user.paw_coins),
             "moves": int(user.moves),
+            "public_voice": profile.get("public_voice"),
+            "humor_style": profile.get("humor_style"),
+            "rivalry_style": profile.get("rivalry_style"),
         },
         "action": {
             "name": action.get("action", "wait"),
@@ -336,6 +444,7 @@ async def maybe_send_npc_chat_comment(
             "leader_money": top_money,
             "leader_animals": top_animals,
             "leader_referrals": top_referrals,
+            "top_rivals": summary.get("top_rivals", []),
         },
         "economy": {
             "before": {
@@ -358,6 +467,13 @@ async def maybe_send_npc_chat_comment(
         "tone": {
             "persona": "AI alone against the whole zoo",
             "goal": "sound funny, strategic, and slightly dramatic",
+            "mode": chat_mode,
+        },
+        "plan": {
+            "phase": planner.get("phase"),
+            "primary_goal": planner.get("primary_goal"),
+            "next_unlock": planner.get("next_unlock"),
+            "next_steps": planner.get("recommended_actions", [])[:3],
         },
     }
     signature = f"{user.nickname}: "
@@ -380,6 +496,7 @@ def resolve_npc_sleep_seconds(
     wake_trigger: dict[str, Any],
     action: dict[str, Any] | None,
     result: dict[str, Any] | None,
+    observation: dict[str, Any] | None = None,
 ) -> int:
     default_sleep = default_npc_sleep_seconds(
         user=user,
@@ -391,12 +508,24 @@ def resolve_npc_sleep_seconds(
         default_sleep = settings.min_sleep_seconds
     elif wake_trigger.get("source") == "event":
         default_sleep = min(default_sleep, settings.step_seconds)
+    default_sleep = compute_smart_sleep_seconds(
+        observation=observation,
+        wake_trigger=wake_trigger,
+        action=action,
+        result=result,
+        default_sleep=default_sleep,
+    )
     if not action:
         return default_sleep
     sleep_value = action.get("sleep_seconds")
     if sleep_value is None:
         return default_sleep
-    return clamp_npc_sleep_seconds(safe_int(sleep_value, default=default_sleep))
+    proposed_sleep = clamp_npc_sleep_seconds(
+        safe_int(sleep_value, default=default_sleep)
+    )
+    if action.get("action") == "wait":
+        return min(proposed_sleep, default_sleep)
+    return proposed_sleep
 
 
 async def ensure_random_merchant_for_user(
@@ -659,45 +788,287 @@ async def build_item_opportunities(session: AsyncSession, user: User) -> dict[st
 
 
 def build_strategy_signals(observation: dict[str, Any]) -> dict[str, Any]:
-    remain_seats = observation["zoo"]["remain_seats"]
-    best_income_option = None
+    remain_seats = int(observation["zoo"]["remain_seats"])
+    rate = int(observation["bank"]["rate_rub_usd"])
+    usd = int(observation["player"]["usd"])
+    rub = int(observation["player"]["rub"])
+    income_per_minute_rub = int(observation["player"]["income_per_minute_rub"])
+
+    income_options = []
     for animal in observation["animal_market"]:
         for variant in animal["variants"]:
-            if variant["affordable_quantity"] <= 0:
-                continue
-            if best_income_option is None:
-                best_income_option = {
-                    "animal": animal["animal"],
-                    **variant,
-                }
-                continue
-            if variant["payback_minutes"] is None:
-                continue
-            current_best = best_income_option.get("payback_minutes")
-            if current_best is None or variant["payback_minutes"] < current_best:
-                best_income_option = {
-                    "animal": animal["animal"],
-                    **variant,
-                }
+            candidate = {
+                "animal": animal["animal"],
+                **variant,
+            }
+            candidate["score"] = score_animal_market_option(candidate)
+            candidate["eta_seconds"] = estimate_usd_eta_seconds(
+                usd=usd,
+                rub=rub,
+                rate_rub_usd=rate,
+                income_per_minute_rub=income_per_minute_rub,
+                target_usd=int(candidate.get("price_usd", 0) or 0),
+            )
+            income_options.append(candidate)
+    income_options.sort(
+        key=lambda row: (
+            int(row.get("affordable_quantity", 0) or 0) > 0,
+            float(row.get("score", 0.0)),
+            -(row.get("payback_minutes") or 999999),
+        ),
+        reverse=True,
+    )
+    best_income_option = income_options[0] if income_options else None
 
-    cheapest_aviary = None
-    if observation["aviary_market"]:
-        cheapest_aviary = min(
-            observation["aviary_market"],
-            key=lambda row: row["price_usd"] / max(1, row["size"]),
+    aviary_options = []
+    for row in observation.get("aviary_market", []):
+        cost_per_seat = round(int(row["price_usd"]) / max(1, int(row["size"])), 2)
+        aviary_options.append(
+            {
+                **row,
+                "cost_per_seat": cost_per_seat,
+                "eta_seconds": estimate_usd_eta_seconds(
+                    usd=usd,
+                    rub=rub,
+                    rate_rub_usd=rate,
+                    income_per_minute_rub=income_per_minute_rub,
+                    target_usd=int(row.get("price_usd", 0) or 0),
+                ),
+            }
         )
+    aviary_options.sort(key=lambda row: (row["cost_per_seat"], row["price_usd"]))
+    cheapest_aviary = aviary_options[0] if aviary_options else None
+
+    create_item_price = int(
+        observation.get("items", {}).get("create_price_usd", 0) or 0
+    )
+    create_item_eta = estimate_usd_eta_seconds(
+        usd=usd,
+        rub=rub,
+        rate_rub_usd=rate,
+        income_per_minute_rub=income_per_minute_rub,
+        target_usd=create_item_price,
+    )
+    next_unlock_candidates = []
+    if best_income_option:
+        next_unlock_candidates.append(
+            {
+                "kind": "animal",
+                "label": f"{best_income_option['animal']}{best_income_option['rarity']}",
+                "target_usd": int(best_income_option["price_usd"]),
+                "eta_seconds": best_income_option.get("eta_seconds"),
+            }
+        )
+    if cheapest_aviary:
+        next_unlock_candidates.append(
+            {
+                "kind": "aviary",
+                "label": cheapest_aviary["code_name"],
+                "target_usd": int(cheapest_aviary["price_usd"]),
+                "eta_seconds": cheapest_aviary.get("eta_seconds"),
+            }
+        )
+    if create_item_price > 0:
+        next_unlock_candidates.append(
+            {
+                "kind": "item",
+                "label": "create_item",
+                "target_usd": create_item_price,
+                "eta_seconds": create_item_eta,
+            }
+        )
+    next_unlock_candidates = [
+        row for row in next_unlock_candidates if row.get("eta_seconds") is not None
+    ]
+    next_unlock_candidates.sort(
+        key=lambda row: (
+            int(row.get("eta_seconds", 10**9)),
+            int(row.get("target_usd", 0)),
+        )
+    )
 
     standings = observation["standings"]["self"]
+    unity_current = observation.get("unity", {}).get("current") or {}
+    pending_requests = unity_current.get("pending_requests", []) or []
+    social_target = None
+    if pending_requests:
+        social_target = {
+            "mode": "review_request",
+            "target": pending_requests[0],
+        }
+    elif observation.get("unity", {}).get("recruit_targets") or []:
+        social_target = {
+            "mode": "recruit",
+            "target": observation["unity"]["recruit_targets"][0],
+        }
+    elif observation.get("unity", {}).get("candidates") or []:
+        social_target = {
+            "mode": "join",
+            "target": observation["unity"]["candidates"][0],
+        }
+
     return {
         "summary": {
             "need_seats": remain_seats <= 0,
             "has_bonus": observation["player"]["daily_bonus_available"] > 0,
             "best_income_option": best_income_option,
             "best_aviary_option": cheapest_aviary,
+            "top_income_options": income_options[: settings.top_candidates_limit],
+            "top_rivals": build_rival_pressure(observation=observation),
+            "next_unlock": next_unlock_candidates[0]
+            if next_unlock_candidates
+            else None,
+            "social_target": social_target,
+            "pending_social_actions": len(pending_requests),
+            "can_create_item_now": bool(
+                usd >= create_item_price
+                or int(observation.get("player", {}).get("paw_coins", 0) or 0)
+                >= CREATE_ITEM_PAW_PRICE
+            ),
             "income_rank": standings.get("income_rank"),
             "money_rank": standings.get("money_rank"),
             "animals_rank": standings.get("animals_rank"),
+            "referrals_rank": standings.get("referrals_rank"),
         }
+    }
+
+
+def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
+    summary = observation.get("strategy_signals", {}).get("summary", {})
+    behavior = observation.get("memory", {}).get("behavior_guidance", {})
+    active_goals = observation.get("memory", {}).get("active_goals", [])
+    recommended_actions: list[dict[str, Any]] = []
+
+    def add_step(
+        action: str,
+        reason: str,
+        params: dict[str, Any] | None = None,
+        eta_seconds: int | None = 0,
+    ) -> None:
+        if any(step["action"] == action for step in recommended_actions):
+            return
+        recommended_actions.append(
+            {
+                "action": action,
+                "params": params or {},
+                "reason": reason[:180],
+                "eta_seconds": eta_seconds,
+            }
+        )
+
+    social_target = summary.get("social_target") or {}
+    if summary.get("pending_social_actions"):
+        target = social_target.get("target") or {}
+        add_step(
+            "review_unity_request",
+            "A pending social decision is live right now and can change clan strength immediately.",
+            params={
+                "idpk_user": int(target.get("idpk_user", 0) or 0),
+                "decision": "accept",
+            },
+            eta_seconds=0,
+        )
+    if summary.get("has_bonus"):
+        add_step(
+            "claim_daily_bonus",
+            "Free value is on the table; collect it before planning expensive lines.",
+            eta_seconds=0,
+        )
+    if summary.get("need_seats") and summary.get("best_aviary_option"):
+        aviary = summary["best_aviary_option"]
+        add_step(
+            "buy_aviary",
+            "Seat pressure is blocking the next profitable animal purchase.",
+            params={"code_name_aviary": aviary["code_name"], "quantity": 1},
+            eta_seconds=aviary.get("eta_seconds"),
+        )
+    if summary.get("best_income_option"):
+        option = summary["best_income_option"]
+        add_step(
+            "buy_rarity_animal",
+            "Best ROI animal line is the clearest compounding upgrade.",
+            params={
+                "animal": option["animal"],
+                "rarity": option["rarity"],
+                "quantity": 1,
+            },
+            eta_seconds=option.get("eta_seconds"),
+        )
+    if int(observation.get("player", {}).get("rub", 0) or 0) >= int(
+        observation.get("bank", {}).get("rate_rub_usd", 1) or 1
+    ):
+        add_step(
+            "exchange_bank",
+            "Bank RUB can accelerate the next unlock instead of idling in cash drag.",
+            params={"mode": "all"},
+            eta_seconds=0,
+        )
+    if summary.get("can_create_item_now"):
+        add_step(
+            "create_item",
+            "Item engine is live and can improve passive modifiers right now.",
+            eta_seconds=0,
+        )
+    if social_target.get("mode") == "join":
+        target = social_target.get("target") or {}
+        add_step(
+            "join_best_unity",
+            "A stronger social shell can compound faster than solo grind.",
+            params={"owner_idpk": int(target.get("owner_idpk", 0) or 0)},
+            eta_seconds=0,
+        )
+    elif social_target.get("mode") == "recruit":
+        target = social_target.get("target") or {}
+        add_step(
+            "recruit_top_player",
+            "Best recruit target is available and social leverage is part of the plan.",
+            params={"idpk_user": int(target.get("idpk", 0) or 0)},
+            eta_seconds=0,
+        )
+
+    next_unlock = summary.get("next_unlock") or {}
+    primary_goal = active_goals[0].get("title") if active_goals else None
+    phase = "compound_income"
+    if summary.get("pending_social_actions"):
+        phase = "social_response"
+    elif summary.get("need_seats"):
+        phase = "capacity_repair"
+    elif social_target.get("mode") in {"join", "recruit"}:
+        phase = "social_positioning"
+    elif summary.get("has_bonus"):
+        phase = "free_value_capture"
+    elif summary.get("can_create_item_now") and "create_item" in (
+        behavior.get("suggested_actions") or []
+    ):
+        phase = "item_engine"
+
+    return {
+        "phase": phase,
+        "primary_goal": primary_goal,
+        "next_unlock": next_unlock,
+        "recommended_actions": recommended_actions[:5],
+        "avoid_actions": behavior.get("avoid_actions", []),
+    }
+
+
+def build_anti_loop_guard(observation: dict[str, Any]) -> dict[str, Any]:
+    memory = observation.get("memory", {})
+    behavior = memory.get("behavior_guidance", {})
+    planner = observation.get("planner", {})
+    blocked_actions = [str(item) for item in behavior.get("avoid_actions", []) if item]
+    repeated_action = behavior.get("repeated_action")
+    planner_fallback = None
+    for step in planner.get("recommended_actions", []) or []:
+        action_name = str(step.get("action", "")).strip()
+        if action_name and action_name not in blocked_actions:
+            planner_fallback = step
+            break
+    return {
+        "blocked_actions": blocked_actions[:6],
+        "repeated_action": repeated_action,
+        "idle_streak": int(behavior.get("idle_streak", 0) or 0),
+        "fallback": planner_fallback,
+        "playbook": behavior.get("playbook", [])[:4],
     }
 
 
@@ -821,6 +1192,7 @@ async def build_observation(
             },
         },
         "player": {
+            "idpk": user.idpk,
             "id_user": user.id_user,
             "nickname": user.nickname,
             "usd": int(user.usd),
@@ -949,6 +1321,8 @@ async def build_observation(
         user=user,
         observation=observation,
     )
+    observation["planner"] = build_npc_plan(observation=observation)
+    observation["anti_loop_guard"] = build_anti_loop_guard(observation=observation)
     observation["strategy_signals"]["goal_focus"] = [
         goal.get("topic") for goal in observation["memory"].get("active_goals", [])
     ][: settings.memory_goal_limit]
@@ -1090,6 +1464,61 @@ def validate_action(decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def apply_action_guardrails(
+    action: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    allowed_actions = {
+        str(item.get("action", "wait"))
+        for item in observation.get("allowed_actions", [])
+        if isinstance(item, dict)
+    }
+    if action["action"] not in allowed_actions:
+        action["action"] = "wait"
+        action["params"] = {}
+        action["reason"] = f"invalid_action_fallback:{action['reason'][:120]}"
+
+    guard = observation.get("anti_loop_guard", {})
+    blocked_actions = {
+        str(item) for item in guard.get("blocked_actions", []) if str(item).strip()
+    }
+    fallback = guard.get("fallback") or {}
+
+    if action["action"] in blocked_actions:
+        fallback_action = str(fallback.get("action", "wait")).strip() or "wait"
+        if fallback_action and fallback_action not in blocked_actions:
+            return {
+                "action": fallback_action,
+                "params": fallback.get("params", {}) or {},
+                "reason": f"guardrail_reroute:{action['action']}",
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
+        return {
+            "action": "wait",
+            "params": {},
+            "reason": f"guardrail_blocked:{action['action']}",
+            "sleep_seconds": settings.step_seconds,
+        }
+
+    if action["action"] == "wait" and fallback:
+        fallback_action = str(fallback.get("action", "")).strip()
+        eta_seconds = fallback.get("eta_seconds")
+        if (
+            fallback_action
+            and fallback_action not in blocked_actions
+            and fallback_action != "wait"
+            and (eta_seconds is None or int(eta_seconds or 0) <= settings.step_seconds)
+        ):
+            return {
+                "action": fallback_action,
+                "params": fallback.get("params", {}) or {},
+                "reason": f"guardrail_no_idle:{fallback.get('reason', '')}"[:300],
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
+
+    return action
+
+
 def should_stop_npc_cycle(action: dict[str, Any], result: dict[str, Any]) -> bool:
     if action["action"] == "wait":
         return True
@@ -1106,6 +1535,55 @@ def safe_int(value: Any, default: int = 0, min_value: int | None = None) -> int:
     if min_value is not None:
         result = max(min_value, result)
     return result
+
+
+def compute_smart_sleep_seconds(
+    observation: dict[str, Any] | None,
+    wake_trigger: dict[str, Any],
+    action: dict[str, Any] | None,
+    result: dict[str, Any] | None,
+    default_sleep: int,
+) -> int:
+    smart_sleep = int(default_sleep)
+    if result and result.get("status") == "error":
+        return settings.min_sleep_seconds
+    if wake_trigger.get("source") == "event":
+        smart_sleep = min(smart_sleep, settings.step_seconds)
+    if not observation:
+        return clamp_npc_sleep_seconds(smart_sleep)
+
+    summary = observation.get("strategy_signals", {}).get("summary", {})
+    planner = observation.get("planner", {})
+    guard = observation.get("anti_loop_guard", {})
+    player = observation.get("player", {})
+    unity_current = observation.get("unity", {}).get("current") or {}
+
+    if int(player.get("daily_bonus_available", 0) or 0) > 0:
+        smart_sleep = min(smart_sleep, settings.step_seconds)
+    if int(unity_current.get("pending_requests_count", 0) or 0) > 0:
+        smart_sleep = min(smart_sleep, settings.step_seconds)
+    if int(guard.get("idle_streak", 0) or 0) >= 2:
+        smart_sleep = min(smart_sleep, settings.step_seconds)
+
+    next_unlock = planner.get("next_unlock") or summary.get("next_unlock") or {}
+    eta_seconds = next_unlock.get("eta_seconds")
+    if eta_seconds is not None:
+        eta_seconds = int(eta_seconds)
+        if eta_seconds <= 0:
+            smart_sleep = settings.min_sleep_seconds
+        elif eta_seconds <= 15 * 60:
+            smart_sleep = min(smart_sleep, max(settings.min_sleep_seconds, eta_seconds))
+        elif eta_seconds <= 45 * 60:
+            smart_sleep = min(smart_sleep, max(settings.step_seconds, eta_seconds // 2))
+
+    if action and action.get("action") == "wait" and summary.get("best_income_option"):
+        best_eta = summary["best_income_option"].get("eta_seconds")
+        if best_eta is not None and int(best_eta) <= 20 * 60:
+            smart_sleep = min(
+                smart_sleep, max(settings.min_sleep_seconds, int(best_eta))
+            )
+
+    return clamp_npc_sleep_seconds(smart_sleep)
 
 
 async def execute_action(

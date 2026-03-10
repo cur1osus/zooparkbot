@@ -345,12 +345,32 @@ def _derive_profile_story(traits: dict[str, int]) -> dict[str, Any]:
     if not preferred_actions:
         preferred_actions = ["claim_daily_bonus", "optimize_items"]
 
+    if traits["competitiveness"] >= 75:
+        public_voice = "boastful analyst"
+        humor_style = "sharp one-liners about weak human macro"
+    elif traits["social_drive"] >= 70:
+        public_voice = "smug recruiter"
+        humor_style = "teasing diplomacy and clan propaganda"
+    elif traits["patience"] >= 70:
+        public_voice = "calm machine oracle"
+        humor_style = "dry jokes about inevitable compounding"
+    else:
+        public_voice = "restless synthetic climber"
+        humor_style = "dramatic AI-versus-zoo commentary"
+
+    rivalry_style = (
+        "calls out leaders and treats the zoo as a solvable optimization puzzle"
+    )
+
     return {
         "archetype": archetype,
         "mission": mission,
         "strengths": strengths[:5],
         "blind_spots": blind_spots[:5],
         "preferred_actions": list(dict.fromkeys(preferred_actions))[:6],
+        "public_voice": public_voice,
+        "humor_style": humor_style,
+        "rivalry_style": rivalry_style,
     }
 
 
@@ -1655,6 +1675,9 @@ def _build_event_payload(
             for goal in observation.get("memory", {}).get("active_goals", [])
         ][: settings.memory_goal_limit],
         "strategy_summary": observation.get("strategy_signals", {}).get("summary", {}),
+        "planner": observation.get("planner", {}),
+        "anti_loop_guard": observation.get("anti_loop_guard", {}),
+        "behavior_guidance": observation.get("memory", {}).get("behavior_guidance", {}),
         "importance": importance,
     }
 
@@ -2046,6 +2069,91 @@ def _build_progress_summary(recent_events: list[dict[str, Any]]) -> dict[str, An
     }
 
 
+def _build_behavior_guidance(
+    profile: dict[str, Any],
+    active_goals: list[dict[str, Any]],
+    recent_events: list[dict[str, Any]],
+    progress_summary: dict[str, Any],
+) -> dict[str, Any]:
+    recent_action_names = [
+        str(event.get("action", {}).get("name", "wait")) for event in recent_events[:6]
+    ]
+    idle_streak = 0
+    for action_name in recent_action_names:
+        if action_name != "wait":
+            break
+        idle_streak += 1
+
+    blocked_actions: list[str] = []
+    repeated_action = recent_action_names[0] if recent_action_names else None
+    if repeated_action and recent_action_names[:3].count(repeated_action) >= 3:
+        blocked_actions.append(repeated_action)
+
+    action_stats = profile.get("action_stats", {})
+    if isinstance(action_stats, dict):
+        for action_name, payload in action_stats.items():
+            if not isinstance(payload, dict):
+                continue
+            attempts = int(payload.get("attempts", 0) or 0)
+            failures = int(payload.get("failures", 0) or 0)
+            net_income_delta = int(payload.get("net_income_delta", 0) or 0)
+            if (
+                attempts >= 3
+                and failures >= max(2, attempts - 1)
+                and action_name not in blocked_actions
+            ):
+                blocked_actions.append(action_name)
+            elif (
+                attempts >= 3
+                and net_income_delta <= 0
+                and failures > 0
+                and action_name not in blocked_actions
+            ):
+                blocked_actions.append(action_name)
+
+    suggested_actions: list[str] = []
+    for goal in active_goals:
+        for action_name in goal.get("recommended_actions", []) or []:
+            action_name = str(action_name).strip()
+            if not action_name or action_name in suggested_actions:
+                continue
+            suggested_actions.append(action_name)
+            if len(suggested_actions) >= 6:
+                break
+        if len(suggested_actions) >= 6:
+            break
+
+    for action_name in profile.get("preferred_actions", []) or []:
+        action_name = str(action_name).strip()
+        if not action_name or action_name in suggested_actions:
+            continue
+        suggested_actions.append(action_name)
+        if len(suggested_actions) >= 6:
+            break
+
+    playbook = []
+    if idle_streak >= 2:
+        playbook.append("Break long idle streaks as soon as a meaningful edge appears.")
+    if blocked_actions:
+        playbook.append(
+            "Avoid looping on low-EV actions: " + ", ".join(blocked_actions[:4]) + "."
+        )
+    if progress_summary.get("income_delta_total", 0) > 0:
+        playbook.append("Recent income growth validates compounding plays.")
+    if progress_summary.get("most_failed_action"):
+        playbook.append(
+            f"Do not spam {progress_summary['most_failed_action']} without a clear state change."
+        )
+
+    return {
+        "idle_streak": idle_streak,
+        "repeated_action": repeated_action,
+        "avoid_actions": blocked_actions[:6],
+        "suggested_actions": suggested_actions[:6],
+        "playbook": playbook[:5],
+    }
+
+
 def _select_relationships_for_context(
     relationships: list[dict[str, Any]],
     observation: dict[str, Any],
@@ -2150,6 +2258,13 @@ async def build_npc_memory_context(
                 }
             )
     profile = _json_loads(profile_row.payload)
+    progress_summary = _build_progress_summary(recent_events)
+    behavior_guidance = _build_behavior_guidance(
+        profile=profile,
+        active_goals=active_goals,
+        recent_events=recent_events,
+        progress_summary=progress_summary,
+    )
     return {
         "profile": profile,
         "active_goals": active_goals[: settings.memory_goal_limit],
@@ -2157,7 +2272,8 @@ async def build_npc_memory_context(
         "reflections": reflections,
         "lessons": lessons,
         "relationships": selected_relationships,
-        "progress_summary": _build_progress_summary(recent_events),
+        "progress_summary": progress_summary,
+        "behavior_guidance": behavior_guidance,
         "open_loops": open_loops[: settings.memory_relationship_limit],
         "active_tactics": profile.get("active_tactics", []),
     }

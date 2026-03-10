@@ -630,6 +630,10 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
     event_rows = await _get_memory_rows(
         session=session, npc=npc, kind=EVENT_KIND, limit=4
     )
+    latest_event = _load_payload(event_rows[0]) if event_rows else {}
+    latest_plan = latest_event.get("planner", {}) if latest_event else {}
+    latest_guard = latest_event.get("anti_loop_guard", {}) if latest_event else {}
+    latest_strategy = latest_event.get("strategy_summary", {}) if latest_event else {}
     due = bool(
         state and (state.next_wake_at is None or state.next_wake_at <= datetime.now())
     )
@@ -643,6 +647,7 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
         f"TG ID: {npc.id_user} · DB ID: {npc.idpk}",
         f"Профиль: {profile.get('archetype', '-')}",
         f"Миссия: {profile.get('mission', '-')}",
+        f"Голос: {profile.get('public_voice', '-')}",
         f"Тактики: {', '.join(profile.get('active_tactics', [])[:3]) or '-'}",
         "",
         "Экономика:",
@@ -678,8 +683,33 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
         f"- Серия+: {adaptation_signals.get('success_streak', 0)}",
         f"- Серия-: {adaptation_signals.get('failure_streak', 0)}",
         "",
-        "Цели:",
+        "План:",
+        f"- Фаза: {latest_plan.get('phase', '-')}",
+        f"- Цель: {latest_plan.get('primary_goal', '-')}",
+        f"- Next unlock: {(latest_plan.get('next_unlock') or {}).get('label', '-')}",
+        f"- ETA: {(latest_plan.get('next_unlock') or {}).get('eta_seconds', '-')}",
+        "",
+        "Guard:",
+        f"- Idle streak: {latest_guard.get('idle_streak', 0)}",
+        f"- Blocked: {', '.join(latest_guard.get('blocked_actions', [])[:4]) or '-'}",
+        f"- Fallback: {(latest_guard.get('fallback') or {}).get('action', '-')}",
+        "",
+        "Соперники:",
     ]
+    if latest_strategy.get("top_rivals"):
+        for rival in latest_strategy.get("top_rivals", [])[:3]:
+            lines.append(
+                f"- {rival.get('nickname') or rival.get('idpk')} · pressure {rival.get('pressure', '-')} · {', '.join(rival.get('reasons', [])[:2])}"
+            )
+    else:
+        lines.append("- нет")
+
+    lines.extend(
+        [
+            "",
+            "Цели:",
+        ]
+    )
     if goal_rows:
         for row in goal_rows:
             payload = _load_payload(row)
@@ -719,6 +749,12 @@ async def _build_tactics_text(session: AsyncSession, npc: User) -> str:
     profile = _load_payload(await ensure_npc_profile_memory(session=session, user=npc))
     action_stats = profile.get("action_stats", {})
     tactic_scores = profile.get("tactic_scores", {})
+    event_rows = await _get_memory_rows(
+        session=session, npc=npc, kind=EVENT_KIND, limit=1
+    )
+    latest_event = _load_payload(event_rows[0]) if event_rows else {}
+    latest_guard = latest_event.get("anti_loop_guard", {}) if latest_event else {}
+    latest_behavior = latest_event.get("behavior_guidance", {}) if latest_event else {}
     tactic_rows = sorted(
         tactic_scores.items(),
         key=lambda item: item[1],
@@ -750,6 +786,19 @@ async def _build_tactics_text(session: AsyncSession, npc: User) -> str:
         )
     if lines[-1] == "Сдвиги трейтов:":
         lines.append("- нет")
+    lines.append("")
+    lines.append("Плейбук:")
+    for row in latest_behavior.get("playbook", [])[:4]:
+        lines.append(f"- {row}")
+    if lines[-1] == "Плейбук:":
+        lines.append("- нет")
+    lines.append("")
+    lines.append("Анти-луп:")
+    lines.append(
+        f"- blocked: {', '.join(latest_guard.get('blocked_actions', [])[:4]) or '-'}"
+    )
+    lines.append(f"- repeated: {latest_guard.get('repeated_action', '-')}")
+    lines.append(f"- idle streak: {latest_guard.get('idle_streak', 0)}")
     lines.append("")
     lines.append("Действия:")
     ranked_actions = sorted(
