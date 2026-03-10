@@ -58,7 +58,7 @@ async def scheduler() -> None:
             minute_key = now.strftime("%Y-%m-%d %H:%M")
             clock = now.strftime("%H:%M")
 
-            if now.minute % 15 == 0 and last_runs.get("npc") != minute_key:
+            if now.minute % 5 == 0 and last_runs.get("npc") != minute_key:
                 await run_task(name="npc", coro=run_npc_players_turn())
 
             daily_jobs = {

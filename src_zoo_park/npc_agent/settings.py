@@ -43,7 +43,7 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         npc_username=os.getenv("NPC_USERNAME", "npc_kimi"),
         npc_nickname=os.getenv("NPC_NICKNAME", "Kimi Keeper"),
         npc_unity_prefix=os.getenv("NPC_UNITY_PREFIX", "Kimi Clan").strip(),
-        step_seconds=max(900, int(os.getenv("NPC_STEP_SECONDS", "900"))),
+        step_seconds=max(300, int(os.getenv("NPC_STEP_SECONDS", "300"))),
         timeout_seconds=max(5, int(os.getenv("NPC_LLM_TIMEOUT_SECONDS", "30"))),
         temperature=float(os.getenv("NPC_LLM_TEMPERATURE", "0.2")),
         max_observation_animals=max(
