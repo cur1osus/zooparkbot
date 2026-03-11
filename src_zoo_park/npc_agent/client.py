@@ -36,6 +36,13 @@ class ActionReasoning(BaseModel):
     reason: str
 
 
+class ToolDecision(BaseModel):
+    tool: str
+    input: dict[str, Any]
+    reason: str
+    sleep_seconds: int
+
+
 ACTION_REASONING_STEPS = """
 Before producing the final answer, think through this 3-step checklist internally:
 STEP 1 - BOTTLENECK: identify the single biggest constraint right now.
@@ -132,6 +139,22 @@ Rules:
 - Re-check params carefully before answering.
 - Keep reason short.
 - If the prior reasoning conflicts with the observation, fix it and still return the best legal action.
+""".strip()
+
+V2_TOOL_SYSTEM_PROMPT = """
+You are an OpenClaw-style NPC runtime using tool selection.
+
+Choose exactly one tool call for this turn.
+Return JSON only with this shape:
+{"tool":"tool_name","input":{},"reason":"short text","sleep_seconds":300}
+
+Rules:
+- You MUST choose from available_tools only.
+- Input must be valid for the selected tool.
+- Prefer high-EV compounding actions.
+- Do not choose unaffordable buys when affordable_quantity=0 unless eta is near-term and no better action exists.
+- Respect seat constraints: when remain_seats <= 0, prioritize capacity unlock flow.
+- Keep reason short and concrete.
 """.strip()
 
 CHAT_SYSTEM_PROMPT = """
@@ -331,12 +354,53 @@ class NpcDecisionClient:
 
         return clean_obs
 
+    def _build_v2_tools(self, observation: dict[str, Any]) -> list[dict[str, Any]]:
+        tools: list[dict[str, Any]] = []
+        for row in observation.get("allowed_actions", []) or []:
+            if not isinstance(row, dict):
+                continue
+            action = str(row.get("action", "")).strip()
+            if not action:
+                continue
+            tools.append(
+                {
+                    "name": action,
+                    "input_schema": row.get("params", {}) or {},
+                }
+            )
+        return tools
+
+    async def choose_action_v2_tools(self, observation: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "task": "Select one tool call for this NPC turn.",
+            "available_tools": self._build_v2_tools(observation),
+            "observation": observation,
+        }
+        tool_decision = await self._request_json(
+            system_prompt=V2_TOOL_SYSTEM_PROMPT,
+            user_payload=payload,
+            max_tokens=min(260, self.settings.max_tokens),
+            temperature=self.settings.action_temperature,
+            model_class=ToolDecision,
+            request_kind="choose_action_v2_tools",
+        )
+        tool_name = str(tool_decision.get("tool", "wait")).strip() or "wait"
+        return {
+            "action": tool_name,
+            "params": tool_decision.get("input", {}) or {},
+            "reason": str(tool_decision.get("reason", "v2_tool_selection"))[:220],
+            "sleep_seconds": int(tool_decision.get("sleep_seconds", 300) or 300),
+        }
+
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
         clean_obs = self._build_trimmed_observation(observation)
         npc_id_user = int((observation.get("player") or {}).get("id_user", 0) or 0)
-        v2_reasoning_npcs = {-1002}  # тИИмоха
+        v2_tool_npcs = {-1002}  # тИИмоха
 
-        if self.settings.action_two_pass_reasoning or npc_id_user in v2_reasoning_npcs:
+        if npc_id_user in v2_tool_npcs:
+            return await self.choose_action_v2_tools(observation=clean_obs)
+
+        if self.settings.action_two_pass_reasoning:
             return await self.choose_action_with_reasoning(observation=clean_obs)
 
         if self.settings.transport == "cli":
