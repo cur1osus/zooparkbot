@@ -79,7 +79,8 @@ Rules:
 - If zoo.remain_seats <= 0, do NOT choose animal-buying actions; prioritize buy_aviary/exchange_bank/wait.
 - Prefer exchange_bank only on favorable bank rate (closer to min_rate_rub_usd than to max_rate_rub_usd), unless exchange is urgently needed for the next unlock.
 - Economy first: avoid chat entertainment spend (transfers/games) unless there is a clear surplus and core growth is not blocked.
-- Claiming available chat transfers is positive EV and can be prioritized when available.
+- Do not claim money transfers directly: transfer source may be private inline context.
+- Join only public global chat games; skip private/user-created game contexts.
 - If you choose wait, align sleep_seconds with planner.next_unlock.eta_seconds or the nearest meaningful event instead of arbitrary long delays.
 - Watch strategy_signals.top_rivals and social targets; the zoo is competitive, not empty.
 - Avoid repeating recently failed actions unless the state clearly changed.
