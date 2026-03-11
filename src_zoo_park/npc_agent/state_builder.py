@@ -448,6 +448,589 @@ async def build_item_opportunities(session: AsyncSession, user: User) -> dict[st
     }
 
 
+def _effective_usd(player: dict[str, Any], bank: dict[str, Any]) -> float:
+    rate = max(1, int(bank.get("rate_rub_usd", 1) or 1))
+    return (
+        float(int(player.get("usd", 0) or 0))
+        + float(int(player.get("rub", 0) or 0)) / rate
+    )
+
+
+def _load_history_rows(user: User) -> list[dict[str, Any]]:
+    try:
+        raw_history = json.loads(user.history_moves or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for key, value in raw_history.items():
+        payload = value
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(payload, dict):
+            payload["_history_key"] = key
+            rows.append(payload)
+    return rows[-12:]
+
+
+def _actions_since_last(rows: list[dict[str, Any]], target_actions: set[str]) -> int:
+    count = 0
+    for row in reversed(rows):
+        action_name = str(row.get("action", "")).strip()
+        if action_name in target_actions:
+            return count
+        count += 1
+    return count
+
+
+def build_momentum_signal(user: User, current_income: int) -> dict[str, Any]:
+    rows = _load_history_rows(user)
+    recent_rows = rows[-3:]
+    last_3_actions = [
+        str(row.get("action", "wait")).strip() or "wait" for row in recent_rows[-3:]
+    ]
+
+    income_anchor = None
+    usd_anchor = None
+    for row in recent_rows:
+        after_state = row.get("after_state") or {}
+        if (
+            income_anchor is None
+            and after_state.get("income_per_minute_rub") is not None
+        ):
+            income_anchor = int(after_state.get("income_per_minute_rub", 0) or 0)
+        if usd_anchor is None and after_state.get("usd") is not None:
+            usd_anchor = int(after_state.get("usd", 0) or 0)
+
+    if income_anchor is None:
+        income_trend = "insufficient history"
+    else:
+        income_delta = int(current_income) - income_anchor
+        income_trend = f"{income_delta:+d} RUB/min over last {max(1, len(recent_rows))} logged moves"
+
+    if usd_anchor is None:
+        usd_trend = "insufficient history"
+    else:
+        usd_delta = int(user.usd) - usd_anchor
+        usd_trend = (
+            f"{usd_delta:+d} USD over last {max(1, len(recent_rows))} logged moves"
+        )
+
+    return {
+        "income_trend": income_trend,
+        "usd_trend": usd_trend,
+        "actions_since_last_aviary": _actions_since_last(rows, {"buy_aviary"}),
+        "actions_since_last_item": _actions_since_last(
+            rows,
+            {
+                "create_item",
+                "activate_item",
+                "deactivate_item",
+                "sell_item",
+                "upgrade_item",
+                "merge_items",
+                "optimize_items",
+            },
+        ),
+        "last_3_actions": last_3_actions,
+    }
+
+
+def _append_unique_action(
+    actions: list[dict[str, Any]],
+    action_name: str,
+    params: dict[str, Any] | None = None,
+) -> None:
+    payload = {"action": action_name, "params": params or {}}
+    key = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    existing = {
+        json.dumps(item, ensure_ascii=False, sort_keys=True)
+        for item in actions
+        if isinstance(item, dict)
+    }
+    if key not in existing:
+        actions.append(payload)
+
+
+def _iter_animal_variants(observation: dict[str, Any]) -> list[dict[str, Any]]:
+    variants: list[dict[str, Any]] = []
+    for animal in observation.get("animal_market", []):
+        for variant in animal.get("variants", []):
+            variants.append({"animal": animal.get("animal"), **variant})
+    return variants
+
+
+def _find_animal_variant(
+    observation: dict[str, Any], animal_name: str, rarity: str
+) -> dict[str, Any] | None:
+    for variant in _iter_animal_variants(observation):
+        if variant.get("animal") == animal_name and variant.get("rarity") == rarity:
+            return variant
+    return None
+
+
+def _find_aviary_option(
+    observation: dict[str, Any], code_name_aviary: str
+) -> dict[str, Any] | None:
+    for row in observation.get("aviary_market", []):
+        if row.get("code_name") == code_name_aviary:
+            return row
+    return None
+
+
+async def build_allowed_actions(
+    session: AsyncSession,
+    user: User,
+    observation: dict[str, Any],
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    player = observation.get("player", {})
+    zoo = observation.get("zoo", {})
+    bank = observation.get("bank", {})
+    merchant = observation.get("merchant", {})
+    items = observation.get("items", {})
+    item_opportunities = observation.get("item_opportunities", {})
+    unity = observation.get("unity", {})
+    current_unity = unity.get("current") or {}
+
+    usd = int(player.get("usd", 0) or 0)
+    rub = int(player.get("rub", 0) or 0)
+    rate = max(1, int(bank.get("rate_rub_usd", 1) or 1))
+    remain_seats = int(zoo.get("remain_seats", 0) or 0)
+    owned_items = list(items.get("items", []))
+    active_items = [item for item in owned_items if item.get("is_active")]
+    inactive_items = [item for item in owned_items if not item.get("is_active")]
+    affordable_aviaries = [
+        row
+        for row in observation.get("aviary_market", [])
+        if int(row.get("affordable_quantity", 0) or 0) > 0
+    ]
+    affordable_aviaries.sort(key=lambda row: int(row.get("price_usd", 0) or 0))
+    affordable_variants = [
+        row
+        for row in _iter_animal_variants(observation)
+        if int(row.get("affordable_quantity", 0) or 0) > 0
+    ]
+    affordable_variants.sort(
+        key=lambda row: (
+            row.get("payback_minutes") is None,
+            float(row.get("payback_minutes") or 10**9),
+            -int(row.get("income_rub", 0) or 0),
+        )
+    )
+    targeted_candidates: list[str] = []
+    for row in affordable_variants:
+        animal_name = str(row.get("animal", "")).strip()
+        if animal_name and animal_name not in targeted_candidates:
+            targeted_candidates.append(animal_name)
+
+    max_quantity_animals = int(
+        await get_value(session=session, value_name="MAX_QUANTITY_ANIMALS")
+    )
+    price_for_create_unity = int(
+        await get_value(session=session, value_name="PRICE_FOR_CREATE_UNITY")
+    )
+
+    _append_unique_action(actions, "wait", {})
+
+    if int(player.get("daily_bonus_available", 0) or 0) > 0:
+        _append_unique_action(actions, "claim_daily_bonus", {"rerolls": 0})
+
+    if rub >= rate:
+        _append_unique_action(actions, "exchange_bank", {"mode": "all"})
+        _append_unique_action(
+            actions, "exchange_bank", {"mode": "amount", "amount": rate}
+        )
+
+    can_create_item_now = bool(
+        usd >= int(items.get("create_price_usd", 0) or 0)
+        or int(player.get("paw_coins", 0) or 0) >= CREATE_ITEM_PAW_PRICE
+    )
+    if affordable_aviaries or affordable_variants or can_create_item_now:
+        _append_unique_action(actions, "invest_for_income", {})
+    if remain_seats > 0 and (targeted_candidates or affordable_variants):
+        _append_unique_action(actions, "invest_for_top_animals", {})
+
+    for row in affordable_aviaries[:3]:
+        _append_unique_action(
+            actions,
+            "buy_aviary",
+            {"code_name_aviary": row.get("code_name"), "quantity": 1},
+        )
+
+    for row in affordable_variants[:4]:
+        _append_unique_action(
+            actions,
+            "buy_rarity_animal",
+            {
+                "animal": row.get("animal"),
+                "rarity": row.get("rarity"),
+                "quantity": 1,
+            },
+        )
+
+    if (
+        not merchant.get("first_offer_bought")
+        and remain_seats >= int(merchant.get("quantity_animals", 0) or 0)
+        and usd >= int(merchant.get("price_with_discount", 0) or 0)
+    ):
+        _append_unique_action(actions, "buy_merchant_discount_offer", {})
+
+    if remain_seats >= max_quantity_animals and usd >= int(
+        merchant.get("random_offer_price", 0) or 0
+    ):
+        _append_unique_action(actions, "buy_merchant_random_offer", {})
+
+    if remain_seats > 0:
+        for animal_name in targeted_candidates[:3]:
+            _append_unique_action(
+                actions,
+                "buy_merchant_targeted_offer",
+                {"animal": animal_name, "quantity": 1},
+            )
+
+    if can_create_item_now:
+        _append_unique_action(actions, "create_item", {})
+
+    if owned_items:
+        _append_unique_action(actions, "optimize_items", {})
+
+    if inactive_items and len(active_items) < 3:
+        for item in sorted(
+            inactive_items, key=lambda row: int(row.get("lvl", 0) or 0), reverse=True
+        )[:3]:
+            _append_unique_action(
+                actions,
+                "activate_item",
+                {"id_item": item.get("id_item")},
+            )
+
+    for item in active_items[:3]:
+        _append_unique_action(
+            actions,
+            "deactivate_item",
+            {"id_item": item.get("id_item")},
+        )
+
+    for item in sorted(
+        owned_items, key=lambda row: int(row.get("lvl", 0) or 0), reverse=True
+    )[:3]:
+        _append_unique_action(actions, "sell_item", {"id_item": item.get("id_item")})
+
+    affordable_upgrades = [
+        row
+        for row in item_opportunities.get("upgrade_candidates", [])
+        if usd >= int(row.get("cost_usd", 0) or 0)
+    ]
+    for row in affordable_upgrades[:3]:
+        _append_unique_action(actions, "upgrade_item", {"id_item": row.get("id_item")})
+
+    affordable_merges = [
+        row
+        for row in item_opportunities.get("merge_candidates", [])
+        if usd >= int(row.get("cost_usd", 0) or 0)
+    ]
+    for row in affordable_merges[:2]:
+        _append_unique_action(
+            actions,
+            "merge_items",
+            {
+                "id_item_1": row.get("id_item_1"),
+                "id_item_2": row.get("id_item_2"),
+            },
+        )
+
+    if not player.get("current_unity"):
+        if usd >= price_for_create_unity:
+            _append_unique_action(actions, "create_unity", {})
+        for row in (unity.get("candidates") or [])[:2]:
+            _append_unique_action(
+                actions,
+                "join_best_unity",
+                {"owner_idpk": int(row.get("owner_idpk", 0) or 0)},
+            )
+    elif current_unity.get("is_owner"):
+        for row in (unity.get("recruit_targets") or [])[:2]:
+            _append_unique_action(
+                actions,
+                "recruit_top_player",
+                {"idpk_user": int(row.get("idpk", 0) or 0)},
+            )
+        if current_unity.get("can_upgrade"):
+            _append_unique_action(actions, "upgrade_unity_level", {})
+        pending_requests = current_unity.get("pending_requests") or []
+        for row in pending_requests[:2]:
+            applicant_id = int(row.get("idpk_user", 0) or 0)
+            _append_unique_action(
+                actions,
+                "review_unity_request",
+                {"idpk_user": applicant_id, "decision": "accept"},
+            )
+            _append_unique_action(
+                actions,
+                "review_unity_request",
+                {"idpk_user": applicant_id, "decision": "reject"},
+            )
+
+    return actions
+
+
+def _score_allowed_action(
+    action_entry: dict[str, Any], observation: dict[str, Any]
+) -> tuple[int, str]:
+    action_name = str(action_entry.get("action", "wait"))
+    params = action_entry.get("params", {}) or {}
+    summary = observation.get("strategy_signals", {}).get("summary", {})
+    player = observation.get("player", {})
+    bank = observation.get("bank", {})
+    merchant = observation.get("merchant", {})
+    items = observation.get("items", {})
+    unity = observation.get("unity", {})
+    current_unity = unity.get("current") or {}
+
+    if action_name == "claim_daily_bonus":
+        return 93, "free value available immediately"
+    if action_name == "exchange_bank":
+        rate = max(1, int(bank.get("rate_rub_usd", 1) or 1))
+        rub = int(player.get("rub", 0) or 0)
+        return 82, f"converts about {rub // rate} USD-equivalent from idle RUB"
+    if action_name == "buy_aviary":
+        option = _find_aviary_option(
+            observation, str(params.get("code_name_aviary", ""))
+        )
+        if not option:
+            return 78, "adds zoo capacity"
+        base_score = 95 if summary.get("need_seats") else 81
+        return (
+            base_score,
+            f"unlocks {int(option.get('size', 0) or 0)} seats for {int(option.get('price_usd', 0) or 0)} USD",
+        )
+    if action_name == "buy_rarity_animal":
+        variant = _find_animal_variant(
+            observation,
+            str(params.get("animal", "")),
+            str(params.get("rarity", "")),
+        )
+        if not variant:
+            return 80, "adds more animal income"
+        payback = variant.get("payback_minutes")
+        payback_note = (
+            f"payback {float(payback):.1f} min"
+            if payback is not None
+            else "income upgrade"
+        )
+        return (
+            90,
+            f"{payback_note}, cost {int(variant.get('price_usd', 0) or 0)} USD, +{int(variant.get('income_rub', 0) or 0)} RUB/min",
+        )
+    if action_name == "buy_merchant_discount_offer":
+        return (
+            84,
+            f"merchant discount buys {int(merchant.get('quantity_animals', 0) or 0)} animals for {int(merchant.get('price_with_discount', 0) or 0)} USD",
+        )
+    if action_name == "buy_merchant_random_offer":
+        return (
+            76,
+            f"merchant random bundle costs {int(merchant.get('random_offer_price', 0) or 0)} USD",
+        )
+    if action_name == "buy_merchant_targeted_offer":
+        return 74, f"targets {params.get('animal')} directly through the merchant"
+    if action_name == "create_item":
+        return (
+            77,
+            f"item engine costs {int(items.get('create_price_usd', 0) or 0)} USD or paw coins",
+        )
+    if action_name == "optimize_items":
+        return 68, "rebalances active items with no direct currency cost"
+    if action_name == "activate_item":
+        return 71, "activates an idle item slot"
+    if action_name == "deactivate_item":
+        return 54, "frees an active slot for a better item"
+    if action_name == "sell_item":
+        return 48, "liquidates an item for immediate cash"
+    if action_name == "upgrade_item":
+        for row in observation.get("item_opportunities", {}).get(
+            "upgrade_candidates", []
+        ):
+            if row.get("id_item") == params.get("id_item"):
+                return (
+                    72,
+                    f"upgrade costs {int(row.get('cost_usd', 0) or 0)} USD at {int(row.get('success_percent', 0) or 0)}% success",
+                )
+        return 70, "improves an existing item"
+    if action_name == "merge_items":
+        for row in observation.get("item_opportunities", {}).get(
+            "merge_candidates", []
+        ):
+            if row.get("id_item_1") == params.get("id_item_1") and row.get(
+                "id_item_2"
+            ) == params.get("id_item_2"):
+                return (
+                    69,
+                    f"merge costs {int(row.get('cost_usd', 0) or 0)} USD with combined score {float(row.get('combined_score', 0) or 0):.1f}",
+                )
+        return 67, "merges two items into one stronger roll"
+    if action_name == "create_unity":
+        return 66, "opens a new social shell when solo play is too limiting"
+    if action_name == "join_best_unity":
+        for row in unity.get("candidates", []):
+            if int(row.get("owner_idpk", 0) or 0) == int(
+                params.get("owner_idpk", 0) or 0
+            ):
+                return (
+                    74,
+                    f"joins {row.get('name')} with {int(row.get('income', 0) or 0)} RUB/min unity income",
+                )
+        return 72, "joins a stronger unity for social leverage"
+    if action_name == "recruit_top_player":
+        for row in unity.get("recruit_targets", []):
+            if int(row.get("idpk", 0) or 0) == int(params.get("idpk_user", 0) or 0):
+                return (
+                    79,
+                    f"invites {row.get('nickname')} with {int(row.get('income', 0) or 0)} income",
+                )
+        return 77, "recruits a strong free player"
+    if action_name == "upgrade_unity_level":
+        return (
+            83,
+            f"current unity can level up from {int(current_unity.get('level', 0) or 0)}",
+        )
+    if action_name == "review_unity_request":
+        decision = str(params.get("decision", "accept"))
+        return (
+            94 if decision == "accept" else 63,
+            f"{decision}s a pending unity request immediately",
+        )
+    if action_name == "invest_for_income":
+        return 73, "delegates to the best immediate compounding investment"
+    if action_name == "invest_for_top_animals":
+        return 70, "pushes raw animal count when direct buys are available"
+    return 0, ""
+
+
+def build_decision_brief(observation: dict[str, Any]) -> dict[str, Any]:
+    player = observation.get("player", {})
+    bank = observation.get("bank", {})
+    zoo = observation.get("zoo", {})
+    items = observation.get("items", {})
+    unity = observation.get("unity", {})
+    summary = observation.get("strategy_signals", {}).get("summary", {})
+    effective_usd = _effective_usd(player, bank)
+
+    if int(zoo.get("remain_seats", 0) or 0) <= 0:
+        bottleneck = "Seat capacity is at zero, so all animal growth is blocked until capacity opens."
+    elif int(items.get("owned_count", 0) or 0) > 0 and int(
+        items.get("active_count", 0) or 0
+    ) < min(3, int(items.get("owned_count", 0) or 0)):
+        bottleneck = "Some owned items are idle, so passive modifiers are underused."
+    elif not player.get("current_unity") and (unity.get("candidates") or []):
+        bottleneck = (
+            "The NPC is solo, so unity leverage and recruiting pressure are both idle."
+        )
+    elif summary.get("next_unlock"):
+        next_unlock = summary.get("next_unlock") or {}
+        target_usd = float(int(next_unlock.get("target_usd", 0) or 0))
+        missing_usd = max(0, int(target_usd - effective_usd))
+        bottleneck = f"Cash is short by about {missing_usd} USD for the next unlock {next_unlock.get('label')}."
+    else:
+        bottleneck = "No dominant blocker detected, so the best immediate compounding action should win."
+
+    top_affordable_actions = []
+    for action_entry in observation.get("allowed_actions", []):
+        if action_entry.get("action") == "wait":
+            continue
+        score, note = _score_allowed_action(
+            action_entry=action_entry, observation=observation
+        )
+        if score <= 0:
+            continue
+        top_affordable_actions.append(
+            {
+                "action": action_entry.get("action"),
+                "params": action_entry.get("params", {}) or {},
+                "score": score,
+                "note": note,
+            }
+        )
+    top_affordable_actions.sort(
+        key=lambda row: (int(row.get("score", 0) or 0), str(row.get("action", ""))),
+        reverse=True,
+    )
+
+    next_unaffordable_candidates: list[dict[str, Any]] = []
+    best_income_option = summary.get("best_income_option") or {}
+    if (
+        best_income_option
+        and int(best_income_option.get("affordable_quantity", 0) or 0) <= 0
+    ):
+        target_usd = int(best_income_option.get("price_usd", 0) or 0)
+        next_unaffordable_candidates.append(
+            {
+                "action": "buy_rarity_animal",
+                "animal": best_income_option.get("animal"),
+                "rarity": best_income_option.get("rarity"),
+                "missing_usd": max(0, int(target_usd - effective_usd)),
+                "eta_minutes": None
+                if best_income_option.get("eta_seconds") is None
+                else int(best_income_option.get("eta_seconds", 0) or 0) // 60,
+            }
+        )
+    best_aviary_option = summary.get("best_aviary_option") or {}
+    if (
+        best_aviary_option
+        and int(best_aviary_option.get("affordable_quantity", 0) or 0) <= 0
+    ):
+        target_usd = int(best_aviary_option.get("price_usd", 0) or 0)
+        next_unaffordable_candidates.append(
+            {
+                "action": "buy_aviary",
+                "code_name_aviary": best_aviary_option.get("code_name"),
+                "missing_usd": max(0, int(target_usd - effective_usd)),
+                "eta_minutes": None
+                if best_aviary_option.get("eta_seconds") is None
+                else int(best_aviary_option.get("eta_seconds", 0) or 0) // 60,
+            }
+        )
+    create_item_price = int(items.get("create_price_usd", 0) or 0)
+    if create_item_price > 0 and not summary.get("can_create_item_now"):
+        create_item_eta = estimate_usd_eta_seconds(
+            usd=int(player.get("usd", 0) or 0),
+            rub=int(player.get("rub", 0) or 0),
+            rate_rub_usd=int(bank.get("rate_rub_usd", 1) or 1),
+            income_per_minute_rub=int(player.get("income_per_minute_rub", 0) or 0),
+            target_usd=create_item_price,
+        )
+        next_unaffordable_candidates.append(
+            {
+                "action": "create_item",
+                "missing_usd": max(0, int(create_item_price - effective_usd)),
+                "eta_minutes": None
+                if create_item_eta is None
+                else int(create_item_eta) // 60,
+            }
+        )
+
+    next_unaffordable = None
+    if next_unaffordable_candidates:
+        next_unaffordable_candidates.sort(
+            key=lambda row: (
+                row.get("eta_minutes") is None,
+                int(row.get("eta_minutes", 10**9) or 10**9),
+                int(row.get("missing_usd", 0) or 0),
+            )
+        )
+        next_unaffordable = next_unaffordable_candidates[0]
+
+    return {
+        "bottleneck": bottleneck,
+        "top_affordable_actions": top_affordable_actions[:4],
+        "next_unaffordable": next_unaffordable,
+    }
+
+
 def build_strategy_signals(observation: dict[str, Any]) -> dict[str, Any]:
     remain_seats = int(observation["zoo"]["remain_seats"])
     rate = int(observation["bank"]["rate_rub_usd"])
@@ -596,6 +1179,7 @@ def build_strategy_signals(observation: dict[str, Any]) -> dict[str, Any]:
 
 def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
     summary = observation.get("strategy_signals", {}).get("summary", {})
+    decision_brief = observation.get("decision_brief", {})
     behavior = observation.get("memory", {}).get("behavior_guidance", {})
     active_goals = observation.get("memory", {}).get("active_goals", [])
     recommended_actions: list[dict[str, Any]] = []
@@ -615,6 +1199,14 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
                 "reason": reason[:180],
                 "eta_seconds": eta_seconds,
             }
+        )
+
+    for row in decision_brief.get("top_affordable_actions", [])[:3]:
+        add_step(
+            str(row.get("action", "wait")),
+            str(row.get("note", "High-value affordable action.")),
+            params=row.get("params", {}) or {},
+            eta_seconds=0,
         )
 
     social_target = summary.get("social_target") or {}
@@ -830,9 +1422,12 @@ async def build_observation(
         session=session,
         user=user,
         remain_seats=remain_seats,
+        rate_rub_usd=int(rate),
+        income_per_minute_rub=int(current_income),
     )
     aviary_market = await build_aviary_market(session=session, user=user)
     items = await build_item_state(session=session, user=user)
+    momentum = build_momentum_signal(user=user, current_income=int(current_income))
     bank_storage = await get_value(
         session=session,
         value_name="BANK_STORAGE",
@@ -844,7 +1439,7 @@ async def build_observation(
         value_name="BANK_PERCENT_FEE",
     )
     observation = {
-        "schema_version": 4,
+        "schema_version": 5,
         "current_time": datetime.now().isoformat(),
         "wake_context": {
             "source": (wake_context or {}).get("source", "scheduled"),
@@ -903,85 +1498,15 @@ async def build_observation(
         "standings": standings,
         "animal_market": animal_market,
         "aviary_market": aviary_market,
-        "allowed_actions": [
-            {"action": "wait", "params": {}},
-            {
-                "action": "claim_daily_bonus",
-                "params": {"rerolls": 0},
-            },
-            {"action": "invest_for_income", "params": {}},
-            {"action": "invest_for_top_animals", "params": {}},
-            {
-                "action": "exchange_bank",
-                "params": {"mode": "all"},
-            },
-            {
-                "action": "exchange_bank",
-                "params": {"mode": "amount", "amount": rate},
-            },
-            {
-                "action": "buy_aviary",
-                "params": {"code_name_aviary": "<from aviary_market>", "quantity": 1},
-            },
-            {
-                "action": "buy_rarity_animal",
-                "params": {
-                    "animal": "<from animal_market>",
-                    "rarity": "_rare|_epic|_mythical|_leg",
-                    "quantity": 1,
-                },
-            },
-            {"action": "buy_merchant_discount_offer", "params": {}},
-            {"action": "buy_merchant_random_offer", "params": {}},
-            {
-                "action": "buy_merchant_targeted_offer",
-                "params": {"animal": "<from animal_market>", "quantity": 1},
-            },
-            {"action": "create_item", "params": {}},
-            {"action": "optimize_items", "params": {}},
-            {
-                "action": "activate_item",
-                "params": {"id_item": "<from items.items>"},
-            },
-            {
-                "action": "deactivate_item",
-                "params": {"id_item": "<from items.items>"},
-            },
-            {
-                "action": "sell_item",
-                "params": {"id_item": "<from items.items>"},
-            },
-            {
-                "action": "upgrade_item",
-                "params": {"id_item": "<from item_opportunities.upgrade_candidates>"},
-            },
-            {
-                "action": "merge_items",
-                "params": {
-                    "id_item_1": "<from item_opportunities.merge_candidates>",
-                    "id_item_2": "<from item_opportunities.merge_candidates>",
-                },
-            },
-            {"action": "create_unity", "params": {"name": "optional_string"}},
-            {
-                "action": "join_best_unity",
-                "params": {"owner_idpk": "<from unity.candidates>"},
-            },
-            {
-                "action": "recruit_top_player",
-                "params": {"idpk_user": "<from unity.recruit_targets>"},
-            },
-            {"action": "upgrade_unity_level", "params": {}},
-            {
-                "action": "review_unity_request",
-                "params": {
-                    "idpk_user": "<from unity.current.pending_requests>",
-                    "decision": "accept|reject",
-                },
-            },
-        ],
+        "momentum": momentum,
     }
+    observation["allowed_actions"] = await build_allowed_actions(
+        session=session,
+        user=user,
+        observation=observation,
+    )
     observation["strategy_signals"] = build_strategy_signals(observation=observation)
+    observation["decision_brief"] = build_decision_brief(observation=observation)
     observation["memory"] = await build_npc_memory_context(
         session=session,
         user=user,
@@ -999,6 +1524,8 @@ async def build_animal_market(
     session: AsyncSession,
     user: User,
     remain_seats: int,
+    rate_rub_usd: int,
+    income_per_minute_rub: int,
 ) -> list[dict[str, Any]]:
     animals = await get_all_animals(session=session)
     unity_idpk = int(get_unity_idpk(user.current_unity) or 0) or None
@@ -1030,25 +1557,36 @@ async def build_animal_market(
                 remain_seats,
                 int(user.usd) // price if price else 0,
             )
-            variants.append(
+            variant_payload = {
+                "rarity": rarity,
+                "code_name": code_name,
+                "price_usd": int(price),
+                "income_rub": int(income_value),
+                "payback_minutes": round(price / income_value, 2)
+                if income_value
+                else None,
+                "owned": int(animals_state.get(code_name, 0)),
+                "affordable_quantity": int(max(0, affordable_quantity)),
+                "eta_seconds": estimate_usd_eta_seconds(
+                    usd=int(user.usd),
+                    rub=int(user.rub),
+                    rate_rub_usd=rate_rub_usd,
+                    income_per_minute_rub=income_per_minute_rub,
+                    target_usd=int(price),
+                ),
+            }
+            if int(variant_payload.get("affordable_quantity", 0) or 0) > 0 or (
+                variant_payload.get("eta_seconds") is not None
+                and int(variant_payload.get("eta_seconds", 0) or 0) <= 7200
+            ):
+                variants.append(variant_payload)
+        if variants:
+            market.append(
                 {
-                    "rarity": rarity,
-                    "code_name": code_name,
-                    "price_usd": int(price),
-                    "income_rub": int(income_value),
-                    "payback_minutes": round(price / income_value, 2)
-                    if income_value
-                    else None,
-                    "owned": int(animals_state.get(code_name, 0)),
-                    "affordable_quantity": int(max(0, affordable_quantity)),
+                    "animal": base_code,
+                    "variants": variants,
                 }
             )
-        market.append(
-            {
-                "animal": base_code,
-                "variants": variants,
-            }
-        )
     return market
 
 
@@ -1130,19 +1668,57 @@ def validate_action(decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _matches_allowed_params(
+    proposed_params: dict[str, Any], allowed_params: dict[str, Any]
+) -> bool:
+    if not allowed_params:
+        return True
+    for key, allowed_value in allowed_params.items():
+        if key not in proposed_params:
+            return False
+        proposed_value = proposed_params.get(key)
+        if isinstance(allowed_value, str):
+            if allowed_value.startswith("<") and allowed_value.endswith(">"):
+                continue
+            if allowed_value in {"optional_string", "string"}:
+                continue
+            if "|" in allowed_value:
+                if str(proposed_value) not in allowed_value.split("|"):
+                    return False
+                continue
+        if proposed_value != allowed_value:
+            return False
+    return True
+
+
 def apply_action_guardrails(
     action: dict[str, Any],
     observation: dict[str, Any],
 ) -> dict[str, Any]:
-    allowed_actions = {
-        str(item.get("action", "wait"))
+    allowed_entries = [
+        item
         for item in observation.get("allowed_actions", [])
         if isinstance(item, dict)
-    }
+    ]
+    allowed_actions = {str(item.get("action", "wait")) for item in allowed_entries}
+    matching_entries = [
+        item
+        for item in allowed_entries
+        if str(item.get("action", "wait")) == action["action"]
+    ]
+
     if action["action"] not in allowed_actions:
         action["action"] = "wait"
         action["params"] = {}
         action["reason"] = f"invalid_action_fallback:{action['reason'][:120]}"
+    elif matching_entries and not any(
+        _matches_allowed_params(action["params"], item.get("params", {}) or {})
+        for item in matching_entries
+    ):
+        fallback_entry = matching_entries[0]
+        action["action"] = str(fallback_entry.get("action", "wait"))
+        action["params"] = fallback_entry.get("params", {}) or {}
+        action["reason"] = f"invalid_params_fallback:{action['reason'][:120]}"
 
     guard = observation.get("anti_loop_guard", {})
     blocked_actions = {
@@ -1317,6 +1893,8 @@ async def register_npc_move(
 ) -> None:
     history = json.loads(user.history_moves)
     key = datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")
+    current_income = int(await income_(session=session, user=user))
+    total_animals = int(await get_total_number_animals(self=user))
     history[key] = json.dumps(
         {
             "npc": user.nickname,
@@ -1327,6 +1905,14 @@ async def register_npc_move(
             "wake_source": (wake_trigger or {}).get("source"),
             "wake_reason": (wake_trigger or {}).get("reason"),
             "result": result,
+            "after_state": {
+                "usd": int(user.usd),
+                "rub": int(user.rub),
+                "paw_coins": int(user.paw_coins),
+                "income_per_minute_rub": current_income,
+                "total_animals": total_animals,
+                "current_unity": user.current_unity,
+            },
         },
         ensure_ascii=False,
     )
@@ -1334,7 +1920,7 @@ async def register_npc_move(
         session=session,
         value_name="LIMIT_ON_WRITE_MOVES",
     )
-    while len(history) > limit_on_write_moves:
+    while len(history) > int(limit_on_write_moves):
         first_key = next(iter(history))
         del history[first_key]
     user.history_moves = json.dumps(history, ensure_ascii=False)

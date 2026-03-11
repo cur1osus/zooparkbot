@@ -11,11 +11,13 @@ from .settings import NpcAgentSettings
 
 from pydantic import BaseModel
 
+
 class ActionDecision(BaseModel):
     action: str
     params: dict[str, Any]
     reason: str
     sleep_seconds: int
+
 
 class ReflectionOutput(BaseModel):
     summary: str
@@ -27,8 +29,38 @@ class ReflectionOutput(BaseModel):
     goal_adjustments: list[dict[str, Any]]
 
 
+class ActionReasoning(BaseModel):
+    bottleneck: str
+    viable_actions: list[str]
+    best_choice: str
+    reason: str
 
-SYSTEM_PROMPT = """
+
+ACTION_REASONING_STEPS = """
+Before producing the final answer, think through this 3-step checklist internally:
+STEP 1 - BOTTLENECK: identify the single biggest constraint right now.
+STEP 2 - VIABLE ACTIONS: consider only actions that are executable right now from allowed_actions.
+STEP 3 - BEST ROI: choose the viable action with the highest compounding value.
+Then return only the final JSON.
+""".strip()
+
+
+ACTION_FEW_SHOTS = """
+Examples of correct decisions:
+
+[Seats full, enough USD for aviary]
+{"action": "buy_aviary", "params": {"code_name_aviary": "aviary_1", "quantity": 1}, "reason": "seats=0 blocks all animal growth", "sleep_seconds": 120}
+
+[Bonus available, nothing else affordable now]
+{"action": "claim_daily_bonus", "params": {"rerolls": 0}, "reason": "free value while next unlock is still far", "sleep_seconds": 180}
+
+[Enough RUB for exchange, next unlock is close]
+{"action": "exchange_bank", "params": {"mode": "all"}, "reason": "convert RUB to reach the next ROI unlock sooner", "sleep_seconds": 90}
+""".strip()
+
+
+SYSTEM_PROMPT = (
+    """
 You are an autonomous NPC player in a Telegram zoo economy game.
 Your task is to choose exactly one next action for your player and decide when to wake up next.
 
@@ -49,11 +81,52 @@ Rules:
 - Avoid repeating recently failed actions unless the state clearly changed.
 - Return sleep_seconds as the planned delay until the next wake-up.
 - Keep sleep_seconds within the limits from wake_context.constraints.
+- Use decision_brief first when it exists because it already ranks the best legal options.
+- Use momentum to break stale loops and detect when waiting is no longer productive.
 - Respond with JSON only.
 - JSON shape: {"action": "...", "params": {...}, "reason": "short text", "sleep_seconds": 300}
 - Keep reason short.
 - Never invent fields outside action, params, reason, sleep_seconds.
 - If no action is attractive, return {"action": "wait", "params": {}, "reason": "...", "sleep_seconds": 300}
+
+__ACTION_REASONING_STEPS__
+
+__ACTION_FEW_SHOTS__
+""".replace("__ACTION_REASONING_STEPS__", ACTION_REASONING_STEPS)
+    .replace("__ACTION_FEW_SHOTS__", ACTION_FEW_SHOTS)
+    .strip()
+)
+
+ACTION_REASONING_PROMPT = """
+You are analyzing a Telegram zoo economy NPC turn.
+
+Return JSON only with this shape:
+{
+  "bottleneck": "single biggest constraint",
+  "viable_actions": ["action names executable right now"],
+  "best_choice": "best action name",
+  "reason": "short tactical reason"
+}
+
+Rules:
+- Use only the provided observation.
+- Treat allowed_actions as the source of truth for what is executable right now.
+- Prefer decision_brief and momentum over raw guesswork.
+- Keep it concise and tactical.
+""".strip()
+
+FINALIZE_ACTION_PROMPT = """
+You are finalizing one NPC action for a Telegram zoo economy game.
+
+Use the provided observation plus prior reasoning.
+Return JSON only with this exact shape:
+{"action": "...", "params": {...}, "reason": "short text", "sleep_seconds": 300}
+
+Rules:
+- The final action must be executable from allowed_actions right now.
+- Re-check params carefully before answering.
+- Keep reason short.
+- If the prior reasoning conflicts with the observation, fix it and still return the best legal action.
 """.strip()
 
 CHAT_SYSTEM_PROMPT = """
@@ -113,45 +186,66 @@ class NpcDecisionClient:
     def __init__(self, settings: NpcAgentSettings):
         self.settings = settings
 
-    async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
-        if self.settings.transport == "cli":
-            return await self._choose_action_via_cli(observation=observation)
-
-        # Smart trim observation by section priority before sending to LLM (#10)
-        TRIM_LIMITS: dict[str, Any] = {
-            "standings": {"top_income": 3, "top_money": 3, "top_animals": 3, "top_referrals": 3},
+    def _build_trimmed_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
+        trim_limits: dict[str, Any] = {
+            "standings": {
+                "top_income": 3,
+                "top_money": 3,
+                "top_animals": 3,
+                "top_referrals": 3,
+            },
             "item_opportunities": {"upgrade_candidates": 5, "merge_candidates": 3},
             "unity": {"candidates": 3, "recruit_targets": 3},
             "animal_market": 7,
             "aviary_market": 5,
+            "allowed_actions": 14,
+            "decision_brief": {"top_affordable_actions": 4},
+            "momentum": {"last_3_actions": 3},
         }
-        DEFAULT_LIST_LIMIT = 5
+        default_list_limit = 5
         clean_obs = {}
-        for k, v in observation.items():
-            section_limit = TRIM_LIMITS.get(k)
-            if isinstance(section_limit, dict) and isinstance(v, dict):
-                clean_v = {}
-                for sub_k, sub_v in v.items():
-                    sub_limit = section_limit.get(sub_k, DEFAULT_LIST_LIMIT)
-                    if isinstance(sub_v, list) and len(sub_v) > sub_limit:
-                        clean_v[sub_k] = sub_v[:sub_limit]
+        for key, value in observation.items():
+            section_limit = trim_limits.get(key)
+            if isinstance(section_limit, dict) and isinstance(value, dict):
+                clean_value = {}
+                for sub_key, sub_value in value.items():
+                    sub_limit = section_limit.get(sub_key, default_list_limit)
+                    if isinstance(sub_value, list) and len(sub_value) > sub_limit:
+                        clean_value[sub_key] = sub_value[:sub_limit]
                     else:
-                        clean_v[sub_k] = sub_v
-                clean_obs[k] = clean_v
-            elif isinstance(section_limit, int) and isinstance(v, list) and len(v) > section_limit:
-                clean_obs[k] = v[:section_limit]
-            elif isinstance(v, list) and len(v) > DEFAULT_LIST_LIMIT:
-                clean_obs[k] = v[:DEFAULT_LIST_LIMIT]
-            elif isinstance(v, dict) and section_limit is None:
-                clean_v = {}
-                for sub_k, sub_v in v.items():
-                    if isinstance(sub_v, list) and len(sub_v) > DEFAULT_LIST_LIMIT:
-                        clean_v[sub_k] = sub_v[:DEFAULT_LIST_LIMIT]
+                        clean_value[sub_key] = sub_value
+                clean_obs[key] = clean_value
+            elif (
+                isinstance(section_limit, int)
+                and isinstance(value, list)
+                and len(value) > section_limit
+            ):
+                clean_obs[key] = value[:section_limit]
+            elif isinstance(value, list) and len(value) > default_list_limit:
+                clean_obs[key] = value[:default_list_limit]
+            elif isinstance(value, dict) and section_limit is None:
+                clean_value = {}
+                for sub_key, sub_value in value.items():
+                    if (
+                        isinstance(sub_value, list)
+                        and len(sub_value) > default_list_limit
+                    ):
+                        clean_value[sub_key] = sub_value[:default_list_limit]
                     else:
-                        clean_v[sub_k] = sub_v
-                clean_obs[k] = clean_v
+                        clean_value[sub_key] = sub_value
+                clean_obs[key] = clean_value
             else:
-                clean_obs[k] = v
+                clean_obs[key] = value
+        return clean_obs
+
+    async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
+        clean_obs = self._build_trimmed_observation(observation)
+
+        if self.settings.action_two_pass_reasoning:
+            return await self.choose_action_with_reasoning(observation=clean_obs)
+
+        if self.settings.transport == "cli":
+            return await self._choose_action_via_cli(observation=clean_obs)
 
         return await self._request_json(
             system_prompt=SYSTEM_PROMPT,
@@ -166,8 +260,82 @@ class NpcDecisionClient:
                 "observation": clean_obs,
             },
             max_tokens=self.settings.max_tokens,
-            temperature=self.settings.temperature,
+            temperature=self.settings.action_temperature,
             model_class=ActionDecision,
+            request_kind="choose_action",
+        )
+
+    async def choose_action_with_reasoning(
+        self, observation: dict[str, Any]
+    ) -> dict[str, Any]:
+        reasoning = await self._request_action_reasoning(observation=observation)
+        if self.settings.transport == "cli":
+            content = await self._run_cli_prompt(
+                prompt_payload={
+                    "system": FINALIZE_ACTION_PROMPT,
+                    "task": "Finalize the single best next action for this NPC.",
+                    "required_output": {
+                        "action": "string",
+                        "params": "object",
+                        "reason": "short string",
+                        "sleep_seconds": "integer",
+                    },
+                    "reasoning": reasoning,
+                    "observation": observation,
+                },
+                request_kind="choose_action_final",
+            )
+            return self._parse_json(content, model_class=ActionDecision)
+
+        return await self._request_json(
+            system_prompt=FINALIZE_ACTION_PROMPT,
+            user_payload={
+                "task": "Finalize the single best next action for this NPC.",
+                "required_output": {
+                    "action": "string",
+                    "params": "object",
+                    "reason": "short string",
+                    "sleep_seconds": "integer",
+                },
+                "reasoning": reasoning,
+                "observation": observation,
+            },
+            max_tokens=min(220, self.settings.max_tokens),
+            temperature=self.settings.action_temperature,
+            model_class=ActionDecision,
+            request_kind="choose_action_final",
+        )
+
+    async def _request_action_reasoning(
+        self, observation: dict[str, Any]
+    ) -> dict[str, Any]:
+        payload = {
+            "task": "Analyze the board before choosing the next action.",
+            "required_output": {
+                "bottleneck": "string",
+                "viable_actions": ["string"],
+                "best_choice": "string",
+                "reason": "string",
+            },
+            "observation": observation,
+        }
+        if self.settings.transport == "cli":
+            content = await self._run_cli_prompt(
+                prompt_payload={
+                    "system": ACTION_REASONING_PROMPT,
+                    **payload,
+                },
+                request_kind="choose_action_reasoning",
+            )
+            return self._parse_json(content, model_class=ActionReasoning)
+
+        return await self._request_json(
+            system_prompt=ACTION_REASONING_PROMPT,
+            user_payload=payload,
+            max_tokens=min(320, self.settings.max_tokens),
+            temperature=self.settings.action_temperature,
+            model_class=ActionReasoning,
+            request_kind="choose_action_reasoning",
         )
 
     async def generate_unity_name(self, context: dict[str, Any]) -> str:
@@ -195,6 +363,7 @@ class NpcDecisionClient:
             user_payload=prompt_payload,
             max_tokens=80,
             temperature=0.7,
+            request_kind="unity_name",
         )
         return str(data.get("name", "")).strip()
 
@@ -225,13 +394,16 @@ class NpcDecisionClient:
                 prompt_payload=cli_payload,
                 request_kind="reflection",
             )
-            return self._parse_json(content, model_class=ReflectionOutput)  # fix: was ActionDecision
+            return self._parse_json(
+                content, model_class=ReflectionOutput
+            )  # fix: was ActionDecision
         return await self._request_json(
             system_prompt=REFLECTION_SYSTEM_PROMPT,
             model_class=ReflectionOutput,
             user_payload=cli_payload,
             max_tokens=min(700, self.settings.max_tokens),
             temperature=0.4,
+            request_kind="reflection",
         )
 
     async def generate_chat_comment(self, payload: dict[str, Any]) -> str:
@@ -260,7 +432,8 @@ class NpcDecisionClient:
             system_prompt=CHAT_SYSTEM_PROMPT,
             user_payload=prompt_payload,
             max_tokens=min(180, self.settings.max_tokens),
-            temperature=0.8,
+            temperature=self.settings.chat_temperature,
+            request_kind="chat_comment",
         )
         return str(data.get("message", "")).strip()
 
@@ -270,7 +443,8 @@ class NpcDecisionClient:
         user_payload: dict[str, Any],
         max_tokens: int,
         temperature: float,
-        model_class=None
+        model_class=None,
+        request_kind: str = "http_request",
     ) -> dict[str, Any]:
         request_url = self._build_request_url()
         payload = {
@@ -302,7 +476,7 @@ class NpcDecisionClient:
                     raise NpcLlmError(f"http_{response.status}:{error_body[:500]}")
                 data = await response.json()
         await self._log_usage(
-            request_kind="http_request",
+            request_kind=request_kind,
             transport="http",
             prompt_text=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             response_text=self._extract_content(data),
@@ -310,7 +484,9 @@ class NpcDecisionClient:
             usage=data.get("usage"),
         )
         content = self._extract_content(data)
-        return self._parse_json(content, model_class=model_class)  # fix: was hardcoded ActionDecision
+        return self._parse_json(
+            content, model_class=model_class
+        )  # fix: was hardcoded ActionDecision
 
     def _build_request_url(self) -> str:
         base_url = self.settings.base_url.rstrip("/")
@@ -497,7 +673,7 @@ class NpcDecisionClient:
         end = clean_content.rfind("}")
         if start == -1 or end == -1:
             raise ValueError("LLM response does not contain JSON object")
-        
+
         data = json.loads(clean_content[start : end + 1])
         if model_class:
             try:
@@ -505,6 +681,7 @@ class NpcDecisionClient:
                 return validated.model_dump()
             except Exception as e:
                 import logging
+
                 logging.warning(f"Pydantic validation error: {e}")
-                
+
         return data

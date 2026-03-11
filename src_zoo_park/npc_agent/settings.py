@@ -28,6 +28,9 @@ class NpcAgentSettings:
     max_actions_per_cycle: int
     timeout_seconds: int
     temperature: float
+    action_temperature: float
+    chat_temperature: float
+    action_two_pass_reasoning: bool
     max_observation_animals: int
     top_candidates_limit: int
     log_path: str
@@ -81,6 +84,14 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         max_actions_per_cycle=max(1, int(os.getenv("NPC_MAX_ACTIONS_PER_CYCLE", "3"))),
         timeout_seconds=max(5, int(os.getenv("NPC_LLM_TIMEOUT_SECONDS", "30"))),
         temperature=float(os.getenv("NPC_LLM_TEMPERATURE", "0.2")),
+        action_temperature=float(
+            os.getenv(
+                "NPC_ACTION_TEMPERATURE",
+                os.getenv("NPC_LLM_TEMPERATURE", "0.1"),
+            )
+        ),
+        chat_temperature=float(os.getenv("NPC_CHAT_TEMPERATURE", "0.8")),
+        action_two_pass_reasoning=_get_bool("NPC_ACTION_TWO_PASS_REASONING", False),
         max_observation_animals=max(
             3, int(os.getenv("NPC_MAX_OBSERVATION_ANIMALS", "12"))
         ),
