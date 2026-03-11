@@ -1,3 +1,4 @@
+import contextlib
 import json
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -45,6 +46,7 @@ from bot.keyboards import (
     ik_npc_unity_invitation,
     ik_start_created_game,
 )
+from tools.message import get_id_for_edit_message
 
 from .state_builder import (
     can_upgrade_unity,
@@ -964,9 +966,26 @@ async def execute_claim_chat_transfer(
     await add_to_currency(self=user, currency=tr.currency, amount=int(tr.one_piece_sum))
     tr.pieces -= 1
 
-    # Prevent spam-sniping: one claim per decision step and modest EV cap.
     if tr.pieces <= 0:
         tr.status = False
+
+    # Keep chat button state in sync when NPC claims a piece.
+    if tr.id_mess:
+        cur = "$" if tr.currency == "usd" else "₽"
+        keyboard = (
+            await ik_get_money(
+                one_piece=f"{int(tr.one_piece_sum):,d}{cur}",
+                remain_pieces=int(tr.pieces),
+                idpk_tr=tr.idpk,
+            )
+            if int(tr.pieces) > 0
+            else None
+        )
+        with contextlib.suppress(Exception):
+            await bot.edit_message_reply_markup(
+                reply_markup=keyboard,
+                **get_id_for_edit_message(str(tr.id_mess)),
+            )
 
     return {
         "status": "ok",

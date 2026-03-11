@@ -211,6 +211,9 @@ async def pagination_demo(chosen_result: ChosenInlineResult, session: AsyncSessi
         amount=tr.pieces * tr.one_piece_sum,
     )
     tr.status = True
+    # Save inline message id so backend claimers (NPC) can refresh keyboard state.
+    if chosen_result.inline_message_id:
+        tr.id_mess = str(chosen_result.inline_message_id)
     await session.flush()
     await session.execute(delete(TransferMoney).where(TransferMoney.status == False))
     await session.commit()

@@ -202,6 +202,7 @@ class TransferMoney(Base):
     one_piece_sum: Mapped[int] = mapped_column(BigInteger)
     pieces: Mapped[int] = mapped_column()
     used: Mapped[str] = mapped_column(SQLText, nullable=True)
+    id_mess: Mapped[str] = mapped_column(String(length=80), nullable=True)
     status: Mapped[bool] = mapped_column(default=False)
 
 
