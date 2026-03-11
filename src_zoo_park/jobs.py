@@ -208,6 +208,7 @@ async def create_game_for_chat():
             currency_award="usd",
             end_date=datetime.now() + timedelta(seconds=SEC_TO_EXPIRE_GAME),
             amount_moves=random.randint(6, 12),
+            source_chat_id=CHAT_ID,
         )
         session.add(game)
         await session.execute(

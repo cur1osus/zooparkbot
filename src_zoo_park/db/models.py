@@ -203,6 +203,7 @@ class TransferMoney(Base):
     pieces: Mapped[int] = mapped_column()
     used: Mapped[str] = mapped_column(SQLText, nullable=True)
     id_mess: Mapped[str] = mapped_column(String(length=80), nullable=True)
+    source_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
     status: Mapped[bool] = mapped_column(default=False)
 
 
@@ -228,6 +229,7 @@ class Game(Base):
     currency_award: Mapped[str] = mapped_column(String(length=10))
     amount_moves: Mapped[int] = mapped_column(default=7)
     id_mess: Mapped[str] = mapped_column(String(length=64), nullable=True)
+    source_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
     activate: Mapped[bool] = mapped_column(default=False)
     end: Mapped[bool] = mapped_column(default=False)
     end_date: Mapped[str] = mapped_column(DateTime)

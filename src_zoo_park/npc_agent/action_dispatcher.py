@@ -917,6 +917,7 @@ async def execute_send_chat_transfer(
         one_piece_sum=one_piece,
         pieces=pieces,
         status=True,
+        source_chat_id=CHAT_ID,
     )
     session.add(transfer)
     await session.flush()
@@ -954,6 +955,8 @@ async def execute_claim_chat_transfer(
     tr = await session.get(TransferMoney, idpk_tr)
     if not tr or not tr.status:
         return {"status": "skipped", "summary": "transfer_not_found"}
+    if int(getattr(tr, "source_chat_id", 0) or 0) != int(CHAT_ID):
+        return {"status": "skipped", "summary": "transfer_not_official_chat"}
     if int(tr.idpk_user) == int(user.idpk):
         return {"status": "skipped", "summary": "own_transfer"}
     if int(tr.pieces or 0) <= 0:
@@ -1032,6 +1035,7 @@ async def execute_create_chat_game(
         end_date=datetime.now() + timedelta(seconds=sec_to_expire_game),
         amount_moves=safe_int(params.get("amount_moves", 5), default=5, min_value=1),
         activate=True,
+        source_chat_id=CHAT_ID,
     )
     session.add(game)
     await session.flush()
