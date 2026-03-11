@@ -242,9 +242,18 @@ class NpcDecisionClient:
 
         # User-requested payload reductions.
         clean_obs.pop("momentum", None)
+        clean_obs.pop("animal_market", None)
         standings = clean_obs.get("standings")
         if isinstance(standings, dict):
             standings.pop("top_referrals", None)
+
+        strategy_signals = clean_obs.get("strategy_signals")
+        if isinstance(strategy_signals, dict):
+            summary = strategy_signals.get("summary")
+            if isinstance(summary, dict):
+                top_income = summary.get("top_income_options")
+                if isinstance(top_income, list) and len(top_income) > 3:
+                    summary["top_income_options"] = top_income[:3]
 
         return clean_obs
 
