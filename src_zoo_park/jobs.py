@@ -236,11 +236,46 @@ async def create_game_for_chat():
         await session.commit()
 
 
+def _game_roll_max(game_type: str) -> int:
+    # Telegram dice ranges differ by emoji. Keep conservative caps.
+    if game_type in {"⚽️", "🏀"}:
+        return 5
+    return 6
+
+
+async def autoplay_npc_gamers(session: AsyncSession, game: Game) -> int:
+    npcs = (
+        await session.execute(
+            select(Gamer, User)
+            .join(User, User.idpk == Gamer.idpk_gamer)
+            .where(
+                Gamer.id_game == game.id_game,
+                Gamer.moves > 0,
+                Gamer.game_end == False,  # noqa: E712
+                User.id_user < 0,
+            )
+        )
+    ).all()
+
+    played = 0
+    max_roll = _game_roll_max(game.type_game)
+    for gamer, _user in npcs:
+        remaining = int(gamer.moves or 0)
+        if remaining <= 0:
+            continue
+        gamer.score += sum(random.randint(1, max_roll) for _ in range(remaining))
+        gamer.moves = 0
+        gamer.game_end = True
+        played += remaining
+    return played
+
+
 async def ender_minigames(session: AsyncSession):
     all_games = await session.scalars(
         select(Game).where(and_(Game.end == False, Game.last_update_mess == True))
     )
     for game in all_games:
+        await autoplay_npc_gamers(session=session, game=game)
         game.end = True
         await session.execute(
             update(Gamer).where(Gamer.id_game == game.id_game).values(game_end=True)
@@ -255,6 +290,7 @@ async def updater_message_minigame(session: AsyncSession):
     ).all()
     now = datetime.now()
     for game in all_games:
+        await autoplay_npc_gamers(session=session, game=game)
         if (
             await get_current_amount_gamers(session=session, id_game=game.id_game)
             != game.amount_gamers
