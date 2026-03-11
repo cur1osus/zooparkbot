@@ -1342,6 +1342,13 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
         if str(item).strip()
     }
 
+    best_aviary_option = summary.get("best_aviary_option") or {}
+    force_capacity_unlock = bool(
+        summary.get("need_seats")
+        and best_aviary_option
+        and int(best_aviary_option.get("affordable_quantity", 0) or 0) > 0
+    )
+
     def add_step(
         action: str,
         reason: str,
@@ -1349,7 +1356,11 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
         eta_seconds: int | None = 0,
     ) -> None:
         action = str(action).strip()
-        if not action or action in avoid_actions:
+        if not action:
+            return
+        if action in avoid_actions and not (
+            force_capacity_unlock and action == "buy_aviary"
+        ):
             return
         if any(step["action"] == action for step in recommended_actions):
             return
@@ -1488,8 +1499,24 @@ def build_anti_loop_guard(observation: dict[str, Any]) -> dict[str, Any]:
     memory = observation.get("memory", {})
     behavior = memory.get("behavior_guidance", {})
     planner = observation.get("planner", {})
-    blocked_actions = [str(item) for item in behavior.get("avoid_actions", []) if item]
+    summary = observation.get("strategy_signals", {}).get("summary", {})
+
+    blocked_actions = {
+        str(item).strip()
+        for item in behavior.get("avoid_actions", [])
+        if str(item).strip()
+    }
     repeated_action = behavior.get("repeated_action")
+
+    best_aviary_option = summary.get("best_aviary_option") or {}
+    force_capacity_unlock = bool(
+        summary.get("need_seats")
+        and best_aviary_option
+        and int(best_aviary_option.get("affordable_quantity", 0) or 0) > 0
+    )
+    if force_capacity_unlock:
+        blocked_actions.discard("buy_aviary")
+
     planner_fallback = None
     for step in planner.get("recommended_actions", []) or []:
         action_name = str(step.get("action", "")).strip()
@@ -1497,7 +1524,7 @@ def build_anti_loop_guard(observation: dict[str, Any]) -> dict[str, Any]:
             planner_fallback = step
             break
     return {
-        "blocked_actions": blocked_actions[:6],
+        "blocked_actions": sorted(blocked_actions)[:6],
         "repeated_action": repeated_action,
         "idle_streak": int(behavior.get("idle_streak", 0) or 0),
         "fallback": planner_fallback,
