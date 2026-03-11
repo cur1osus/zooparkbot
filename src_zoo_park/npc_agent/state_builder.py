@@ -335,6 +335,9 @@ async def build_chat_transfers_state(session: AsyncSession, user: User) -> list[
     )
     payload: list[dict[str, Any]] = []
     for tr in transfers.all():
+        # Best-effort: only transfers that were actually posted (have message id).
+        if not getattr(tr, "id_mess", None):
+            continue
         if int(tr.idpk_user) == int(user.idpk):
             continue
         used_raw = str(tr.used or "")
@@ -867,7 +870,13 @@ async def build_allowed_actions(
             {"currency": "usd", "amount": min(usd, 300), "pieces": 5},
         )
 
-    # Disabled for NPC for safety: transfer source can be private inline context.
+    # Claim chat transfers (best-effort). We keep this enabled for +EV pickup behavior.
+    for tr in (observation.get("chat_transfers") or [])[:2]:
+        _append_unique_action(
+            actions,
+            "claim_chat_transfer",
+            {"idpk_tr": int(tr.get("idpk", 0) or 0)},
+        )
 
     if has_strong_surplus and usd >= 1800 and economy_not_blocked and not recent_chat_action:
         _append_unique_action(
