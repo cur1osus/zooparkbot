@@ -197,7 +197,6 @@ class NpcDecisionClient:
                 "top_income": 3,
                 "top_money": 3,
                 "top_animals": 3,
-                "top_referrals": 3,
             },
             "item_opportunities": {"upgrade_candidates": 5, "merge_candidates": 3},
             "unity": {"candidates": 3, "recruit_targets": 3},
@@ -205,7 +204,6 @@ class NpcDecisionClient:
             "aviary_market": 5,
             "allowed_actions": 14,
             "decision_brief": {"top_affordable_actions": 4},
-            "momentum": {"last_3_actions": 3},
         }
         default_list_limit = 5
         clean_obs = {}
@@ -241,6 +239,13 @@ class NpcDecisionClient:
                 clean_obs[key] = clean_value
             else:
                 clean_obs[key] = value
+
+        # User-requested payload reductions.
+        clean_obs.pop("momentum", None)
+        standings = clean_obs.get("standings")
+        if isinstance(standings, dict):
+            standings.pop("top_referrals", None)
+
         return clean_obs
 
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
