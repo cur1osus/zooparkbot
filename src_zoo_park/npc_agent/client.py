@@ -250,20 +250,36 @@ class NpcDecisionClient:
             standings.pop("top_referrals", None)
 
         if npc_id_user in experimental_v2_npcs:
-            # V2 payload (experimental): lean, model-led reasoning.
-            clean_obs.pop("strategy_signals", None)
-            clean_obs.pop("decision_brief", None)
+            # V2 payload (experimental): clean-room OpenClaw-style context.
+            # Keep only directly actionable state, remove planner/memory directives.
+            v2_obs: dict[str, Any] = {}
+            for key in (
+                "schema_version",
+                "current_time",
+                "wake_context",
+                "player",
+                "zoo",
+                "bank",
+                "merchant",
+                "items",
+                "unity",
+                "standings",
+                "aviary_market",
+                "allowed_actions",
+            ):
+                if key in clean_obs:
+                    v2_obs[key] = clean_obs[key]
 
-            memory = clean_obs.get("memory")
-            if isinstance(memory, dict):
-                profile = memory.get("profile")
-                if isinstance(profile, dict):
-                    memory["profile"] = {
-                        "traits": profile.get("traits", {}) or {},
-                        "active_tactics": profile.get("active_tactics", []) or [],
-                    }
+            # Make wake context minimal.
+            wake_context = v2_obs.get("wake_context")
+            if isinstance(wake_context, dict):
+                v2_obs["wake_context"] = {
+                    "source": wake_context.get("source"),
+                    "reason": wake_context.get("reason"),
+                }
 
-            allowed_actions = clean_obs.get("allowed_actions")
+            # Deduplicate allowed actions and cap size.
+            allowed_actions = v2_obs.get("allowed_actions")
             if isinstance(allowed_actions, list):
                 deduped: list[dict[str, Any]] = []
                 seen_actions: set[str] = set()
@@ -275,11 +291,11 @@ class NpcDecisionClient:
                         continue
                     seen_actions.add(action_name)
                     deduped.append(item)
-                    if len(deduped) >= 5:
+                    if len(deduped) >= 6:
                         break
-                clean_obs["allowed_actions"] = deduped
+                v2_obs["allowed_actions"] = deduped
 
-            # Add compact animal facts for faster in-model comparison.
+            # Add compact animal facts for in-model evaluation.
             animal_facts: list[dict[str, Any]] = []
             for animal_row in clean_obs.get("animal_market", []) or []:
                 animal_name = str(animal_row.get("animal", "")).strip()
@@ -309,14 +325,18 @@ class NpcDecisionClient:
                     row["price_usd"],
                 )
             )
-            clean_obs["animal_facts"] = animal_facts[:8]
+            v2_obs["animal_facts"] = animal_facts[:10]
+
+            return v2_obs
 
         return clean_obs
 
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
         clean_obs = self._build_trimmed_observation(observation)
+        npc_id_user = int((observation.get("player") or {}).get("id_user", 0) or 0)
+        v2_reasoning_npcs = {-1002}  # тИИмоха
 
-        if self.settings.action_two_pass_reasoning:
+        if self.settings.action_two_pass_reasoning or npc_id_user in v2_reasoning_npcs:
             return await self.choose_action_with_reasoning(observation=clean_obs)
 
         if self.settings.transport == "cli":
