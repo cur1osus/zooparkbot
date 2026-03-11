@@ -240,73 +240,76 @@ class NpcDecisionClient:
             else:
                 clean_obs[key] = value
 
-        # User-requested payload reductions.
-        clean_obs.pop("momentum", None)
-        clean_obs.pop("strategy_signals", None)
-        clean_obs.pop("decision_brief", None)
+        npc_id_user = int((observation.get("player") or {}).get("id_user", 0) or 0)
+        experimental_v2_npcs = {-1002}  # тИИмоха
 
+        # Shared reductions for all NPCs.
+        clean_obs.pop("momentum", None)
         standings = clean_obs.get("standings")
         if isinstance(standings, dict):
             standings.pop("top_referrals", None)
 
-        # Keep only actionable profile parts for decision-making.
-        memory = clean_obs.get("memory")
-        if isinstance(memory, dict):
-            profile = memory.get("profile")
-            if isinstance(profile, dict):
-                memory["profile"] = {
-                    "traits": profile.get("traits", {}) or {},
-                    "active_tactics": profile.get("active_tactics", []) or [],
-                }
+        if npc_id_user in experimental_v2_npcs:
+            # V2 payload (experimental): lean, model-led reasoning.
+            clean_obs.pop("strategy_signals", None)
+            clean_obs.pop("decision_brief", None)
 
-        # Deduplicate allowed actions and cap size.
-        allowed_actions = clean_obs.get("allowed_actions")
-        if isinstance(allowed_actions, list):
-            deduped: list[dict[str, Any]] = []
-            seen_actions: set[str] = set()
-            for item in allowed_actions:
-                if not isinstance(item, dict):
-                    continue
-                action_name = str(item.get("action", "")).strip()
-                if not action_name or action_name in seen_actions:
-                    continue
-                seen_actions.add(action_name)
-                deduped.append(item)
-                if len(deduped) >= 5:
-                    break
-            clean_obs["allowed_actions"] = deduped
-
-        # Add explicit compact animal info so LLM can compare options directly.
-        animal_facts: list[dict[str, Any]] = []
-        for animal_row in clean_obs.get("animal_market", []) or []:
-            animal_name = str(animal_row.get("animal", "")).strip()
-            for variant in animal_row.get("variants", []) or []:
-                animal_facts.append(
-                    {
-                        "animal": animal_name,
-                        "rarity": variant.get("rarity"),
-                        "code_name": variant.get("code_name"),
-                        "price_usd": int(variant.get("price_usd", 0) or 0),
-                        "income_rub": int(variant.get("income_rub", 0) or 0),
-                        "payback_minutes": float(
-                            variant.get("payback_minutes", 10**9) or 10**9
-                        ),
-                        "owned": int(variant.get("owned", 0) or 0),
-                        "affordable_quantity": int(
-                            variant.get("affordable_quantity", 0) or 0
-                        ),
-                        "eta_seconds": int(variant.get("eta_seconds", 0) or 0),
+            memory = clean_obs.get("memory")
+            if isinstance(memory, dict):
+                profile = memory.get("profile")
+                if isinstance(profile, dict):
+                    memory["profile"] = {
+                        "traits": profile.get("traits", {}) or {},
+                        "active_tactics": profile.get("active_tactics", []) or [],
                     }
+
+            allowed_actions = clean_obs.get("allowed_actions")
+            if isinstance(allowed_actions, list):
+                deduped: list[dict[str, Any]] = []
+                seen_actions: set[str] = set()
+                for item in allowed_actions:
+                    if not isinstance(item, dict):
+                        continue
+                    action_name = str(item.get("action", "")).strip()
+                    if not action_name or action_name in seen_actions:
+                        continue
+                    seen_actions.add(action_name)
+                    deduped.append(item)
+                    if len(deduped) >= 5:
+                        break
+                clean_obs["allowed_actions"] = deduped
+
+            # Add compact animal facts for faster in-model comparison.
+            animal_facts: list[dict[str, Any]] = []
+            for animal_row in clean_obs.get("animal_market", []) or []:
+                animal_name = str(animal_row.get("animal", "")).strip()
+                for variant in animal_row.get("variants", []) or []:
+                    animal_facts.append(
+                        {
+                            "animal": animal_name,
+                            "rarity": variant.get("rarity"),
+                            "code_name": variant.get("code_name"),
+                            "price_usd": int(variant.get("price_usd", 0) or 0),
+                            "income_rub": int(variant.get("income_rub", 0) or 0),
+                            "payback_minutes": float(
+                                variant.get("payback_minutes", 10**9) or 10**9
+                            ),
+                            "owned": int(variant.get("owned", 0) or 0),
+                            "affordable_quantity": int(
+                                variant.get("affordable_quantity", 0) or 0
+                            ),
+                            "eta_seconds": int(variant.get("eta_seconds", 0) or 0),
+                        }
+                    )
+            animal_facts.sort(
+                key=lambda row: (
+                    row["affordable_quantity"] <= 0,
+                    row["payback_minutes"],
+                    -row["income_rub"],
+                    row["price_usd"],
                 )
-        animal_facts.sort(
-            key=lambda row: (
-                row["affordable_quantity"] <= 0,
-                row["payback_minutes"],
-                -row["income_rub"],
-                row["price_usd"],
             )
-        )
-        clean_obs["animal_facts"] = animal_facts[:8]
+            clean_obs["animal_facts"] = animal_facts[:8]
 
         return clean_obs
 
