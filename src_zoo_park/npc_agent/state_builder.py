@@ -639,7 +639,16 @@ async def build_allowed_actions(
     if int(player.get("daily_bonus_available", 0) or 0) > 0:
         _append_unique_action(actions, "claim_daily_bonus", {"rerolls": 0})
 
-    if rub >= rate:
+    min_rate = max(1, int(bank.get("min_rate_rub_usd", rate) or rate))
+    max_rate = max(min_rate, int(bank.get("max_rate_rub_usd", rate) or rate))
+    near_best_rate = rate <= min_rate + 1
+    avg_rate = (min_rate + max_rate) / 2
+    much_better_than_avg = rate <= int(avg_rate)
+    next_unlock = (observation.get("strategy_signals", {}).get("summary", {}) or {}).get("next_unlock") or {}
+    unlock_eta = next_unlock.get("eta_seconds")
+    urgent_unlock = unlock_eta is not None and int(unlock_eta) <= 20 * 60
+
+    if rub >= rate and (near_best_rate or much_better_than_avg or urgent_unlock):
         _append_unique_action(actions, "exchange_bank", {"mode": "all"})
         _append_unique_action(
             actions, "exchange_bank", {"mode": "amount", "amount": rate}
@@ -1465,6 +1474,14 @@ async def build_observation(
         session=session,
         value_name="BANK_PERCENT_FEE",
     )
+    min_rate_rub_usd = await get_value(
+        session=session,
+        value_name="MIN_RATE_RUB_USD",
+    )
+    max_rate_rub_usd = await get_value(
+        session=session,
+        value_name="MAX_RATE_RUB_USD",
+    )
     observation = {
         "schema_version": 5,
         "current_time": datetime.now().isoformat(),
@@ -1507,6 +1524,8 @@ async def build_observation(
         },
         "bank": {
             "rate_rub_usd": int(rate),
+            "min_rate_rub_usd": int(min_rate_rub_usd),
+            "max_rate_rub_usd": int(max_rate_rub_usd),
             "percent_fee": int(bank_percent_fee),
             "bank_storage": str(bank_storage),
         },
