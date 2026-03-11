@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import random
 from datetime import datetime, timedelta
 
@@ -298,15 +299,20 @@ async def add_award_and_send_message(session: AsyncSession, game: Game):
             amount=award,
         )
         award_text = int(award)
-        await bot.send_message(
-            chat_id=user.id_user,
-            text=await get_text_message(
-                "game_winer_message",
-                award=award_text,
-            ),
-            message_effect_id=petard_emoji_effect,
-            reply_markup=await rk_main_menu(user_id=user.id_user),
-        )
+        try:
+            await bot.send_message(
+                chat_id=user.id_user,
+                text=await get_text_message(
+                    "game_winer_message",
+                    award=award_text,
+                ),
+                message_effect_id=petard_emoji_effect,
+                reply_markup=await rk_main_menu(user_id=user.id_user),
+            )
+        except Exception:
+            logging.exception(
+                "Failed to send game_winer_message", extra={"id_user": user.id_user}
+            )
 
 
 async def edit_text_game_in_chat(session: AsyncSession, game: Game):
