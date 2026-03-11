@@ -1,6 +1,7 @@
 import random
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
     ChosenInlineResult,
@@ -234,15 +235,23 @@ async def activate_tr(
     idpk_tr = callback_data.transfer_idpk
     tr = await session.get(TransferMoney, idpk_tr)
     if not tr:
-        await query.bot.edit_message_reply_markup(
-            inline_message_id=query.inline_message_id, reply_markup=None
-        )
+        try:
+            await query.bot.edit_message_reply_markup(
+                inline_message_id=query.inline_message_id, reply_markup=None
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
         return
     if tr.pieces == 0:
         await query.answer(text=await get_text_message("error_tr_end"), show_alert=True)
-        await query.bot.edit_message_reply_markup(
-            inline_message_id=query.inline_message_id, reply_markup=None
-        )
+        try:
+            await query.bot.edit_message_reply_markup(
+                inline_message_id=query.inline_message_id, reply_markup=None
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
         return
     if await in_used(session=session, idpk_tr=tr.idpk, idpk_user=user.idpk):
         await query.answer(
@@ -276,6 +285,10 @@ async def activate_tr(
         if tr.pieces > 0
         else None
     )
-    await query.bot.edit_message_reply_markup(
-        inline_message_id=query.inline_message_id, reply_markup=keyboard
-    )
+    try:
+        await query.bot.edit_message_reply_markup(
+            inline_message_id=query.inline_message_id, reply_markup=keyboard
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise

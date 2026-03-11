@@ -799,12 +799,27 @@ async def refresh_npc_goals(
             }
         )
 
-    reserve_target = max(create_item_price * 2, price_create_unity, 250)
+    summary = (
+        (observation or {}).get("strategy_signals", {}).get("summary", {})
+        if observation
+        else {}
+    )
+    next_unlock = summary.get("next_unlock") or {}
+    next_unlock_target = int(next_unlock.get("target_usd", 0) or 0)
+    best_income_option = summary.get("best_income_option") or {}
+    best_income_price = int(best_income_option.get("price_usd", 0) or 0)
+    immediate_engine_target = max(next_unlock_target, best_income_price)
+
+    # Dynamic liquidity target: stay near current execution horizon, don't anchor on item cost.
+    # Floor keeps some flexibility; cap prevents unrealistic long-term hoarding pressure.
+    reserve_target = int(max(350, immediate_engine_target * 1.2, price_create_unity))
+    reserve_target = min(reserve_target, 12000)
+
     active_payloads.append(
         {
             "topic": "liquidity_buffer",
             "title": "Maintain strategic liquidity",
-            "summary": "Keep enough USD available for sudden high-value opportunities.",
+            "summary": "Keep enough USD to execute the next unlock line without stalling compounding.",
             "target": {"metric": "usd", "value": reserve_target},
             "progress": {
                 "current": int(snapshot.get("usd", 0)),
@@ -2298,6 +2313,7 @@ def _build_behavior_guidance(
     active_goals: list[dict[str, Any]],
     recent_events: list[dict[str, Any]],
     progress_summary: dict[str, Any],
+    snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     recent_action_names = [
         str(event.get("action", {}).get("name", "wait")) for event in recent_events[:6]
@@ -2312,6 +2328,26 @@ def _build_behavior_guidance(
     repeated_action = recent_action_names[0] if recent_action_names else None
     if repeated_action and recent_action_names[:3].count(repeated_action) >= 3:
         blocked_actions.append(repeated_action)
+
+    last_event = recent_events[0] if recent_events else {}
+    last_action_name = str(last_event.get("action", {}).get("name", "")).strip()
+    last_result_status = str(last_event.get("result", {}).get("status", "")).strip()
+    remain_seats = int((snapshot or {}).get("remain_seats", 0) or 0)
+
+    # Cooldown: right after successful aviary buy, do not immediately repeat it.
+    if last_action_name == "buy_aviary" and last_result_status == "ok":
+        if "buy_aviary" not in blocked_actions:
+            blocked_actions.append("buy_aviary")
+
+    # Cleanup: if seat pressure is already resolved, don't keep stale aviary block,
+    # but keep a short cooldown window right after a successful buy.
+    recent_aviary_actions = recent_action_names[:3].count("buy_aviary")
+    if (
+        remain_seats > 0
+        and "buy_aviary" in blocked_actions
+        and recent_aviary_actions == 0
+    ):
+        blocked_actions = [a for a in blocked_actions if a != "buy_aviary"]
 
     action_stats = profile.get("action_stats", {})
     if isinstance(action_stats, dict):
@@ -2502,6 +2538,7 @@ async def build_npc_memory_context(
         active_goals=active_goals,
         recent_events=recent_events_for_context,
         progress_summary=progress_summary,
+        snapshot=snapshot,
     )
     return {
         "profile": profile_for_context,

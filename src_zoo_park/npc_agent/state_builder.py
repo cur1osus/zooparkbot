@@ -1989,6 +1989,27 @@ def apply_action_guardrails(
             "sleep_seconds": settings.step_seconds,
         }
 
+    # Prefer immediate high-ROI animal buy over extra bank exchange when seats are free.
+    if action["action"] == "exchange_bank":
+        summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
+        best_income = summary.get("best_income_option") or {}
+        payback_minutes = float(best_income.get("payback_minutes", 10**9) or 10**9)
+        if (
+            remain_seats > 0
+            and int(best_income.get("affordable_quantity", 0) or 0) > 0
+            and payback_minutes <= 35
+        ):
+            return {
+                "action": "buy_rarity_animal",
+                "params": {
+                    "animal": best_income.get("animal"),
+                    "rarity": best_income.get("rarity"),
+                    "quantity": 1,
+                },
+                "reason": "roi_priority_reroute:exchange_bank",
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
+
     if action["action"] == "wait" and fallback:
         fallback_action = str(fallback.get("action", "")).strip()
         eta_seconds = fallback.get("eta_seconds")
