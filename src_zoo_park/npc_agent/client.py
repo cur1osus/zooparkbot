@@ -8,6 +8,7 @@ import aiohttp
 
 from .logs import log_npc_usage
 from .settings import NpcAgentSettings
+from .v2.tools import build_tool_catalog, normalize_tool_call
 
 from pydantic import BaseModel
 
@@ -354,26 +355,11 @@ class NpcDecisionClient:
 
         return clean_obs
 
-    def _build_v2_tools(self, observation: dict[str, Any]) -> list[dict[str, Any]]:
-        tools: list[dict[str, Any]] = []
-        for row in observation.get("allowed_actions", []) or []:
-            if not isinstance(row, dict):
-                continue
-            action = str(row.get("action", "")).strip()
-            if not action:
-                continue
-            tools.append(
-                {
-                    "name": action,
-                    "input_schema": row.get("params", {}) or {},
-                }
-            )
-        return tools
-
     async def choose_action_v2_tools(self, observation: dict[str, Any]) -> dict[str, Any]:
+        available_tools = build_tool_catalog(observation.get("allowed_actions", []) or [])
         payload = {
             "task": "Select one tool call for this NPC turn.",
-            "available_tools": self._build_v2_tools(observation),
+            "available_tools": available_tools,
             "observation": observation,
         }
         tool_decision = await self._request_json(
@@ -385,9 +371,15 @@ class NpcDecisionClient:
             request_kind="choose_action_v2_tools",
         )
         tool_name = str(tool_decision.get("tool", "wait")).strip() or "wait"
+        allowed_tool_names = {str(item.get("name", "")).strip() for item in available_tools}
+        if tool_name not in allowed_tool_names:
+            tool_name = "wait" if "wait" in allowed_tool_names else next(iter(allowed_tool_names), "wait")
+
+        params = normalize_tool_call(tool_name, tool_decision.get("input", {}) or {})
+
         return {
             "action": tool_name,
-            "params": tool_decision.get("input", {}) or {},
+            "params": params,
             "reason": str(tool_decision.get("reason", "v2_tool_selection"))[:220],
             "sleep_seconds": int(tool_decision.get("sleep_seconds", 300) or 300),
         }
