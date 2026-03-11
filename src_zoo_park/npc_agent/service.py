@@ -528,10 +528,7 @@ async def maybe_send_npc_chat_comment(
         },
     }
     signature = f"{user.nickname}: "
-    max_message_length = max(0, settings.chat_max_length - len(signature))
-    message = (await client.generate_chat_comment(payload=payload))[
-        :max_message_length
-    ].strip()
+    message = (await client.generate_chat_comment(payload=payload)).strip()
     if not message:
         return
 
