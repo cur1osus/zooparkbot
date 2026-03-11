@@ -6,7 +6,7 @@ from datetime import datetime
 from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
-from db import Animal, Aviary, Game, Gamer, Item, RandomMerchant, RequestToUnity, Unity, User
+from db import Animal, Aviary, Game, Gamer, Item, RandomMerchant, RequestToUnity, TransferMoney, Unity, User
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools.animals import get_all_animals, get_price_animal, get_total_number_animals
@@ -326,6 +326,32 @@ async def build_chat_games_state(session: AsyncSession, user: User) -> list[dict
             }
         )
     payload.sort(key=lambda row: (row["free_slots"] <= 0, row["seconds_left"]))
+    return payload[: settings.top_candidates_limit]
+
+
+async def build_chat_transfers_state(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    transfers = await session.scalars(
+        select(TransferMoney).where(TransferMoney.status == True, TransferMoney.pieces > 0)  # noqa: E712
+    )
+    payload: list[dict[str, Any]] = []
+    for tr in transfers.all():
+        if int(tr.idpk_user) == int(user.idpk):
+            continue
+        used_raw = str(tr.used or "")
+        used_ids = {part.strip() for part in used_raw.split(",") if part.strip()}
+        if str(user.idpk) in used_ids:
+            continue
+        payload.append(
+            {
+                "idpk": int(tr.idpk),
+                "idpk_user": int(tr.idpk_user),
+                "currency": tr.currency,
+                "one_piece_sum": int(tr.one_piece_sum),
+                "pieces": int(tr.pieces),
+                "total_left": int(tr.one_piece_sum) * int(tr.pieces),
+            }
+        )
+    payload.sort(key=lambda row: (row["total_left"], row["one_piece_sum"]), reverse=True)
     return payload[: settings.top_candidates_limit]
 
 
@@ -841,6 +867,13 @@ async def build_allowed_actions(
             {"currency": "usd", "amount": min(usd, 300), "pieces": 5},
         )
 
+    for tr in (observation.get("chat_transfers") or [])[:2]:
+        _append_unique_action(
+            actions,
+            "claim_chat_transfer",
+            {"idpk_tr": int(tr.get("idpk", 0) or 0)},
+        )
+
     if has_strong_surplus and usd >= 1800 and economy_not_blocked and not recent_chat_action:
         _append_unique_action(
             actions,
@@ -998,6 +1031,8 @@ def _score_allowed_action(
         return 45, "leaves current unity to switch social strategy"
     if action_name == "send_chat_transfer":
         return 18, "optional social spend; valid only when economy has surplus"
+    if action_name == "claim_chat_transfer":
+        return 72, "free immediate upside by claiming an available chat transfer"
     if action_name == "create_chat_game":
         return 22, "optional social spend; valid only with stable surplus"
     if action_name == "join_chat_game":
@@ -1551,6 +1586,7 @@ async def build_observation(
     standings = await build_standings(session=session, user=user)
     unity = await build_unity_state(session=session, user=user)
     chat_games = await build_chat_games_state(session=session, user=user)
+    chat_transfers = await build_chat_transfers_state(session=session, user=user)
     item_opportunities = await build_item_opportunities(session=session, user=user)
     animal_market = await build_animal_market(
         session=session,
@@ -1640,6 +1676,7 @@ async def build_observation(
         "item_opportunities": item_opportunities,
         "unity": unity,
         "chat_games": chat_games,
+        "chat_transfers": chat_transfers,
         "standings": standings,
         "animal_market": animal_market,
         "aviary_market": aviary_market,

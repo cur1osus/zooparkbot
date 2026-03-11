@@ -58,6 +58,7 @@ ACTION_TACTIC_MAP = {
     "upgrade_unity_level": ["unity_leverage"],
     "exit_from_unity": ["unity_leverage"],
     "send_chat_transfer": ["unity_leverage", "leaderboard_pressure"],
+    "claim_chat_transfer": ["opportunistic_waiting", "leaderboard_pressure"],
     "create_chat_game": ["unity_leverage", "leaderboard_pressure"],
     "join_chat_game": ["leaderboard_pressure", "opportunistic_waiting"],
     "create_item": ["item_engine"],

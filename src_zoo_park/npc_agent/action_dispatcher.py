@@ -33,7 +33,7 @@ from tools.items import (
 from tools.random_merchant import gen_price
 from tools.unity import get_unity_idpk
 
-from tools import gen_key
+from tools import add_to_currency, add_user_to_used, gen_key, in_used
 from tools.value import get_value
 
 from .client import NpcDecisionClient
@@ -95,6 +95,7 @@ async def execute_action(
         "review_unity_request": execute_review_unity_request,
         "exit_from_unity": execute_exit_from_unity,
         "send_chat_transfer": execute_send_chat_transfer,
+        "claim_chat_transfer": execute_claim_chat_transfer,
         "create_chat_game": execute_create_chat_game,
         "join_chat_game": execute_join_chat_game,
     }
@@ -936,6 +937,41 @@ async def execute_send_chat_transfer(
         reply_markup=keyboard,
     )
     return {"status": "ok", "summary": f"chat_transfer:{currency}:{total_spend}:{pieces}"}
+
+
+async def execute_claim_chat_transfer(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    idpk_tr = safe_int(params.get("idpk_tr", 0), default=0, min_value=1)
+    if not idpk_tr:
+        return {"status": "skipped", "summary": "idpk_tr_missing"}
+
+    tr = await session.get(TransferMoney, idpk_tr)
+    if not tr or not tr.status:
+        return {"status": "skipped", "summary": "transfer_not_found"}
+    if int(tr.idpk_user) == int(user.idpk):
+        return {"status": "skipped", "summary": "own_transfer"}
+    if int(tr.pieces or 0) <= 0:
+        return {"status": "skipped", "summary": "transfer_empty"}
+
+    if await in_used(session=session, idpk_tr=tr.idpk, idpk_user=user.idpk):
+        return {"status": "skipped", "summary": "transfer_already_used"}
+
+    await add_user_to_used(session=session, idpk_tr=tr.idpk, idpk_user=user.idpk)
+    await add_to_currency(self=user, currency=tr.currency, amount=int(tr.one_piece_sum))
+    tr.pieces -= 1
+
+    # Prevent spam-sniping: one claim per decision step and modest EV cap.
+    if tr.pieces <= 0:
+        tr.status = False
+
+    return {
+        "status": "ok",
+        "summary": f"claim_chat_transfer:{tr.currency}:{int(tr.one_piece_sum)}",
+    }
 
 
 async def execute_create_chat_game(
