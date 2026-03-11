@@ -854,11 +854,17 @@ async def build_allowed_actions(
             },
         )
 
-    if has_strong_surplus and not recent_chat_action:
-        for row in (observation.get("chat_games") or [])[:2]:
+    # Joining existing chat games is low-cost and can be +EV even during capacity lock.
+    if not recent_chat_action:
+        for row in (observation.get("chat_games") or [])[:3]:
             if int(row.get("owner_idpk", 0) or 0) == int(player.get("idpk", 0) or 0):
                 continue
-            if int(row.get("free_slots", 0) or 0) <= 0:
+            free_slots = int(row.get("free_slots", 0) or 0)
+            if free_slots <= 0:
+                continue
+            award = int(row.get("amount_award", 0) or 0)
+            # Prefer games with meaningful upside per remaining slot.
+            if award <= 0:
                 continue
             _append_unique_action(
                 actions,
@@ -996,7 +1002,9 @@ def _score_allowed_action(
     if action_name == "create_chat_game":
         return 22, "optional social spend; valid only with stable surplus"
     if action_name == "join_chat_game":
-        return 16, "optional social action after core economy is stable"
+        if bool((observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")):
+            return 68, "free upside while capacity-locked; can improve cash without spending"
+        return 24, "optional social action after core economy is stable"
     if action_name == "review_unity_request":
         decision = str(params.get("decision", "accept"))
         return (
