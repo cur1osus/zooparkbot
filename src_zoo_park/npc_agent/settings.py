@@ -96,14 +96,14 @@ def load_npc_agent_settings() -> NpcAgentSettings:
             60, int(os.getenv("NPC_EVENT_WAKE_TTL_SECONDS", "21600"))
         ),
         chat_min_interval_seconds=max(
-            300, int(os.getenv("NPC_CHAT_MIN_INTERVAL_SECONDS", "1800"))
+            300, int(os.getenv("NPC_CHAT_MIN_INTERVAL_SECONDS", "18000"))
         ),
         chat_max_length=max(80, int(os.getenv("NPC_CHAT_MAX_LENGTH", "220"))),
         memory_recent_events_limit=max(
-            5, int(os.getenv("NPC_MEMORY_RECENT_EVENTS_LIMIT", "12"))
+            5, int(os.getenv("NPC_MEMORY_RECENT_EVENTS_LIMIT", "5"))
         ),
         memory_reflections_limit=max(
-            2, int(os.getenv("NPC_MEMORY_REFLECTIONS_LIMIT", "4"))
+            1, int(os.getenv("NPC_MEMORY_REFLECTIONS_LIMIT", "2"))
         ),
         memory_goal_limit=max(3, int(os.getenv("NPC_MEMORY_GOAL_LIMIT", "6"))),
         memory_relationship_limit=max(

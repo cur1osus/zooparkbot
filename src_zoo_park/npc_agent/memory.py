@@ -1,5 +1,5 @@
-import hashlib
 import json
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -182,16 +182,59 @@ def _limit_entries(items: list[dict[str, Any]], limit: int) -> list[dict[str, An
     return items[-limit:]
 
 
-def _build_core_traits(user: User) -> dict[str, int]:
-    seed = f"{user.id_user}:{user.username or ''}:{user.nickname or ''}".encode("utf-8")
-    digest = hashlib.sha256(seed).digest()
+def _semantic_text_window(
+    value: Any,
+    *,
+    max_segments: int = 2,
+    max_words: int = 24,
+    max_chars: int = 180,
+) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+
+    segments = [
+        segment.strip(" ,;:-")
+        for segment in re.split(r"(?<=[.!?])\s+|\s+\|\s+|\s+->\s+|;\s+", text)
+        if segment.strip()
+    ]
+    if not segments:
+        segments = [text]
+
+    selected: list[str] = []
+    words_used = 0
+    chars_used = 0
+    for segment in segments:
+        segment_words = len(segment.split())
+        projected_chars = chars_used + len(segment) + (2 if selected else 0)
+        if selected and (
+            len(selected) >= max_segments
+            or words_used + segment_words > max_words
+            or projected_chars > max_chars
+        ):
+            break
+        if not selected and (segment_words > max_words or len(segment) > max_chars):
+            return " ".join(segment.split()[:max_words])
+        selected.append(segment)
+        words_used += segment_words
+        chars_used = projected_chars
+        if len(selected) >= max_segments:
+            break
+
+    if selected:
+        return "; ".join(selected)
+    return " ".join(text.split()[:max_words])
+
+
+def _build_core_traits() -> dict[str, int]:
+    import random
     return {
-        "risk_tolerance": _trait_from_digest(digest, 0),
-        "social_drive": _trait_from_digest(digest, 5),
-        "economy_focus": _trait_from_digest(digest, 10),
-        "expansion_drive": _trait_from_digest(digest, 15),
-        "patience": _trait_from_digest(digest, 20),
-        "competitiveness": _trait_from_digest(digest, 25),
+        "risk_tolerance": random.randint(20, 100),
+        "social_drive": random.randint(20, 100),
+        "economy_focus": random.randint(20, 100),
+        "expansion_drive": random.randint(20, 100),
+        "patience": random.randint(20, 100),
+        "competitiveness": random.randint(20, 100),
     }
 
 
@@ -378,16 +421,16 @@ def _rehydrate_profile_payload(
     user: User, payload: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     source = payload if isinstance(payload, dict) else {}
-    deterministic_traits = _build_core_traits(user)
+    cached_traits = source.get("core_traits")
+    if not cached_traits:
+        cached_traits = _build_core_traits()
+        
     core_traits = {
         name: _clamp(
             int(
-                source.get("core_traits", {}).get(
-                    name, source.get("traits", {}).get(name, 0)
-                )
+                cached_traits.get(name, source.get("traits", {}).get(name, 0))
                 or 0
-            )
-            or deterministic_traits[name],
+            ),
             10,
             100,
         )
@@ -547,13 +590,24 @@ async def ensure_npc_profile_memory(session: AsyncSession, user: User) -> NpcMem
         user=user,
         payload=_json_loads(row.payload) if row else None,
     )
+    
+    # Avoid aggressive database updates every turn if profile hasn't changed.
+    # Only update occasionally or on first creation.
     if row:
-        row.payload = _json_dumps(payload)
-        row.importance = 950
-        row.confidence = 950
-        row.status = "active"
-        row.updated_at = _now()
+        # Check if we really need to save back
+        last_update_ts = row.updated_at.timestamp() if row.updated_at else 0
+        now_ts = _now().timestamp()
+        
+        # Only rewrite the profile memory row if it's older than 6 hours
+        if now_ts - last_update_ts > 6 * 3600:
+            row.payload = _json_dumps(payload)
+            row.importance = 950
+            row.confidence = 950
+            row.status = "active"
+            row.updated_at = _now()
+            
         return row
+        
     return await _upsert_memory_row(
         session=session,
         user_idpk=user.idpk,
@@ -2069,6 +2123,171 @@ def _build_progress_summary(recent_events: list[dict[str, Any]]) -> dict[str, An
     }
 
 
+def _event_summary_for_context(payload: dict[str, Any]) -> dict[str, Any]:
+    action = payload.get("action", {})
+    result = payload.get("result", {})
+    delta = payload.get("delta", {})
+    planner = payload.get("planner", {})
+    next_unlock = planner.get("next_unlock") or {}
+    return {
+        "time": payload.get("time"),
+        "action": {
+            "name": action.get("name"),
+            "reason": _semantic_text_window(
+                action.get("reason", ""),
+                max_segments=2,
+                max_words=18,
+                max_chars=140,
+            ),
+            "sleep_seconds": action.get("sleep_seconds"),
+        },
+        "result": {
+            "status": result.get("status"),
+            "summary": _semantic_text_window(
+                result.get("summary", ""),
+                max_segments=2,
+                max_words=18,
+                max_chars=140,
+            ),
+            "bank_fee": result.get("bank_fee"),
+        },
+        "delta": {
+            "usd": int(delta.get("usd", 0) or 0),
+            "rub": int(delta.get("rub", 0) or 0),
+            "income_per_minute_rub": int(delta.get("income_per_minute_rub", 0) or 0),
+            "animals": int(delta.get("animals", 0) or 0),
+            "seats": int(delta.get("seats", 0) or 0),
+            "remain_seats": int(delta.get("remain_seats", 0) or 0),
+        },
+        "wake_context": {
+            "source": (payload.get("wake_context") or {}).get("source"),
+            "reason": _semantic_text_window(
+                (payload.get("wake_context") or {}).get("reason", ""),
+                max_segments=1,
+                max_words=10,
+                max_chars=80,
+            ),
+        },
+        "current_focus": list(payload.get("current_focus", []))[:3],
+        "planner": {
+            "phase": planner.get("phase"),
+            "primary_goal": planner.get("primary_goal"),
+            "next_unlock": {
+                "kind": next_unlock.get("kind"),
+                "label": next_unlock.get("label"),
+                "eta_seconds": next_unlock.get("eta_seconds"),
+            },
+        },
+        "importance": int(payload.get("importance", 0) or 0),
+    }
+
+
+def _goal_summary_for_context(payload: dict[str, Any]) -> dict[str, Any]:
+    progress = payload.get("progress", {})
+    return {
+        "title": payload.get("title"),
+        "topic": payload.get("topic"),
+        "priority": payload.get("priority"),
+        "horizon": payload.get("horizon"),
+        "progress": {
+            "current": progress.get("current"),
+            "target": progress.get("target"),
+            "ratio": progress.get("ratio"),
+        },
+        "recommended_actions": list(payload.get("recommended_actions", []))[:3],
+        "success_signal": _semantic_text_window(
+            payload.get("success_signal", ""),
+            max_segments=2,
+            max_words=14,
+            max_chars=120,
+        ),
+    }
+
+
+def _reflection_summary_for_context(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "generated_at": payload.get("generated_at"),
+        "summary": _semantic_text_window(
+            payload.get("summary", ""),
+            max_segments=2,
+            max_words=24,
+            max_chars=180,
+        ),
+        "lessons": [
+            _semantic_text_window(item, max_segments=1, max_words=14, max_chars=110)
+            for item in list(payload.get("lessons", []))[:2]
+        ],
+        "opportunities": [
+            _semantic_text_window(item, max_segments=1, max_words=14, max_chars=110)
+            for item in list(payload.get("opportunities", []))[:2]
+        ],
+        "risks": [
+            _semantic_text_window(item, max_segments=1, max_words=14, max_chars=110)
+            for item in list(payload.get("risks", []))[:2]
+        ],
+    }
+
+
+def _relationship_summary_for_context(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "subject_idpk": payload.get("subject_idpk"),
+        "display_name": payload.get("display_name"),
+        "status": payload.get("status"),
+        "trust": payload.get("trust"),
+        "affinity": payload.get("affinity"),
+        "last_event": _semantic_text_window(
+            payload.get("last_event", ""),
+            max_segments=1,
+            max_words=12,
+            max_chars=100,
+        ),
+        "last_event_at": payload.get("last_event_at"),
+        "interactions": payload.get("interactions"),
+    }
+
+
+def _profile_summary_for_context(payload: dict[str, Any]) -> dict[str, Any]:
+    traits = payload.get("traits", {})
+    adaptive_traits = payload.get("adaptive_traits", {})
+    adaptation_signals = payload.get("adaptation_signals", {})
+    return {
+        "archetype": payload.get("archetype"),
+        "mission": _semantic_text_window(
+            payload.get("mission", ""),
+            max_segments=2,
+            max_words=20,
+            max_chars=180,
+        ),
+        "strengths": list(payload.get("strengths", []))[:4],
+        "blind_spots": list(payload.get("blind_spots", []))[:3],
+        "preferred_actions": list(payload.get("preferred_actions", []))[:5],
+        "active_tactics": list(payload.get("active_tactics", []))[:4],
+        "public_voice": payload.get("public_voice"),
+        "humor_style": payload.get("humor_style"),
+        "rivalry_style": payload.get("rivalry_style"),
+        "traits": {
+            "risk_tolerance": traits.get("risk_tolerance"),
+            "social_drive": traits.get("social_drive"),
+            "economy_focus": traits.get("economy_focus"),
+            "expansion_drive": traits.get("expansion_drive"),
+            "patience": traits.get("patience"),
+            "competitiveness": traits.get("competitiveness"),
+        },
+        "adaptive_traits": {
+            "risk_tolerance": adaptive_traits.get("risk_tolerance"),
+            "social_drive": adaptive_traits.get("social_drive"),
+            "economy_focus": adaptive_traits.get("economy_focus"),
+            "expansion_drive": adaptive_traits.get("expansion_drive"),
+            "patience": adaptive_traits.get("patience"),
+            "competitiveness": adaptive_traits.get("competitiveness"),
+        },
+        "adaptation_signals": {
+            "success_streak": adaptation_signals.get("success_streak"),
+            "failure_streak": adaptation_signals.get("failure_streak"),
+        },
+    }
+
+
 def _build_behavior_guidance(
     profile: dict[str, Any],
     active_goals: list[dict[str, Any]],
@@ -2207,6 +2426,9 @@ async def build_npc_memory_context(
         _json_loads(row.payload)
         for row in recent_event_rows.all()[: settings.memory_recent_events_limit]
     ]
+    recent_events_for_context = [
+        _event_summary_for_context(payload) for payload in recent_events
+    ]
     reflection_rows = await session.scalars(
         select(NpcMemory)
         .where(
@@ -2214,7 +2436,7 @@ async def build_npc_memory_context(
             NpcMemory.kind == REFLECTION_KIND,
             NpcMemory.status == "active",
         )
-        .order_by(NpcMemory.importance.desc(), NpcMemory.updated_at.desc())
+        .order_by(NpcMemory.updated_at.desc(), NpcMemory.importance.desc())
     )
     reflections = [
         _json_loads(row.payload)
@@ -2234,6 +2456,16 @@ async def build_npc_memory_context(
         relationships=relationships,
         observation=observation,
     )
+    goals_for_context = [
+        _goal_summary_for_context(payload)
+        for payload in active_goals[: settings.memory_goal_limit]
+    ]
+    reflections_for_context = [
+        _reflection_summary_for_context(payload) for payload in reflections
+    ]
+    relationships_for_context = [
+        _relationship_summary_for_context(payload) for payload in selected_relationships
+    ]
     lessons = []
     for reflection in reflections:
         for lesson in reflection.get("lessons", []):
@@ -2258,22 +2490,26 @@ async def build_npc_memory_context(
                 }
             )
     profile = _json_loads(profile_row.payload)
+    profile_for_context = _profile_summary_for_context(profile)
     progress_summary = _build_progress_summary(recent_events)
     behavior_guidance = _build_behavior_guidance(
         profile=profile,
         active_goals=active_goals,
-        recent_events=recent_events,
+        recent_events=recent_events_for_context,
         progress_summary=progress_summary,
     )
     return {
-        "profile": profile,
-        "active_goals": active_goals[: settings.memory_goal_limit],
-        "recent_events": recent_events,
-        "reflections": reflections,
-        "lessons": lessons,
-        "relationships": selected_relationships,
+        "profile": profile_for_context,
+        "active_goals": goals_for_context,
+        "recent_events": recent_events_for_context,
+        "reflections": reflections_for_context,
+        "lessons": [
+            _semantic_text_window(item, max_segments=1, max_words=14, max_chars=110)
+            for item in lessons[:4]
+        ],
+        "relationships": relationships_for_context,
         "progress_summary": progress_summary,
         "behavior_guidance": behavior_guidance,
         "open_loops": open_loops[: settings.memory_relationship_limit],
-        "active_tactics": profile.get("active_tactics", []),
+        "active_tactics": profile_for_context.get("active_tactics", []),
     }

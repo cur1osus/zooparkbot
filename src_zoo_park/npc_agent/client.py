@@ -1,10 +1,32 @@
 import asyncio
 import json
+import math
+from datetime import datetime
 from typing import Any
 
 import aiohttp
 
+from .logs import log_npc_usage
 from .settings import NpcAgentSettings
+
+from pydantic import BaseModel
+
+class ActionDecision(BaseModel):
+    action: str
+    params: dict[str, Any]
+    reason: str
+    sleep_seconds: int
+
+class ReflectionOutput(BaseModel):
+    summary: str
+    lessons: list[str]
+    opportunities: list[str]
+    risks: list[str]
+    trait_adjustments: list[dict[str, Any]]
+    tactical_focus: list[str]
+    goal_adjustments: list[dict[str, Any]]
+
+
 
 SYSTEM_PROMPT = """
 You are an autonomous NPC player in a Telegram zoo economy game.
@@ -95,6 +117,42 @@ class NpcDecisionClient:
         if self.settings.transport == "cli":
             return await self._choose_action_via_cli(observation=observation)
 
+        # Smart trim observation by section priority before sending to LLM (#10)
+        TRIM_LIMITS: dict[str, Any] = {
+            "standings": {"top_income": 3, "top_money": 3, "top_animals": 3, "top_referrals": 3},
+            "item_opportunities": {"upgrade_candidates": 5, "merge_candidates": 3},
+            "unity": {"candidates": 3, "recruit_targets": 3},
+            "animal_market": 7,
+            "aviary_market": 5,
+        }
+        DEFAULT_LIST_LIMIT = 5
+        clean_obs = {}
+        for k, v in observation.items():
+            section_limit = TRIM_LIMITS.get(k)
+            if isinstance(section_limit, dict) and isinstance(v, dict):
+                clean_v = {}
+                for sub_k, sub_v in v.items():
+                    sub_limit = section_limit.get(sub_k, DEFAULT_LIST_LIMIT)
+                    if isinstance(sub_v, list) and len(sub_v) > sub_limit:
+                        clean_v[sub_k] = sub_v[:sub_limit]
+                    else:
+                        clean_v[sub_k] = sub_v
+                clean_obs[k] = clean_v
+            elif isinstance(section_limit, int) and isinstance(v, list) and len(v) > section_limit:
+                clean_obs[k] = v[:section_limit]
+            elif isinstance(v, list) and len(v) > DEFAULT_LIST_LIMIT:
+                clean_obs[k] = v[:DEFAULT_LIST_LIMIT]
+            elif isinstance(v, dict) and section_limit is None:
+                clean_v = {}
+                for sub_k, sub_v in v.items():
+                    if isinstance(sub_v, list) and len(sub_v) > DEFAULT_LIST_LIMIT:
+                        clean_v[sub_k] = sub_v[:DEFAULT_LIST_LIMIT]
+                    else:
+                        clean_v[sub_k] = sub_v
+                clean_obs[k] = clean_v
+            else:
+                clean_obs[k] = v
+
         return await self._request_json(
             system_prompt=SYSTEM_PROMPT,
             user_payload={
@@ -105,10 +163,11 @@ class NpcDecisionClient:
                     "reason": "short string",
                     "sleep_seconds": "integer",
                 },
-                "observation": observation,
+                "observation": clean_obs,
             },
             max_tokens=self.settings.max_tokens,
             temperature=self.settings.temperature,
+            model_class=ActionDecision,
         )
 
     async def generate_unity_name(self, context: dict[str, Any]) -> str:
@@ -125,7 +184,10 @@ class NpcDecisionClient:
         }
 
         if self.settings.transport == "cli":
-            content = await self._run_cli_prompt(prompt_payload=prompt_payload)
+            content = await self._run_cli_prompt(
+                prompt_payload=prompt_payload,
+                request_kind="unity_name",
+            )
             return str(self._parse_json(content).get("name", "")).strip()
 
         data = await self._request_json(
@@ -159,10 +221,14 @@ class NpcDecisionClient:
             "memory_packet": payload,
         }
         if self.settings.transport == "cli":
-            content = await self._run_cli_prompt(prompt_payload=cli_payload)
-            return self._parse_json(content)
+            content = await self._run_cli_prompt(
+                prompt_payload=cli_payload,
+                request_kind="reflection",
+            )
+            return self._parse_json(content, model_class=ReflectionOutput)  # fix: was ActionDecision
         return await self._request_json(
             system_prompt=REFLECTION_SYSTEM_PROMPT,
+            model_class=ReflectionOutput,
             user_payload=cli_payload,
             max_tokens=min(700, self.settings.max_tokens),
             temperature=0.4,
@@ -185,7 +251,8 @@ class NpcDecisionClient:
                 prompt_payload={
                     "system": CHAT_SYSTEM_PROMPT,
                     **prompt_payload,
-                }
+                },
+                request_kind="chat_comment",
             )
             return str(self._parse_json(content).get("message", "")).strip()
 
@@ -203,6 +270,7 @@ class NpcDecisionClient:
         user_payload: dict[str, Any],
         max_tokens: int,
         temperature: float,
+        model_class=None
     ) -> dict[str, Any]:
         request_url = self._build_request_url()
         payload = {
@@ -233,8 +301,16 @@ class NpcDecisionClient:
                     error_body = await response.text()
                     raise NpcLlmError(f"http_{response.status}:{error_body[:500]}")
                 data = await response.json()
+        await self._log_usage(
+            request_kind="http_request",
+            transport="http",
+            prompt_text=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            response_text=self._extract_content(data),
+            status="ok",
+            usage=data.get("usage"),
+        )
         content = self._extract_content(data)
-        return self._parse_json(content)
+        return self._parse_json(content, model_class=model_class)  # fix: was hardcoded ActionDecision
 
     def _build_request_url(self) -> str:
         base_url = self.settings.base_url.rstrip("/")
@@ -264,11 +340,14 @@ class NpcDecisionClient:
                     "Return JSON only.",
                 ],
                 "observation": observation,
-            }
+            },
+            request_kind="choose_action",
         )
-        return self._parse_json(content)
+        return self._parse_json(content, model_class=ActionDecision)
 
-    async def _run_cli_prompt(self, prompt_payload: dict[str, Any]) -> str:
+    async def _run_cli_prompt(
+        self, prompt_payload: dict[str, Any], request_kind: str
+    ) -> str:
         config = {
             "default_model": "kimi-for-coding",
             "default_thinking": False,
@@ -314,17 +393,85 @@ class NpcDecisionClient:
             )
         except asyncio.TimeoutError:
             process.kill()
+            await self._log_usage(
+                request_kind=request_kind,
+                transport="cli",
+                prompt_text=prompt,
+                response_text="",
+                status="timeout",
+            )
             raise NpcLlmError("cli_timeout")
 
         stdout_text = stdout.decode("utf-8", errors="ignore").strip()
         stderr_text = stderr.decode("utf-8", errors="ignore").strip()
         if process.returncode != 0:
+            await self._log_usage(
+                request_kind=request_kind,
+                transport="cli",
+                prompt_text=prompt,
+                response_text=stdout_text,
+                status=f"exit_{process.returncode}",
+                error_text=stderr_text or stdout_text,
+            )
             raise NpcLlmError(
                 f"cli_exit_{process.returncode}:{stderr_text[:500] or stdout_text[:500]}"
             )
         if not stdout_text:
+            await self._log_usage(
+                request_kind=request_kind,
+                transport="cli",
+                prompt_text=prompt,
+                response_text="",
+                status="empty_output",
+                error_text=stderr_text,
+            )
             raise NpcLlmError(f"cli_empty_output:{stderr_text[:500]}")
+        await self._log_usage(
+            request_kind=request_kind,
+            transport="cli",
+            prompt_text=prompt,
+            response_text=stdout_text,
+            status="ok",
+            error_text=stderr_text,
+        )
         return stdout_text
+
+    def _estimate_tokens(self, text: str) -> int:
+        clean_text = text.strip()
+        if not clean_text:
+            return 0
+        return max(1, math.ceil(len(clean_text) / 4))
+
+    async def _log_usage(
+        self,
+        *,
+        request_kind: str,
+        transport: str,
+        prompt_text: str,
+        response_text: str,
+        status: str,
+        usage: dict[str, Any] | None = None,
+        error_text: str = "",
+    ) -> None:
+        prompt_tokens_est = self._estimate_tokens(prompt_text)
+        response_tokens_est = self._estimate_tokens(response_text)
+        payload = {
+            "time": datetime.now().isoformat(),
+            "transport": transport,
+            "request_kind": request_kind,
+            "model": self.settings.model,
+            "status": status,
+            "prompt_chars": len(prompt_text),
+            "prompt_tokens_est": prompt_tokens_est,
+            "response_chars": len(response_text),
+            "response_tokens_est": response_tokens_est,
+            "total_tokens_est": prompt_tokens_est + response_tokens_est,
+        }
+        if usage:
+            payload["usage"] = usage
+        if error_text:
+            payload["error_preview"] = error_text[:240]
+        await log_npc_usage(log_path=self.settings.log_path, payload=payload)
 
     def _extract_content(self, data: dict[str, Any]) -> str:
         choices = data.get("choices") or []
@@ -340,7 +487,7 @@ class NpcDecisionClient:
             return "".join(parts)
         return str(content)
 
-    def _parse_json(self, content: str) -> dict[str, Any]:
+    def _parse_json(self, content: str, model_class=None) -> dict[str, Any]:
         clean_content = content.strip()
         if clean_content.startswith("```"):
             clean_content = clean_content.strip("`")
@@ -350,4 +497,14 @@ class NpcDecisionClient:
         end = clean_content.rfind("}")
         if start == -1 or end == -1:
             raise ValueError("LLM response does not contain JSON object")
-        return json.loads(clean_content[start : end + 1])
+        
+        data = json.loads(clean_content[start : end + 1])
+        if model_class:
+            try:
+                validated = model_class(**data)
+                return validated.model_dump()
+            except Exception as e:
+                import logging
+                logging.warning(f"Pydantic validation error: {e}")
+                
+        return data
