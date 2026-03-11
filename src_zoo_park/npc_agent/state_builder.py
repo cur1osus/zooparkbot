@@ -799,7 +799,6 @@ async def build_allowed_actions(
                 {"owner_idpk": int(row.get("owner_idpk", 0) or 0)},
             )
     else:
-        _append_unique_action(actions, "exit_from_unity", {})
         if current_unity.get("is_owner"):
             for row in (unity.get("recruit_targets") or [])[:2]:
                 _append_unique_action(
