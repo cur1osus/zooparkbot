@@ -54,6 +54,10 @@ def npc_chat_cooldown_key(user_idpk: int) -> str:
     return f"npc_chat_comment:{user_idpk}"
 
 
+def npc_llm_degraded_key(user_idpk: int) -> str:
+    return f"npc_llm_degraded:{user_idpk}"
+
+
 def estimate_usd_eta_seconds(
     usd: int,
     rub: int,
@@ -190,6 +194,15 @@ async def run_npc_players_turn() -> None:
                 try:
                     decision = await client.choose_action(observation=observation)
                     llm_error_count = 0  # reset streak on success
+                    if await redis.delete(npc_llm_degraded_key(npc_user.idpk)):
+                        with contextlib.suppress(Exception):
+                            await bot.send_message(
+                                chat_id=CHAT_ID,
+                                text=(
+                                    f"🤖 NPC {npc_user.nickname}: LLM connection recovered, decision loop back to normal."
+                                ),
+                                disable_notification=True,
+                            )
                 except Exception as exc:
                     logging.exception(
                         f"LLM Error during action decision for {npc_user.nickname}"
@@ -201,6 +214,25 @@ async def run_npc_players_turn() -> None:
                     )
                     retry_delay = min(int(base_delay * (2**llm_error_count)), 300)
                     retry_delay += int(retry_delay * random.uniform(-0.1, 0.1))
+
+                    # Degraded mode alert (one message per 30 min max)
+                    degraded_mark = await redis.set(
+                        npc_llm_degraded_key(npc_user.idpk),
+                        datetime.now().isoformat(),
+                        ex=1800,
+                        nx=True,
+                    )
+                    if degraded_mark:
+                        with contextlib.suppress(Exception):
+                            await bot.send_message(
+                                chat_id=CHAT_ID,
+                                text=(
+                                    f"⚠️ NPC {npc_user.nickname}: LLM degraded ({type(exc).__name__}). "
+                                    f"Switching to backoff mode for retries."
+                                ),
+                                disable_notification=True,
+                            )
+
                     decision = {
                         "action": "wait",
                         "params": {},

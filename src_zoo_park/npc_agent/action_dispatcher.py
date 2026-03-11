@@ -308,6 +308,9 @@ async def execute_buy_rarity_animal(
         return {"status": "skipped", "summary": "bad_animal_params"}
 
     remain_seats = await get_remain_seats(session=session, user=user)
+    if remain_seats <= 0:
+        return {"status": "skipped", "summary": "no_seat_capacity"}
+    quantity = min(quantity, int(remain_seats))
     if remain_seats < quantity:
         return {"status": "skipped", "summary": "not_enough_seats"}
 

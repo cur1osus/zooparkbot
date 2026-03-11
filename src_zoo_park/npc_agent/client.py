@@ -76,6 +76,7 @@ Rules:
 - Respect the NPC profile, adaptive traits, active tactics, active goals, and lessons from memory.
 - Use planner.recommended_actions as your default 2-5 step roadmap unless the current board state clearly invalidates it.
 - Respect memory.behavior_guidance.avoid_actions and anti_loop_guard.blocked_actions.
+- If zoo.remain_seats <= 0, do NOT choose animal-buying actions; prioritize buy_aviary/exchange_bank/wait.
 - If you choose wait, align sleep_seconds with planner.next_unlock.eta_seconds or the nearest meaningful event instead of arbitrary long delays.
 - Watch strategy_signals.top_rivals and social targets; the zoo is competitive, not empty.
 - Avoid repeating recently failed actions unless the state clearly changed.

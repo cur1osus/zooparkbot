@@ -1183,6 +1183,11 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
     behavior = observation.get("memory", {}).get("behavior_guidance", {})
     active_goals = observation.get("memory", {}).get("active_goals", [])
     recommended_actions: list[dict[str, Any]] = []
+    avoid_actions = {
+        str(item).strip()
+        for item in (behavior.get("avoid_actions") or [])
+        if str(item).strip()
+    }
 
     def add_step(
         action: str,
@@ -1190,6 +1195,9 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
         params: dict[str, Any] | None = None,
         eta_seconds: int | None = 0,
     ) -> None:
+        action = str(action).strip()
+        if not action or action in avoid_actions:
+            return
         if any(step["action"] == action for step in recommended_actions):
             return
         recommended_actions.append(
@@ -1200,6 +1208,24 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
                 "eta_seconds": eta_seconds,
             }
         )
+
+    if summary.get("need_seats") and summary.get("best_aviary_option"):
+        aviary = summary["best_aviary_option"]
+        add_step(
+            "buy_aviary",
+            "Seat pressure is blocking all animal growth; unlock capacity first.",
+            params={"code_name_aviary": aviary["code_name"], "quantity": 1},
+            eta_seconds=aviary.get("eta_seconds"),
+        )
+        if int(observation.get("player", {}).get("rub", 0) or 0) >= int(
+            observation.get("bank", {}).get("rate_rub_usd", 1) or 1
+        ):
+            add_step(
+                "exchange_bank",
+                "Convert idle RUB to accelerate the first capacity unlock.",
+                params={"mode": "all"},
+                eta_seconds=0,
+            )
 
     for row in decision_brief.get("top_affordable_actions", [])[:3]:
         add_step(
@@ -1235,7 +1261,7 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
             params={"code_name_aviary": aviary["code_name"], "quantity": 1},
             eta_seconds=aviary.get("eta_seconds"),
         )
-    if summary.get("best_income_option"):
+    if summary.get("best_income_option") and int(observation.get("zoo", {}).get("remain_seats", 0) or 0) > 0:
         option = summary["best_income_option"]
         add_step(
             "buy_rarity_animal",
@@ -1299,8 +1325,9 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
         "phase": phase,
         "primary_goal": primary_goal,
         "next_unlock": next_unlock,
+        "capacity_unlock_mode": bool(summary.get("need_seats")),
         "recommended_actions": recommended_actions[:5],
-        "avoid_actions": behavior.get("avoid_actions", []),
+        "avoid_actions": sorted(avoid_actions),
     }
 
 
@@ -1739,6 +1766,32 @@ def apply_action_guardrails(
             "action": "wait",
             "params": {},
             "reason": f"guardrail_blocked:{action['action']}",
+            "sleep_seconds": settings.step_seconds,
+        }
+
+    # Capacity unlock mode: when no seats remain, avoid actions that cannot resolve seat pressure.
+    remain_seats = int(observation.get("zoo", {}).get("remain_seats", 0) or 0)
+    if remain_seats <= 0 and action["action"] in {
+        "buy_rarity_animal",
+        "invest_for_top_animals",
+        "buy_merchant_discount_offer",
+        "buy_merchant_random_offer",
+        "buy_merchant_targeted_offer",
+    }:
+        planner = observation.get("planner", {}) or {}
+        for step in planner.get("recommended_actions", []) or []:
+            step_action = str(step.get("action", "")).strip()
+            if step_action in {"buy_aviary", "exchange_bank"}:
+                return {
+                    "action": step_action,
+                    "params": step.get("params", {}) or {},
+                    "reason": f"capacity_mode_reroute:{action['action']}",
+                    "sleep_seconds": action.get("sleep_seconds"),
+                }
+        return {
+            "action": "wait",
+            "params": {},
+            "reason": f"capacity_mode_blocked:{action['action']}",
             "sleep_seconds": settings.step_seconds,
         }
 
