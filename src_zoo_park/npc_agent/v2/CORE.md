@@ -28,6 +28,14 @@ This file defines the "core runtime" contract for experimental NPCs (currently: 
 {"tool":"tool_name","input":{},"reason":"short text","sleep_seconds":300}
 ```
 
+## Memory (compact + expiring)
+- `v2_memory` is a compact packet injected at runtime.
+- Contains only:
+  - `recent_outcomes` (last 4 significant turns)
+  - `tool_scores` (`ok`/`err` counters by action)
+- TTL-based decay: entries expire automatically (12h window), old traces are removed.
+- Goal: preserve short-term learning without token bloat.
+
 ## Notes
 - This is intentionally isolated from legacy planner/memory directives.
 - Shared execution guardrails still apply after tool selection.

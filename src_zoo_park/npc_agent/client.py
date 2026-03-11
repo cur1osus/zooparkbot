@@ -290,6 +290,7 @@ class NpcDecisionClient:
                 "standings",
                 "aviary_market",
                 "allowed_actions",
+                "v2_memory",
             ):
                 if key in clean_obs:
                     v2_obs[key] = clean_obs[key]

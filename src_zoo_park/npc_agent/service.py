@@ -4,6 +4,7 @@ import contextlib
 import html
 import json
 import math
+import time
 from datetime import datetime
 from typing import Any
 
@@ -56,6 +57,102 @@ def npc_chat_cooldown_key(user_idpk: int) -> str:
 
 def npc_llm_degraded_key(user_idpk: int) -> str:
     return f"npc_llm_degraded:{user_idpk}"
+
+
+def npc_v2_memory_key(user_idpk: int) -> str:
+    return f"npc_v2_memory:{user_idpk}"
+
+
+async def load_npc_v2_memory(user_idpk: int) -> dict[str, Any]:
+    raw = await redis.get(npc_v2_memory_key(user_idpk))
+    if not raw:
+        return {"recent_outcomes": [], "tool_scores": {}}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {"recent_outcomes": [], "tool_scores": {}}
+
+    recent = payload.get("recent", []) or []
+    recent_outcomes = []
+    for row in recent[-4:]:
+        if not isinstance(row, dict):
+            continue
+        recent_outcomes.append(
+            {
+                "action": row.get("action"),
+                "status": row.get("status"),
+                "delta_usd": int(row.get("delta_usd", 0) or 0),
+                "delta_income": int(row.get("delta_income", 0) or 0),
+                "ts": int(row.get("ts", 0) or 0),
+            }
+        )
+
+    tool_scores = payload.get("tool_scores", {}) or {}
+    compact_scores: dict[str, Any] = {}
+    for action_name, stats in tool_scores.items():
+        if not isinstance(stats, dict):
+            continue
+        compact_scores[str(action_name)] = {
+            "ok": int(stats.get("ok", 0) or 0),
+            "err": int(stats.get("err", 0) or 0),
+        }
+
+    return {"recent_outcomes": recent_outcomes, "tool_scores": compact_scores}
+
+
+async def update_npc_v2_memory(
+    user_idpk: int,
+    action: dict[str, Any],
+    result: dict[str, Any],
+    before_snapshot: dict[str, Any],
+    after_snapshot: dict[str, Any],
+) -> None:
+    ttl_seconds = 12 * 3600
+    now_ts = int(time.time())
+
+    raw = await redis.get(npc_v2_memory_key(user_idpk))
+    try:
+        payload = json.loads(raw) if raw else {}
+    except Exception:
+        payload = {}
+
+    recent = payload.get("recent", []) or []
+    tool_scores = payload.get("tool_scores", {}) or {}
+
+    action_name = str(action.get("action", "wait"))
+    status = str(result.get("status", "unknown"))
+    delta_usd = int(after_snapshot.get("usd", 0) or 0) - int(
+        before_snapshot.get("usd", 0) or 0
+    )
+    delta_income = int(after_snapshot.get("income_per_minute_rub", 0) or 0) - int(
+        before_snapshot.get("income_per_minute_rub", 0) or 0
+    )
+
+    recent.append(
+        {
+            "ts": now_ts,
+            "action": action_name,
+            "status": status,
+            "delta_usd": delta_usd,
+            "delta_income": delta_income,
+        }
+    )
+    recent = [row for row in recent if int(row.get("ts", 0) or 0) >= now_ts - ttl_seconds]
+    recent = recent[-12:]
+
+    stats = tool_scores.get(action_name, {"ok": 0, "err": 0})
+    if status == "ok":
+        stats["ok"] = int(stats.get("ok", 0) or 0) + 1
+    elif status in {"error", "failed"}:
+        stats["err"] = int(stats.get("err", 0) or 0) + 1
+    tool_scores[action_name] = stats
+
+    payload = {
+        "updated_at": now_ts,
+        "recent": recent,
+        "tool_scores": tool_scores,
+    }
+    await redis.set(npc_v2_memory_key(user_idpk), json.dumps(payload), ex=ttl_seconds)
 
 
 def estimate_usd_eta_seconds(
@@ -189,6 +286,10 @@ async def run_npc_players_turn() -> None:
                         user=npc_user_refreshed,
                         wake_context=wake_trigger,
                     )
+                    if int(npc_user_refreshed.id_user) == -1002:
+                        observation["v2_memory"] = await load_npc_v2_memory(
+                            npc_user_refreshed.idpk
+                        )
 
                 # Phase 2: Action decision via LLM WITHOUT blocking DB session
                 try:
@@ -293,6 +394,14 @@ async def run_npc_players_turn() -> None:
                         result=result,
                         wake_trigger=wake_trigger,
                     )
+                    if int(npc_user_refreshed.id_user) == -1002:
+                        await update_npc_v2_memory(
+                            user_idpk=npc_user_refreshed.idpk,
+                            action=action,
+                            result=result,
+                            before_snapshot=before_snapshot,
+                            after_snapshot=after_snapshot,
+                        )
                     await remember_npc_turn(
                         session=session,
                         user=npc_user_refreshed,
