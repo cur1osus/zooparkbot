@@ -249,6 +249,33 @@ class NpcDecisionClient:
         if isinstance(standings, dict):
             standings.pop("top_referrals", None)
 
+        # Keep only actionable profile parts for decision-making.
+        memory = clean_obs.get("memory")
+        if isinstance(memory, dict):
+            profile = memory.get("profile")
+            if isinstance(profile, dict):
+                memory["profile"] = {
+                    "traits": profile.get("traits", {}) or {},
+                    "active_tactics": profile.get("active_tactics", []) or [],
+                }
+
+        # Deduplicate allowed actions and cap size.
+        allowed_actions = clean_obs.get("allowed_actions")
+        if isinstance(allowed_actions, list):
+            deduped: list[dict[str, Any]] = []
+            seen_actions: set[str] = set()
+            for item in allowed_actions:
+                if not isinstance(item, dict):
+                    continue
+                action_name = str(item.get("action", "")).strip()
+                if not action_name or action_name in seen_actions:
+                    continue
+                seen_actions.add(action_name)
+                deduped.append(item)
+                if len(deduped) >= 5:
+                    break
+            clean_obs["allowed_actions"] = deduped
+
         # Add explicit compact animal info so LLM can compare options directly.
         animal_facts: list[dict[str, Any]] = []
         for animal_row in clean_obs.get("animal_market", []) or []:
