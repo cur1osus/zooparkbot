@@ -6,8 +6,8 @@ from datetime import datetime
 from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
-from db import Animal, Aviary, Item, RandomMerchant, RequestToUnity, Unity, User
-from sqlalchemy import select
+from db import Animal, Aviary, Game, Gamer, Item, RandomMerchant, RequestToUnity, Unity, User
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools.animals import get_all_animals, get_price_animal, get_total_number_animals
 from tools.aviaries import get_price_aviaries, get_remain_seats, get_total_number_seats
@@ -290,6 +290,43 @@ async def ensure_random_merchant_for_user(
     if merchant:
         return merchant
     return await create_random_merchant(session=session, user=user)
+
+
+async def build_chat_games_state(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+    games = await session.scalars(
+        select(Game).where(Game.activate == True, Game.end == False)  # noqa: E712
+    )
+    payload: list[dict[str, Any]] = []
+    now = datetime.now()
+    for game in games.all():
+        if game.end_date and game.end_date < now:
+            continue
+        current_players = int(
+            await session.scalar(
+                select(func.count()).select_from(Gamer).where(Gamer.id_game == game.id_game)
+            )
+            or 0
+        )
+        payload.append(
+            {
+                "idpk": int(game.idpk),
+                "id_game": game.id_game,
+                "owner_idpk": int(game.idpk_user),
+                "type_game": game.type_game,
+                "amount_gamers": int(game.amount_gamers),
+                "amount_moves": int(game.amount_moves),
+                "amount_award": int(game.amount_award),
+                "currency_award": game.currency_award,
+                "current_gamers": current_players,
+                "free_slots": max(0, int(game.amount_gamers) - current_players),
+                "seconds_left": max(
+                    0,
+                    int((game.end_date - now).total_seconds()) if game.end_date else 0,
+                ),
+            }
+        )
+    payload.sort(key=lambda row: (row["free_slots"] <= 0, row["seconds_left"]))
+    return payload[: settings.top_candidates_limit]
 
 
 async def build_unity_state(session: AsyncSession, user: User) -> dict[str, Any]:
@@ -761,28 +798,67 @@ async def build_allowed_actions(
                 "join_best_unity",
                 {"owner_idpk": int(row.get("owner_idpk", 0) or 0)},
             )
-    elif current_unity.get("is_owner"):
-        for row in (unity.get("recruit_targets") or [])[:2]:
-            _append_unique_action(
-                actions,
-                "recruit_top_player",
-                {"idpk_user": int(row.get("idpk", 0) or 0)},
-            )
-        if current_unity.get("can_upgrade"):
-            _append_unique_action(actions, "upgrade_unity_level", {})
-        pending_requests = current_unity.get("pending_requests") or []
-        for row in pending_requests[:2]:
-            applicant_id = int(row.get("idpk_user", 0) or 0)
-            _append_unique_action(
-                actions,
-                "review_unity_request",
-                {"idpk_user": applicant_id, "decision": "accept"},
-            )
-            _append_unique_action(
-                actions,
-                "review_unity_request",
-                {"idpk_user": applicant_id, "decision": "reject"},
-            )
+    else:
+        _append_unique_action(actions, "exit_from_unity", {})
+        if current_unity.get("is_owner"):
+            for row in (unity.get("recruit_targets") or [])[:2]:
+                _append_unique_action(
+                    actions,
+                    "recruit_top_player",
+                    {"idpk_user": int(row.get("idpk", 0) or 0)},
+                )
+            if current_unity.get("can_upgrade"):
+                _append_unique_action(actions, "upgrade_unity_level", {})
+            pending_requests = current_unity.get("pending_requests") or []
+            for row in pending_requests[:2]:
+                applicant_id = int(row.get("idpk_user", 0) or 0)
+                _append_unique_action(
+                    actions,
+                    "review_unity_request",
+                    {"idpk_user": applicant_id, "decision": "accept"},
+                )
+                _append_unique_action(
+                    actions,
+                    "review_unity_request",
+                    {"idpk_user": applicant_id, "decision": "reject"},
+                )
+
+    # Chat-only transfer/game actions.
+    if usd >= 50:
+        _append_unique_action(
+            actions,
+            "send_chat_transfer",
+            {"currency": "usd", "amount": min(usd, 200), "pieces": 5},
+        )
+    if rub >= 1000:
+        _append_unique_action(
+            actions,
+            "send_chat_transfer",
+            {"currency": "rub", "amount": min(rub, 5000), "pieces": 5},
+        )
+
+    if usd >= 100:
+        _append_unique_action(
+            actions,
+            "create_chat_game",
+            {
+                "game_type": "🎲",
+                "amount_gamers": 5,
+                "amount_award": min(usd, 300),
+                "currency": "usd",
+            },
+        )
+
+    for row in (observation.get("chat_games") or [])[:2]:
+        if int(row.get("owner_idpk", 0) or 0) == int(player.get("idpk", 0) or 0):
+            continue
+        if int(row.get("free_slots", 0) or 0) <= 0:
+            continue
+        _append_unique_action(
+            actions,
+            "join_chat_game",
+            {"id_game": row.get("id_game")},
+        )
 
     return actions
 
@@ -907,6 +983,14 @@ def _score_allowed_action(
             83,
             f"current unity can level up from {int(current_unity.get('level', 0) or 0)}",
         )
+    if action_name == "exit_from_unity":
+        return 45, "leaves current unity to switch social strategy"
+    if action_name == "send_chat_transfer":
+        return 40, "creates a chat transfer drop to drive social activity"
+    if action_name == "create_chat_game":
+        return 52, "creates a mini-game in chat for engagement"
+    if action_name == "join_chat_game":
+        return 50, "joins an active mini-game in chat"
     if action_name == "review_unity_request":
         decision = str(params.get("decision", "accept"))
         return (
@@ -1453,6 +1537,7 @@ async def build_observation(
     remain_seats = await get_remain_seats(session=session, user=user)
     standings = await build_standings(session=session, user=user)
     unity = await build_unity_state(session=session, user=user)
+    chat_games = await build_chat_games_state(session=session, user=user)
     item_opportunities = await build_item_opportunities(session=session, user=user)
     animal_market = await build_animal_market(
         session=session,
@@ -1541,6 +1626,7 @@ async def build_observation(
         "items": items,
         "item_opportunities": item_opportunities,
         "unity": unity,
+        "chat_games": chat_games,
         "standings": standings,
         "animal_market": animal_market,
         "aviary_market": aviary_market,

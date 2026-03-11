@@ -1,12 +1,16 @@
 import json
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 
-from db import Animal, Item, RequestToUnity, Unity, User
+from aiogram.utils.deep_linking import create_start_link
+from config import CHAT_ID
+from db import Animal, Game, Gamer, Item, RequestToUnity, TransferMoney, Unity, User
+from game_variables import games
 from init_bot import bot
 from init_db_redis import redis
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tools.animals import add_animal, get_price_animal
@@ -29,12 +33,18 @@ from tools.items import (
 from tools.random_merchant import gen_price
 from tools.unity import get_unity_idpk
 
+from tools import gen_key
 from tools.value import get_value
 
 from .client import NpcDecisionClient
 from .settings import settings
 
-from bot.keyboards import ik_npc_unity_invitation
+from bot.keyboards import (
+    ik_get_money,
+    ik_get_money_one_piece,
+    ik_npc_unity_invitation,
+    ik_start_created_game,
+)
 
 from .state_builder import (
     can_upgrade_unity,
@@ -83,6 +93,10 @@ async def execute_action(
         "recruit_top_player": execute_recruit_top_player,
         "upgrade_unity_level": execute_upgrade_unity_level,
         "review_unity_request": execute_review_unity_request,
+        "exit_from_unity": execute_exit_from_unity,
+        "send_chat_transfer": execute_send_chat_transfer,
+        "create_chat_game": execute_create_chat_game,
+        "join_chat_game": execute_join_chat_game,
     }
     handler = handlers.get(action_name, execute_wait)
     extra_kwargs = {}
@@ -825,3 +839,200 @@ async def execute_review_unity_request(
     applicant.current_unity = f"member:{unity.idpk}"
     await session.delete(request)
     return {"status": "ok", "summary": f"accept_unity_request:{applicant.nickname}"}
+
+
+async def execute_exit_from_unity(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    current_unity = user.current_unity
+    if not current_unity:
+        return {"status": "skipped", "summary": "not_in_unity"}
+
+    unity_idpk = int(get_unity_idpk(current_unity) or 0)
+    unity = await session.get(Unity, unity_idpk)
+    if not unity:
+        user.current_unity = None
+        return {"status": "ok", "summary": "exit_unity:stale"}
+
+    # Member exit
+    if unity.idpk_user != user.idpk:
+        unity.remove_member(idpk_member=str(user.idpk))
+        user.current_unity = None
+        return {"status": "ok", "summary": "exit_unity:member"}
+
+    # Owner exit: promote first member or delete unity
+    user.current_unity = None
+    idpk_next_owner = unity.remove_first_member()
+    if idpk_next_owner:
+        next_owner: User = await session.get(User, idpk_next_owner)
+        if next_owner:
+            next_owner.current_unity = f"owner:{unity.idpk}"
+            unity.idpk_user = next_owner.idpk
+        return {"status": "ok", "summary": "exit_unity:owner_promoted"}
+
+    await session.delete(unity)
+    return {"status": "ok", "summary": "exit_unity:deleted"}
+
+
+async def execute_send_chat_transfer(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    currency = str(params.get("currency", "usd")).strip().lower()
+    if currency not in {"usd", "rub"}:
+        return {"status": "skipped", "summary": "bad_currency"}
+
+    amount = safe_int(params.get("amount", 0), default=0, min_value=1)
+    pieces = safe_int(params.get("pieces", 1), default=1, min_value=1)
+    if pieces > amount:
+        pieces = amount
+    if pieces > 500:
+        pieces = 500
+
+    balance = int(user.usd) if currency == "usd" else int(user.rub)
+    if balance < amount:
+        return {"status": "skipped", "summary": "not_enough_currency"}
+
+    one_piece = max(1, amount // pieces)
+    total_spend = one_piece * pieces
+    if currency == "usd":
+        user.usd -= total_spend
+        user.amount_expenses_usd += total_spend
+    else:
+        user.rub -= total_spend
+        user.amount_expenses_rub += total_spend
+
+    transfer = TransferMoney(
+        id_transfer=gen_key(length=10),
+        idpk_user=user.idpk,
+        currency=currency,
+        one_piece_sum=one_piece,
+        pieces=pieces,
+        status=True,
+    )
+    session.add(transfer)
+    await session.flush()
+
+    keyboard = (
+        await ik_get_money(
+            one_piece=f"{one_piece}{'$' if currency == 'usd' else '₽'}",
+            remain_pieces=pieces,
+            idpk_tr=transfer.idpk,
+        )
+        if pieces > 1
+        else await ik_get_money_one_piece(idpk_tr=transfer.idpk)
+    )
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=(
+            f"{user.nickname} устроил раздачу: {total_spend}{'$' if currency == 'usd' else '₽'} "
+            f"на {pieces} частей. Забирайте 👇"
+        ),
+        reply_markup=keyboard,
+    )
+    return {"status": "ok", "summary": f"chat_transfer:{currency}:{total_spend}:{pieces}"}
+
+
+async def execute_create_chat_game(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    game_type = str(params.get("game_type", "🎲"))
+    if game_type not in games:
+        return {"status": "skipped", "summary": "bad_game_type"}
+
+    amount_gamers = safe_int(params.get("amount_gamers", 3), default=3, min_value=2)
+    amount_gamers = min(amount_gamers, 80)
+    amount_award = safe_int(params.get("amount_award", 0), default=0, min_value=1)
+    currency = str(params.get("currency", "usd")).strip().lower()
+    if currency not in {"usd", "rub"}:
+        return {"status": "skipped", "summary": "bad_currency"}
+
+    balance = int(user.usd) if currency == "usd" else int(user.rub)
+    if balance < amount_award:
+        return {"status": "skipped", "summary": "not_enough_currency"}
+
+    if currency == "usd":
+        user.usd -= amount_award
+        user.amount_expenses_usd += amount_award
+    else:
+        user.rub -= amount_award
+        user.amount_expenses_rub += amount_award
+
+    sec_to_expire_game = int(await get_value(session=session, value_name="SEC_TO_EXPIRE_GAME"))
+    game = Game(
+        id_game=f"game_{gen_key(length=12)}",
+        idpk_user=user.idpk,
+        type_game=game_type,
+        amount_gamers=amount_gamers,
+        amount_award=Decimal(amount_award),
+        currency_award=currency,
+        end_date=datetime.now() + timedelta(seconds=sec_to_expire_game),
+        amount_moves=safe_int(params.get("amount_moves", 5), default=5, min_value=1),
+        activate=True,
+    )
+    session.add(game)
+    await session.flush()
+
+    link = await create_start_link(bot=bot, payload=game.id_game)
+    msg = await bot.send_message(
+        chat_id=CHAT_ID,
+        text=(
+            f"{user.nickname} создал мини-игру {game_type}: "
+            f"игроков {amount_gamers}, приз {amount_award}{'$' if currency == 'usd' else '₽'}."
+        ),
+        reply_markup=await ik_start_created_game(
+            link=link,
+            current_gamers=0,
+            total_gamers=amount_gamers,
+        ),
+        disable_web_page_preview=True,
+    )
+    game.id_mess = str(msg.message_id)
+    return {"status": "ok", "summary": f"create_chat_game:{game.id_game}"}
+
+
+async def execute_join_chat_game(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    id_game = str(params.get("id_game", "")).strip()
+    if not id_game:
+        return {"status": "skipped", "summary": "id_game_missing"}
+
+    game = await session.scalar(select(Game).where(Game.id_game == id_game))
+    if not game or game.end:
+        return {"status": "skipped", "summary": "game_not_found"}
+    if game.idpk_user == user.idpk:
+        return {"status": "skipped", "summary": "game_owner_cannot_join"}
+
+    gamer = await session.scalar(
+        select(Gamer).where(Gamer.id_game == id_game, Gamer.idpk_gamer == user.idpk)
+    )
+    if gamer:
+        return {"status": "skipped", "summary": "already_joined"}
+
+    active_game = await session.scalar(
+        select(Gamer).where(Gamer.idpk_gamer == user.idpk, Gamer.game_end == False)  # noqa: E712
+    )
+    if active_game:
+        return {"status": "skipped", "summary": "has_active_game"}
+
+    current_gamers = int(
+        await session.scalar(select(func.count()).select_from(Gamer).where(Gamer.id_game == id_game))
+        or 0
+    )
+    if current_gamers >= int(game.amount_gamers):
+        return {"status": "skipped", "summary": "game_full"}
+
+    session.add(Gamer(id_game=id_game, idpk_gamer=user.idpk, moves=int(game.amount_moves)))
+    return {"status": "ok", "summary": f"join_chat_game:{id_game}"}
