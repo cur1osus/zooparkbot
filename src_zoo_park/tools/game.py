@@ -37,6 +37,11 @@ async def get_nickname_game_owner(
     if idpk_game_owner == ID_AUTOGENERATE_MINI_GAME:
         return (await bot.get_my_name()).name
     game_owner = await session.get(User, idpk_game_owner)
+    if not game_owner:
+        return "Unknown"
+    # NPCs should always be shown by their in-game nickname (e.g., ИИван), not bot/system identity.
+    if int(game_owner.id_user) < 0:
+        return game_owner.nickname
     if not game_owner.username:
         return game_owner.nickname
     nickname = tools.mention_html_by_username(

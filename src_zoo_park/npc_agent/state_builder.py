@@ -823,42 +823,48 @@ async def build_allowed_actions(
                     {"idpk_user": applicant_id, "decision": "reject"},
                 )
 
-    # Chat-only transfer/game actions.
-    if usd >= 50:
+    # Chat-only transfer/game actions: allowed only with strong surplus and no recent spam.
+    recent_actions = [
+        str(item).strip() for item in (observation.get("momentum", {}).get("last_3_actions") or [])
+    ]
+    recent_chat_action = any(
+        action_name in {"send_chat_transfer", "create_chat_game", "join_chat_game"}
+        for action_name in recent_actions
+    )
+    effective_usd = float(usd) + float(rub) / max(1, rate)
+    has_strong_surplus = effective_usd >= 6000 and usd >= 1200
+    economy_not_blocked = remain_seats > 0
+
+    if has_strong_surplus and economy_not_blocked and not recent_chat_action:
         _append_unique_action(
             actions,
             "send_chat_transfer",
-            {"currency": "usd", "amount": min(usd, 200), "pieces": 5},
-        )
-    if rub >= 1000:
-        _append_unique_action(
-            actions,
-            "send_chat_transfer",
-            {"currency": "rub", "amount": min(rub, 5000), "pieces": 5},
+            {"currency": "usd", "amount": min(usd, 300), "pieces": 5},
         )
 
-    if usd >= 100:
+    if has_strong_surplus and usd >= 1800 and economy_not_blocked and not recent_chat_action:
         _append_unique_action(
             actions,
             "create_chat_game",
             {
                 "game_type": "🎲",
                 "amount_gamers": 5,
-                "amount_award": min(usd, 300),
+                "amount_award": min(usd // 4, 500),
                 "currency": "usd",
             },
         )
 
-    for row in (observation.get("chat_games") or [])[:2]:
-        if int(row.get("owner_idpk", 0) or 0) == int(player.get("idpk", 0) or 0):
-            continue
-        if int(row.get("free_slots", 0) or 0) <= 0:
-            continue
-        _append_unique_action(
-            actions,
-            "join_chat_game",
-            {"id_game": row.get("id_game")},
-        )
+    if has_strong_surplus and not recent_chat_action:
+        for row in (observation.get("chat_games") or [])[:2]:
+            if int(row.get("owner_idpk", 0) or 0) == int(player.get("idpk", 0) or 0):
+                continue
+            if int(row.get("free_slots", 0) or 0) <= 0:
+                continue
+            _append_unique_action(
+                actions,
+                "join_chat_game",
+                {"id_game": row.get("id_game")},
+            )
 
     return actions
 
@@ -986,11 +992,11 @@ def _score_allowed_action(
     if action_name == "exit_from_unity":
         return 45, "leaves current unity to switch social strategy"
     if action_name == "send_chat_transfer":
-        return 40, "creates a chat transfer drop to drive social activity"
+        return 18, "optional social spend; valid only when economy has surplus"
     if action_name == "create_chat_game":
-        return 52, "creates a mini-game in chat for engagement"
+        return 22, "optional social spend; valid only with stable surplus"
     if action_name == "join_chat_game":
-        return 50, "joins an active mini-game in chat"
+        return 16, "optional social action after core economy is stable"
     if action_name == "review_unity_request":
         decision = str(params.get("decision", "accept"))
         return (
