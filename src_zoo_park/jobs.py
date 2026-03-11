@@ -77,14 +77,7 @@ async def job_minute() -> None:
 
         async with _sessionmaker_for_func() as session:
             await accrual_of_income(session=session)
-            rate_update = await update_rate_bank(session=session)
-            if abs(int(rate_update["delta"])) >= max(
-                3, int(rate_update["previous"]) // 8
-            ):
-                await wake_all_npcs_now(
-                    session=session,
-                    reason=f"bank_rate_shift:{rate_update['current']}",
-                )
+            await update_rate_bank(session=session)
             await check_inaction(session=session)
             await deleter_request_to_unity(session=session)
             await session.commit()
