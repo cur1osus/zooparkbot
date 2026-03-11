@@ -249,6 +249,38 @@ class NpcDecisionClient:
         if isinstance(standings, dict):
             standings.pop("top_referrals", None)
 
+        # Add explicit compact animal info so LLM can compare options directly.
+        animal_facts: list[dict[str, Any]] = []
+        for animal_row in clean_obs.get("animal_market", []) or []:
+            animal_name = str(animal_row.get("animal", "")).strip()
+            for variant in animal_row.get("variants", []) or []:
+                animal_facts.append(
+                    {
+                        "animal": animal_name,
+                        "rarity": variant.get("rarity"),
+                        "code_name": variant.get("code_name"),
+                        "price_usd": int(variant.get("price_usd", 0) or 0),
+                        "income_rub": int(variant.get("income_rub", 0) or 0),
+                        "payback_minutes": float(
+                            variant.get("payback_minutes", 10**9) or 10**9
+                        ),
+                        "owned": int(variant.get("owned", 0) or 0),
+                        "affordable_quantity": int(
+                            variant.get("affordable_quantity", 0) or 0
+                        ),
+                        "eta_seconds": int(variant.get("eta_seconds", 0) or 0),
+                    }
+                )
+        animal_facts.sort(
+            key=lambda row: (
+                row["affordable_quantity"] <= 0,
+                row["payback_minutes"],
+                -row["income_rub"],
+                row["price_usd"],
+            )
+        )
+        clean_obs["animal_facts"] = animal_facts[:8]
+
         return clean_obs
 
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
