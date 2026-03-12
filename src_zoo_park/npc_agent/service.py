@@ -296,14 +296,10 @@ async def run_npc_players_turn() -> None:
                     decision = await client.choose_action(observation=observation)
                     llm_error_count = 0  # reset streak on success
                     if await redis.delete(npc_llm_degraded_key(npc_user.idpk)):
-                        with contextlib.suppress(Exception):
-                            await bot.send_message(
-                                chat_id=CHAT_ID,
-                                text=(
-                                    f"🤖 NPC {npc_user.nickname}: LLM connection recovered, decision loop back to normal."
-                                ),
-                                disable_notification=True,
-                            )
+                        logging.warning(
+                            "NPC %s: LLM connection recovered, decision loop back to normal.",
+                            npc_user.nickname,
+                        )
                 except Exception as exc:
                     logging.exception(
                         f"LLM Error during action decision for {npc_user.nickname}"
@@ -324,15 +320,11 @@ async def run_npc_players_turn() -> None:
                         nx=True,
                     )
                     if degraded_mark:
-                        with contextlib.suppress(Exception):
-                            await bot.send_message(
-                                chat_id=CHAT_ID,
-                                text=(
-                                    f"⚠️ NPC {npc_user.nickname}: LLM degraded ({type(exc).__name__}). "
-                                    f"Switching to backoff mode for retries."
-                                ),
-                                disable_notification=True,
-                            )
+                        logging.warning(
+                            "NPC %s: LLM degraded (%s). Switching to backoff mode for retries.",
+                            npc_user.nickname,
+                            type(exc).__name__,
+                        )
 
                     decision = {
                         "action": "wait",
