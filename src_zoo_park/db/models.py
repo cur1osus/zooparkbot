@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import List, Optional
 
 from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text as SQLText
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
@@ -86,7 +87,7 @@ class Unity(Base):
         decoded_dict: dict = json.loads(self.members)
         return len(decoded_dict) + 1
 
-    def get_members_idpk(self) -> list[str]:
+    def get_members_idpk(self) -> List[str]:
         decoded_dict: dict = json.loads(self.members)
         return list(decoded_dict.keys()) + [self.idpk_user]
 
@@ -108,8 +109,8 @@ class NpcState(Base):
     )
 
     idpk_user: Mapped[int] = mapped_column(index=True)
-    next_wake_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    last_wake_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_wake_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_wake_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_sleep_seconds: Mapped[int] = mapped_column(nullable=True)
     last_wake_source: Mapped[str] = mapped_column(String(length=32), nullable=True)
     last_wake_reason: Mapped[str] = mapped_column(String(length=255), nullable=True)
@@ -139,7 +140,7 @@ class NpcMemory(Base):
     access_count: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class Item(Base):
