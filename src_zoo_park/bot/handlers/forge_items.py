@@ -62,6 +62,21 @@ def _build_create_item_spent_text(currency: str, amount: int) -> str:
     return f"{amount}$" if currency == "usd" else f"{amount}🐾"
 
 
+def _build_merge_items_info_text(usd: int) -> str:
+    return (
+        "Объединённый предмет может получить одно из свойств родительского предмета "
+        "или оба свойства, что сделает его более редким.\n\n"
+        "Вероятность получения обоих свойств зависит от общего количества свойств, "
+        "которыми обладают предметы. Чем больше свойств, тем меньше вероятность, "
+        "что предмет унаследует оба свойства от родителей, и наоборот. "
+        "Одно свойство снижает эту вероятность на 10%.\n\n"
+        "Предмет, созданный в результате объединения, может обладать более чем 4 свойствами. "
+        "В таком случае его редкость станет легендарной, и он не сможет быть объединён "
+        "с другими предметами.\n\n"
+        f"Баланс: {int(usd):,}$".replace(",", " ")
+    )
+
+
 async def _finish_create_item(
     query: CallbackQuery,
     session: AsyncSession,
@@ -305,13 +320,8 @@ async def process_back_forge_items(
                 ),
             )
         case ForgeBackTarget.merge_info:
-            PERCENT_MERGE_BY_PROP = await get_value(
-                session=session, value_name="PERCENT_MERGE_BY_PROP"
-            )
             await query.message.edit_text(
-                text=await get_text_message(
-                    "merge_items_info", usd=user.usd, pm=PERCENT_MERGE_BY_PROP
-                ),
+                text=_build_merge_items_info_text(usd=int(user.usd)),
                 reply_markup=await ik_choice_items_to_merge(),
             )
 
@@ -502,13 +512,8 @@ async def fi_merge_items_info(
     state: FSMContext,
     user: User,
 ):
-    PERCENT_MERGE_BY_PROP = await get_value(
-        session=session, value_name="PERCENT_MERGE_BY_PROP"
-    )
     await query.message.edit_text(
-        text=await get_text_message(
-            "merge_items_info", usd=user.usd, pm=PERCENT_MERGE_BY_PROP
-        ),
+        text=_build_merge_items_info_text(usd=int(user.usd)),
         reply_markup=await ik_choice_items_to_merge(),
     )
 
