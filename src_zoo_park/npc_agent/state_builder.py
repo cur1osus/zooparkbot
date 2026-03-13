@@ -252,7 +252,7 @@ def npc_unity_invite_key(owner_idpk: int, target_idpk: int) -> str:
 async def build_recruit_targets(
     session: AsyncSession, user: User
 ) -> list[dict[str, Any]]:
-    # #6: filter at SQL level — only real users without a unity, limit early
+    # Filter at SQL level — only real users without a unity, limit early.
     pool = await session.scalars(
         select(User)
         .where(
@@ -260,25 +260,47 @@ async def build_recruit_targets(
             User.current_unity.is_(None),
             User.id_user > 0,
         )
-        .limit(settings.top_candidates_limit * 5)
+        .limit(settings.top_candidates_limit * 8)
     )
     members = list(pool.all())
+
+    # Exclude users with already pending requests to this unity owner.
+    pending_rows = await session.scalars(
+        select(RequestToUnity.idpk_user).where(RequestToUnity.idpk_unity_owner == user.idpk)
+    )
+    pending_request_targets = {int(v) for v in pending_rows.all()}
+
     candidates = []
     for member in members:
+        member_idpk = int(member.idpk)
+
+        # Skip if invite already sent recently (Redis TTL guard).
+        if await redis.get(npc_unity_invite_key(user.idpk, member_idpk)):
+            continue
+
+        # Skip if there is already a pending request from this player.
+        if member_idpk in pending_request_targets:
+            continue
+
         candidate_income = int(await income_(session=session, user=member))
         candidate_animals = int(await get_total_number_animals(self=member))
         candidates.append(
             {
-                "idpk": int(member.idpk),
+                "idpk": member_idpk,
                 "id_user": int(member.id_user),
                 "nickname": member.nickname,
                 "income": candidate_income,
                 "animals": candidate_animals,
                 "usd": int(member.usd),
-                "score": candidate_income * 3 + candidate_animals * 2 + int(member.usd),
+                # Recruit priority: income first, animals as tie-breaker (no cash weight).
+                "score": candidate_income,
             }
         )
-    candidates.sort(key=lambda row: row["score"], reverse=True)
+
+    candidates.sort(
+        key=lambda row: (int(row.get("income", 0) or 0), int(row.get("animals", 0) or 0)),
+        reverse=True,
+    )
     return candidates[: settings.top_candidates_limit]
 
 

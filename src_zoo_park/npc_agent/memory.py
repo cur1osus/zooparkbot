@@ -1532,20 +1532,41 @@ def _derive_event_tactic_adjustments(
     return updates
 
 
+def _is_neutral_action_outcome(action_name: str, result: dict[str, Any]) -> bool:
+    status = str(result.get("status", "")).strip().lower()
+    summary = str(result.get("summary", "")).strip().lower()
+
+    if action_name == "recruit_top_player":
+        # These outcomes are selection/state artifacts, not strategic failures.
+        if status == "ok" and summary.startswith("recruit_invite"):
+            return True
+        if summary in {"invite_already_sent", "recruit_target_unavailable"}:
+            return True
+        if summary.startswith("reject_unity_request"):
+            return True
+
+    return False
+
+
 def _update_action_stats(
     profile: dict[str, Any], current_event: dict[str, Any]
 ) -> None:
     action_name = str(current_event.get("action", {}).get("name", "wait"))
+    result = current_event.get("result", {}) or {}
     stats = profile.setdefault("action_stats", {})
     if not isinstance(stats, dict):
         stats = {}
         profile["action_stats"] = stats
     action_stats = stats.setdefault(action_name, {})
     action_stats["attempts"] = int(action_stats.get("attempts", 0)) + 1
-    if current_event.get("result", {}).get("status") == "ok":
+
+    if _is_neutral_action_outcome(action_name, result):
+        action_stats["neutral"] = int(action_stats.get("neutral", 0)) + 1
+    elif result.get("status") == "ok":
         action_stats["successes"] = int(action_stats.get("successes", 0)) + 1
     else:
         action_stats["failures"] = int(action_stats.get("failures", 0)) + 1
+
     action_stats["net_usd_delta"] = int(action_stats.get("net_usd_delta", 0)) + int(
         current_event.get("delta", {}).get("usd", 0)
     )
@@ -2380,6 +2401,11 @@ def _build_behavior_guidance(
             attempts = int(payload.get("attempts", 0) or 0)
             failures = int(payload.get("failures", 0) or 0)
             net_income_delta = int(payload.get("net_income_delta", 0) or 0)
+            if action_name == "recruit_top_player":
+                # Social recruiting has delayed payoff; do not hard-block it
+                # based on short-term tactical stats.
+                continue
+
             if (
                 attempts >= 3
                 and failures >= max(2, attempts - 1)
