@@ -310,7 +310,7 @@ def _build_initial_tactic_scores(traits: dict[str, int]) -> dict[str, int]:
     }
 
 
-def _sanitize_tactic_scores(
+def _sanitize_tactic_scores_raw(
     existing_scores: Any,
     effective_traits: dict[str, int],
 ) -> dict[str, int]:
@@ -320,9 +320,21 @@ def _sanitize_tactic_scores(
         name: _clamp(
             int(payload.get(name, initial_scores[name]) or initial_scores[name]),
             80,
-            1000,
+            1_000_000,
         )
         for name in TACTIC_NAMES
+    }
+
+
+def _normalize_tactic_scores(
+    tactic_scores_raw: dict[str, int],
+    scale_max: int = 1000,
+) -> dict[str, int]:
+    safe_scale = max(100, int(scale_max or 1000))
+    max_raw = max(1, max(int(v or 0) for v in tactic_scores_raw.values()))
+    return {
+        name: max(1, int(round((int(value or 0) / max_raw) * safe_scale)))
+        for name, value in tactic_scores_raw.items()
     }
 
 
@@ -443,9 +455,11 @@ def _rehydrate_profile_payload(
     }
     adaptive_traits = _sanitize_trait_deltas(source.get("adaptive_traits"))
     effective_traits = _compute_effective_traits(core_traits, adaptive_traits)
-    tactic_scores = _sanitize_tactic_scores(
-        source.get("tactic_scores"), effective_traits
+    tactic_scores_raw = _sanitize_tactic_scores_raw(
+        source.get("tactic_scores_raw", source.get("tactic_scores")),
+        effective_traits,
     )
+    tactic_scores = _normalize_tactic_scores(tactic_scores_raw, scale_max=1000)
     adaptation_signals = source.get("adaptation_signals")
     if not isinstance(adaptation_signals, dict):
         adaptation_signals = {}
@@ -491,8 +505,9 @@ def _rehydrate_profile_payload(
         "core_traits": core_traits,
         "adaptive_traits": adaptive_traits,
         "traits": effective_traits,
+        "tactic_scores_raw": tactic_scores_raw,
         "tactic_scores": tactic_scores,
-        "active_tactics": _derive_active_tactics(tactic_scores),
+        "active_tactics": _derive_active_tactics(tactic_scores_raw),
         "adaptation_signals": adaptation_signals,
         "action_stats": action_stats,
     }
@@ -1554,7 +1569,10 @@ async def evolve_npc_profile(
     row = await ensure_npc_profile_memory(session=session, user=user)
     profile = _rehydrate_profile_payload(user=user, payload=_json_loads(row.payload))
     adaptive_traits = profile["adaptive_traits"]
-    tactic_scores = profile["tactic_scores"]
+    tactic_scores = _sanitize_tactic_scores_raw(
+        profile.get("tactic_scores_raw", profile.get("tactic_scores")),
+        profile.get("traits", {}),
+    )
     adaptation_signals = profile["adaptation_signals"]
 
     trait_updates = _derive_event_trait_adjustments(
@@ -1623,7 +1641,7 @@ async def evolve_npc_profile(
         tactic_scores[tactic] = _clamp(
             int(tactic_scores.get(tactic, 400)) + delta_value,
             80,
-            1000,
+            1_000_000,
         )
         tactic_shift_log.append(
             _tactic_shift_entry(
@@ -1641,8 +1659,13 @@ async def evolve_npc_profile(
     profile.update(_derive_profile_story(effective_traits))
     profile["traits"] = effective_traits
     profile["adaptive_traits"] = adaptive_traits
-    profile["tactic_scores"] = _sanitize_tactic_scores(tactic_scores, effective_traits)
-    profile["active_tactics"] = _derive_active_tactics(profile["tactic_scores"])
+    profile["tactic_scores_raw"] = _sanitize_tactic_scores_raw(
+        tactic_scores, effective_traits
+    )
+    profile["tactic_scores"] = _normalize_tactic_scores(
+        profile["tactic_scores_raw"], scale_max=1000
+    )
+    profile["active_tactics"] = _derive_active_tactics(profile["tactic_scores_raw"])
 
     result_status = str(current_event.get("result", {}).get("status", ""))
     if result_status == "ok":
