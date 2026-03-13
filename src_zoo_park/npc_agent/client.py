@@ -95,6 +95,7 @@ Rules:
 - Return sleep_seconds as the planned delay until the next wake-up.
 - Keep sleep_seconds within the limits from wake_context.constraints.
 - Use decision_brief first when it exists because it already ranks the best legal options.
+- Use execution_feedback (if present) to avoid repeating failed actions and to pick alternatives from allowed_actions.
 - Use momentum to break stale loops and detect when waiting is no longer productive.
 - Respond with JSON only.
 - JSON shape: {"action": "...", "params": {...}, "reason": "short text", "sleep_seconds": 300}
@@ -124,6 +125,7 @@ Return JSON only with this shape:
 Rules:
 - Use only the provided observation.
 - Treat allowed_actions as the source of truth for what is executable right now.
+- Use execution_feedback (if present) to explain failed attempts and avoid repeats.
 - Prefer decision_brief and momentum over raw guesswork.
 - Keep it concise and tactical.
 """.strip()
@@ -138,6 +140,7 @@ Return JSON only with this exact shape:
 Rules:
 - The final action must be executable from allowed_actions right now.
 - Re-check params carefully before answering.
+- Use execution_feedback when present: do not repeat the same failed action unless state clearly changed.
 - Keep reason short.
 - If the prior reasoning conflicts with the observation, fix it and still return the best legal action.
 """.strip()
@@ -265,7 +268,7 @@ class NpcDecisionClient:
                 clean_obs[key] = value
 
         npc_id_user = int((observation.get("player") or {}).get("id_user", 0) or 0)
-        experimental_v2_npcs = {-1002}  # тИИмоха
+        v2_tool_npcs = {-1001, -1002}  # ИИван, тИИмоха
 
         # Shared reductions for all NPCs.
         clean_obs.pop("momentum", None)
@@ -273,7 +276,7 @@ class NpcDecisionClient:
         if isinstance(standings, dict):
             standings.pop("top_referrals", None)
 
-        if npc_id_user in experimental_v2_npcs:
+        if npc_id_user in v2_tool_npcs:
             # V2 payload (experimental): clean-room OpenClaw-style context.
             # Keep only directly actionable state, remove planner/memory directives.
             v2_obs: dict[str, Any] = {}
@@ -388,7 +391,7 @@ class NpcDecisionClient:
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
         clean_obs = self._build_trimmed_observation(observation)
         npc_id_user = int((observation.get("player") or {}).get("id_user", 0) or 0)
-        v2_tool_npcs = {-1002}  # тИИмоха
+        v2_tool_npcs = {-1001, -1002}  # ИИван, тИИмоха
 
         if npc_id_user in v2_tool_npcs:
             return await self.choose_action_v2_tools(observation=clean_obs)
@@ -677,7 +680,7 @@ class NpcDecisionClient:
         self, prompt_payload: dict[str, Any], request_kind: str
     ) -> str:
         config = {
-            "default_model": "kimi-for-coding",
+            "default_model": "npc-kimi-decision",
             "default_thinking": False,
             "default_yolo": True,
             "providers": {
@@ -688,9 +691,9 @@ class NpcDecisionClient:
                 }
             },
             "models": {
-                "kimi-for-coding": {
+                "npc-kimi-decision": {
                     "provider": "npc-kimi",
-                    "model": self.settings.model,
+                    "model": self.settings.cli_model,
                     "max_context_size": 262144,
                 }
             },
@@ -783,11 +786,14 @@ class NpcDecisionClient:
     ) -> None:
         prompt_tokens_est = self._estimate_tokens(prompt_text)
         response_tokens_est = self._estimate_tokens(response_text)
+        model_used = (
+            self.settings.cli_model if transport == "cli" else self.settings.model
+        )
         payload = {
             "time": datetime.now().isoformat(),
             "transport": transport,
             "request_kind": request_kind,
-            "model": self.settings.model,
+            "model": model_used,
             "status": status,
             "prompt_chars": len(prompt_text),
             "prompt_tokens_est": prompt_tokens_est,

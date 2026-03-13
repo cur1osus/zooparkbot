@@ -743,13 +743,15 @@ async def build_allowed_actions(
         )
 
     for row in affordable_variants[:4]:
+        affordable_quantity = int(row.get("affordable_quantity", 0) or 0)
+        suggested_quantity = max(1, min(affordable_quantity, remain_seats, 5))
         _append_unique_action(
             actions,
             "buy_rarity_animal",
             {
                 "animal": row.get("animal"),
                 "rarity": row.get("rarity"),
-                "quantity": 1,
+                "quantity": suggested_quantity,
             },
         )
 
@@ -1042,11 +1044,15 @@ def _score_allowed_action(
     if action_name == "exit_from_unity":
         return 45, "leaves current unity to switch social strategy"
     if action_name == "send_chat_transfer":
-        return 18, "optional social spend; valid only when economy has surplus"
+        if bool((observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")):
+            return 64, "capacity-locked: chat transfer can create short-term upside"
+        return 26, "optional social spend; valid only when economy has surplus"
     if action_name == "claim_chat_transfer":
         return 72, "free immediate upside by claiming an available chat transfer"
     if action_name == "create_chat_game":
-        return 22, "optional social spend; valid only with stable surplus"
+        if bool((observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")):
+            return 62, "capacity-locked: game creation can unlock upside while waiting for seats"
+        return 28, "optional social spend; valid only with stable surplus"
     if action_name == "join_chat_game":
         if bool((observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")):
             return 68, "free upside while capacity-locked; can improve cash without spending"
@@ -1061,6 +1067,11 @@ def _score_allowed_action(
         return 73, "delegates to the best immediate compounding investment"
     if action_name == "invest_for_top_animals":
         return 70, "pushes raw animal count when direct buys are available"
+    if action_name == "wait":
+        need_seats = bool((summary or {}).get("need_seats"))
+        if need_seats:
+            return 20, "idle fallback only when no productive seat-lock action is available"
+        return 32, "idle fallback when no better move is available"
     return 0, ""
 
 
@@ -1616,6 +1627,7 @@ async def build_observation(
     session: AsyncSession,
     user: User,
     wake_context: dict[str, Any] | None = None,
+    execution_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     merchant = await ensure_random_merchant_for_user(session=session, user=user)
     rate = await get_rate(session=session, user=user)
@@ -1668,6 +1680,7 @@ async def build_observation(
                 "default_sleep_seconds": settings.step_seconds,
             },
         },
+        "execution_feedback": execution_feedback or {},
         "player": {
             "idpk": user.idpk,
             "id_user": user.id_user,
@@ -1963,6 +1976,26 @@ def apply_action_guardrails(
             "sleep_seconds": settings.step_seconds,
         }
 
+    repeated_action = str(guard.get("repeated_action", "")).strip()
+    if (
+        repeated_action
+        and repeated_action == action["action"]
+        and repeated_action in {"wait", "exchange_bank"}
+        and fallback
+    ):
+        fallback_action = str(fallback.get("action", "")).strip()
+        if (
+            fallback_action
+            and fallback_action not in blocked_actions
+            and fallback_action != action["action"]
+        ):
+            return {
+                "action": fallback_action,
+                "params": fallback.get("params", {}) or {},
+                "reason": f"loop_breaker:{action['action']}",
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
+
     # Capacity unlock mode: when no seats remain, avoid actions that cannot resolve seat pressure.
     remain_seats = int(observation.get("zoo", {}).get("remain_seats", 0) or 0)
     if remain_seats <= 0 and action["action"] in {
@@ -1975,7 +2008,14 @@ def apply_action_guardrails(
         planner = observation.get("planner", {}) or {}
         for step in planner.get("recommended_actions", []) or []:
             step_action = str(step.get("action", "")).strip()
-            if step_action in {"buy_aviary", "exchange_bank"}:
+            if step_action in {
+                "buy_aviary",
+                "join_chat_game",
+                "send_chat_transfer",
+                "create_chat_game",
+                "invest_for_income",
+                "exchange_bank",
+            }:
                 return {
                     "action": step_action,
                     "params": step.get("params", {}) or {},
@@ -1999,12 +2039,20 @@ def apply_action_guardrails(
             and int(best_income.get("affordable_quantity", 0) or 0) > 0
             and payback_minutes <= 35
         ):
+            quantity = max(
+                1,
+                min(
+                    int(best_income.get("affordable_quantity", 1) or 1),
+                    max(1, remain_seats),
+                    10,
+                ),
+            )
             return {
                 "action": "buy_rarity_animal",
                 "params": {
                     "animal": best_income.get("animal"),
                     "rarity": best_income.get("rarity"),
-                    "quantity": 1,
+                    "quantity": quantity,
                 },
                 "reason": "roi_priority_reroute:exchange_bank",
                 "sleep_seconds": action.get("sleep_seconds"),
@@ -2026,13 +2074,45 @@ def apply_action_guardrails(
                 "sleep_seconds": action.get("sleep_seconds"),
             }
 
+    if action["action"] == "wait":
+        summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
+        best_income = summary.get("best_income_option") or {}
+        if (
+            remain_seats > 0
+            and int(best_income.get("affordable_quantity", 0) or 0) > 0
+            and best_income.get("animal")
+            and best_income.get("rarity")
+        ):
+            quantity = max(
+                1,
+                min(
+                    int(best_income.get("affordable_quantity", 1) or 1),
+                    max(1, remain_seats),
+                    10,
+                ),
+            )
+            return {
+                "action": "buy_rarity_animal",
+                "params": {
+                    "animal": best_income.get("animal"),
+                    "rarity": best_income.get("rarity"),
+                    "quantity": quantity,
+                },
+                "reason": "guardrail_no_idle_buy",
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
+
     return action
 
 
 def should_stop_npc_cycle(action: dict[str, Any], result: dict[str, Any]) -> bool:
     if action["action"] == "wait":
         return True
-    if result.get("status") != "ok":
+
+    status = str(result.get("status", "")).strip().lower()
+    # Keep the cycle running on "skipped" so the model can re-think with
+    # execution_feedback and choose another action in the same wake.
+    if status in {"error", "failed"}:
         return True
     return False
 

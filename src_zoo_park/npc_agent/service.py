@@ -270,6 +270,7 @@ async def run_npc_players_turn() -> None:
             last_after_snapshot = None
             last_observation = None
             llm_error_count = 0  # for exponential backoff (#4)
+            reflection_feedback: dict[str, Any] | None = None
 
             for decision_index in range(1, settings.max_actions_per_cycle + 1):
                 # Phase 1: Snapshot and Observation
@@ -285,8 +286,9 @@ async def run_npc_players_turn() -> None:
                         session=session,
                         user=npc_user_refreshed,
                         wake_context=wake_trigger,
+                        execution_feedback=reflection_feedback,
                     )
-                    if int(npc_user_refreshed.id_user) == -1002:
+                    if int(npc_user_refreshed.id_user) in {-1001, -1002}:
                         observation["v2_memory"] = await load_npc_v2_memory(
                             npc_user_refreshed.idpk
                         )
@@ -386,7 +388,7 @@ async def run_npc_players_turn() -> None:
                         result=result,
                         wake_trigger=wake_trigger,
                     )
-                    if int(npc_user_refreshed.id_user) == -1002:
+                    if int(npc_user_refreshed.id_user) in {-1001, -1002}:
                         await update_npc_v2_memory(
                             user_idpk=npc_user_refreshed.idpk,
                             action=action,
@@ -427,6 +429,18 @@ async def run_npc_players_turn() -> None:
                     )
                 except Exception:
                     pass
+
+                status = str(result.get("status", "")).strip().lower()
+                if status != "ok":
+                    reflection_feedback = {
+                        "failed_action": str(result.get("failed_action") or action.get("action") or "wait"),
+                        "error_code": str(result.get("error_code") or result.get("summary") or "action_unavailable"),
+                        "error_message": str(result.get("error_message") or result.get("summary") or "action unavailable"),
+                        "allowed_actions": list(result.get("allowed_actions") or []),
+                        "blocked_actions": list(result.get("blocked_actions") or []),
+                    }
+                else:
+                    reflection_feedback = None
 
                 if should_stop_npc_cycle(action=action, result=result):
                     break

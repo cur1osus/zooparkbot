@@ -105,13 +105,44 @@ async def execute_action(
     extra_kwargs = {}
     if handler is execute_create_unity:
         extra_kwargs["client"] = client
-    return await handler(
+    result = await handler(
         session=session,
         user=user,
         params=params,
         observation=observation,
         **extra_kwargs,
     )
+
+    # Normalize non-ok outcomes so the planner can reflect on explicit failure context.
+    status = str(result.get("status", "")).strip().lower()
+    if status != "ok":
+        summary = str(result.get("summary", "")).strip() or "action_unavailable"
+        error_code = str(result.get("error_code", "")).strip() or summary
+        allowed_actions = []
+        for row in observation.get("allowed_actions", []) or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("action", "")).strip()
+            if name and name not in allowed_actions:
+                allowed_actions.append(name)
+
+        blocked_actions = [
+            {
+                "action": str(name),
+                "reason": "blocked_by_guard",
+            }
+            for name in (observation.get("anti_loop_guard", {}).get("blocked_actions", []) or [])
+            if str(name).strip()
+        ]
+
+        result["failed_action"] = action_name
+        result["error_code"] = error_code
+        result["error_message"] = summary
+        result["allowed_actions"] = allowed_actions
+        if blocked_actions:
+            result["blocked_actions"] = blocked_actions
+
+    return result
 
 
 async def execute_wait(
