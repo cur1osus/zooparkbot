@@ -271,6 +271,8 @@ async def build_recruit_targets(
     )
     pending_request_targets = {int(v) for v in pending_rows.all()}
 
+    owner_income = int(await income_(session=session, user=user))
+
     candidates = []
     for member in members:
         member_idpk = int(member.idpk)
@@ -285,6 +287,11 @@ async def build_recruit_targets(
 
         candidate_income = int(await income_(session=session, user=member))
         candidate_animals = int(await get_total_number_animals(self=member))
+
+        # Recruit priority: income first, animals as tie-breaker.
+        # Keep score as an explicit value so execution can enforce a quality bar.
+        candidate_score = float(candidate_income) + float(candidate_animals) * 0.25
+
         candidates.append(
             {
                 "idpk": member_idpk,
@@ -293,16 +300,32 @@ async def build_recruit_targets(
                 "income": candidate_income,
                 "animals": candidate_animals,
                 "usd": int(member.usd),
-                # Recruit priority: income first, animals as tie-breaker (no cash weight).
-                "score": candidate_income,
+                "score": round(candidate_score, 2),
             }
         )
 
     candidates.sort(
-        key=lambda row: (int(row.get("income", 0) or 0), int(row.get("animals", 0) or 0)),
+        key=lambda row: (float(row.get("score", 0) or 0), int(row.get("animals", 0) or 0)),
         reverse=True,
     )
-    return candidates[: settings.top_candidates_limit]
+
+    if not candidates:
+        return []
+
+    best_score = float(candidates[0].get("score", 0) or 0)
+    min_score = best_score * settings.recruit_min_score_ratio_vs_best
+    min_income = max(
+        settings.recruit_min_income_abs,
+        int(owner_income * settings.recruit_min_income_ratio_vs_owner),
+    )
+
+    filtered_candidates = [
+        row
+        for row in candidates
+        if int(row.get("income", 0) or 0) >= min_income
+        and float(row.get("score", 0) or 0) >= min_score
+    ]
+    return filtered_candidates[: settings.top_candidates_limit]
 
 
 async def ensure_random_merchant_for_user(
@@ -634,6 +657,52 @@ def _actions_since_last(rows: list[dict[str, Any]], target_actions: set[str]) ->
     return count
 
 
+def _build_rate_history_snapshot(history_raw: str, now_ts: int | None = None) -> dict[str, Any]:
+    try:
+        rows = json.loads(history_raw) if history_raw else []
+        if not isinstance(rows, list):
+            rows = []
+    except Exception:
+        rows = []
+
+    points: list[dict[str, int]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ts = int(row.get("ts", 0) or 0)
+        rate = int(row.get("rate", 0) or 0)
+        if ts <= 0 or rate <= 0:
+            continue
+        points.append({"ts": ts, "rate": rate})
+
+    if not points:
+        return {"points_1h": [], "summary_1h": {}}
+
+    points.sort(key=lambda x: x["ts"])
+    now_ts = now_ts or int(datetime.now().timestamp())
+    one_hour_ago = now_ts - 3600
+    one_hour_points = [p for p in points if p["ts"] >= one_hour_ago]
+    if not one_hour_points:
+        one_hour_points = points[-1:]
+
+    rates = [int(p["rate"]) for p in one_hour_points]
+    first_rate = int(rates[0])
+    last_rate = int(rates[-1])
+    summary = {
+        "samples": len(one_hour_points),
+        "first": first_rate,
+        "last": last_rate,
+        "min": min(rates),
+        "max": max(rates),
+        "delta": last_rate - first_rate,
+        "trend": "up" if last_rate > first_rate else "down" if last_rate < first_rate else "flat",
+    }
+    return {
+        "points_1h": one_hour_points[-60:],
+        "summary_1h": summary,
+    }
+
+
 def build_momentum_signal(user: User, current_income: int) -> dict[str, Any]:
     rows = _load_history_rows(user)
     recent_rows = rows[-3:]
@@ -787,16 +856,10 @@ async def build_allowed_actions(
     if int(player.get("daily_bonus_available", 0) or 0) > 0:
         _append_unique_action(actions, "claim_daily_bonus", {"rerolls": 0})
 
-    min_rate = max(1, int(bank.get("min_rate_rub_usd", rate) or rate))
-    max_rate = max(min_rate, int(bank.get("max_rate_rub_usd", rate) or rate))
-    near_best_rate = rate <= min_rate + 1
-    avg_rate = (min_rate + max_rate) / 2
-    much_better_than_avg = rate <= int(avg_rate)
-    next_unlock = (observation.get("strategy_signals", {}).get("summary", {}) or {}).get("next_unlock") or {}
-    unlock_eta = next_unlock.get("eta_seconds")
-    urgent_unlock = unlock_eta is not None and int(unlock_eta) <= 20 * 60
-
-    if rub >= rate and (near_best_rate or much_better_than_avg or urgent_unlock):
+    # Let the LLM decide exchange timing based on recent rate history in observation.bank.
+    # Keep both tactical and full conversion options available.
+    if rub >= rate:
+        # Prefer full conversion by default; tactical one-rate exchange stays as a secondary option.
         _append_unique_action(actions, "exchange_bank", {"mode": "all"})
         _append_unique_action(
             actions, "exchange_bank", {"mode": "amount", "amount": rate}
@@ -1429,11 +1492,165 @@ def build_strategy_signals(observation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _derive_cycle_goal(observation: dict[str, Any]) -> str:
+    summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
+    player = observation.get("player", {}) or {}
+    unity = observation.get("unity", {}) or {}
+
+    if int(player.get("daily_bonus_available", 0) or 0) > 0:
+        return "liquidity"
+    if int((unity.get("current") or {}).get("pending_requests_count", 0) or 0) > 0:
+        return "unity"
+    if bool(summary.get("need_seats")):
+        return "income"
+    social_target = summary.get("social_target") or {}
+    if social_target.get("mode") in {"join", "recruit", "review_request"}:
+        return "unity"
+    top_income = summary.get("top_income_options") or []
+    if top_income:
+        return "income"
+    return "liquidity"
+
+
+def _goal_weight_for_action(action_name: str, cycle_goal: str) -> float:
+    goal_map: dict[str, set[str]] = {
+        "income": {
+            "buy_aviary",
+            "buy_rarity_animal",
+            "invest_for_income",
+            "exchange_bank",
+            "create_item",
+            "optimize_items",
+            "claim_daily_bonus",
+            "claim_chat_transfer",
+        },
+        "animals": {
+            "buy_rarity_animal",
+            "buy_merchant_discount_offer",
+            "buy_merchant_random_offer",
+            "buy_merchant_targeted_offer",
+            "invest_for_top_animals",
+        },
+        "unity": {
+            "review_unity_request",
+            "join_best_unity",
+            "recruit_top_player",
+            "upgrade_unity_level",
+            "create_unity",
+            "exit_from_unity",
+        },
+        "liquidity": {
+            "claim_daily_bonus",
+            "exchange_bank",
+            "claim_chat_transfer",
+            "wait",
+        },
+    }
+    if action_name in goal_map.get(cycle_goal, set()):
+        return 1.15
+    if action_name == "wait":
+        return 0.9
+    return 0.82
+
+
+def _estimate_action_ev(action_entry: dict[str, Any], observation: dict[str, Any]) -> dict[str, Any]:
+    action_name = str(action_entry.get("action", "wait"))
+    params = action_entry.get("params", {}) or {}
+    summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
+    best_income = summary.get("best_income_option") or {}
+
+    ev_score = 0.0
+    payback_minutes: float | None = None
+    fail_risk = 0.1
+
+    if action_name == "buy_rarity_animal":
+        variant = _find_animal_variant(
+            observation,
+            str(params.get("animal", "")),
+            str(params.get("rarity", "")),
+        )
+        if variant:
+            payback = variant.get("payback_minutes")
+            payback_minutes = float(payback) if payback is not None else None
+            income = float(int(variant.get("income_rub", 0) or 0))
+            price = float(max(1, int(variant.get("price_usd", 0) or 1)))
+            ev_score = (income / price) * 100.0
+            fail_risk = 0.05 if int(variant.get("affordable_quantity", 0) or 0) > 0 else 0.85
+    elif action_name == "buy_aviary":
+        option = _find_aviary_option(observation, str(params.get("code_name_aviary", "")))
+        if option:
+            seats = float(max(1, int(option.get("size", 1) or 1)))
+            price = float(max(1, int(option.get("price_usd", 0) or 1)))
+            ev_score = (seats / price) * 160.0
+            fail_risk = 0.1 if int(option.get("affordable_quantity", 0) or 0) > 0 else 0.8
+    elif action_name == "exchange_bank":
+        ev_score = 58.0 if bool(summary.get("next_unlock")) else 42.0
+        fail_risk = 0.15
+    elif action_name in {"claim_daily_bonus", "claim_chat_transfer", "review_unity_request"}:
+        ev_score = 72.0
+        fail_risk = 0.03
+    elif action_name in {"recruit_top_player", "join_best_unity", "upgrade_unity_level"}:
+        ev_score = 52.0
+        fail_risk = 0.3
+    elif action_name == "invest_for_income":
+        ev_score = 64.0 if best_income else 35.0
+        fail_risk = 0.22
+    elif action_name == "wait":
+        ev_score = 8.0
+        fail_risk = 0.0
+    else:
+        ev_score = 34.0
+        fail_risk = 0.35
+
+    return {
+        "ev_score": round(float(ev_score), 2),
+        "payback_minutes": None if payback_minutes is None else round(payback_minutes, 2),
+        "fail_risk": round(float(fail_risk), 2),
+    }
+
+
+def _build_phase_a_candidates(observation: dict[str, Any], cycle_goal: str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for entry in observation.get("allowed_actions", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        action_name = str(entry.get("action", "wait")).strip() or "wait"
+        base_score, note = _score_allowed_action(entry, observation)
+        ev = _estimate_action_ev(entry, observation)
+        goal_weight = _goal_weight_for_action(action_name, cycle_goal)
+        combined = float(base_score) * goal_weight + float(ev.get("ev_score", 0.0)) * 0.35 - float(ev.get("fail_risk", 0.0)) * 18.0
+        if action_name != "wait" and combined < 42.0:
+            continue
+        candidates.append(
+            {
+                "action": action_name,
+                "params": entry.get("params", {}) or {},
+                "base_score": int(base_score),
+                "goal_weight": round(goal_weight, 2),
+                "ev": ev,
+                "combined_score": round(combined, 2),
+                "note": note,
+            }
+        )
+
+    candidates.sort(
+        key=lambda row: (
+            float(row.get("combined_score", 0.0) or 0.0),
+            float(((row.get("ev") or {}).get("ev_score", 0.0) or 0.0)),
+            str(row.get("action", "")),
+        ),
+        reverse=True,
+    )
+    return candidates[:3]
+
+
 def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
     summary = observation.get("strategy_signals", {}).get("summary", {})
     decision_brief = observation.get("decision_brief", {})
     behavior = observation.get("memory", {}).get("behavior_guidance", {})
     active_goals = observation.get("memory", {}).get("active_goals", [])
+    cycle_goal = _derive_cycle_goal(observation)
+    phase_a_candidates = _build_phase_a_candidates(observation, cycle_goal=cycle_goal)
     recommended_actions: list[dict[str, Any]] = []
     avoid_actions = {
         str(item).strip()
@@ -1586,10 +1803,16 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "phase": phase,
+        "cycle_goal": cycle_goal,
         "primary_goal": primary_goal,
         "next_unlock": next_unlock,
         "capacity_unlock_mode": bool(summary.get("need_seats")),
         "recommended_actions": recommended_actions[:5],
+        "phase_a_candidates": phase_a_candidates,
+        "phase_b_policy": {
+            "prefer_phase_a": True,
+            "min_combined_score": 42,
+        },
         "avoid_actions": sorted(avoid_actions),
     }
 
@@ -1755,6 +1978,13 @@ async def build_observation(
         session=session,
         value_name="MAX_RATE_RUB_USD",
     )
+    rate_history_raw = await get_value(
+        session=session,
+        value_name="RATE_RUB_USD_HISTORY_JSON",
+        value_type="str",
+        cache_=False,
+    )
+    rate_history = _build_rate_history_snapshot(rate_history_raw)
     observation = {
         "schema_version": 5,
         "current_time": datetime.now().isoformat(),
@@ -1802,6 +2032,8 @@ async def build_observation(
             "max_rate_rub_usd": int(max_rate_rub_usd),
             "percent_fee": int(bank_percent_fee),
             "bank_storage": str(bank_storage),
+            "rate_history_1h": rate_history.get("points_1h", []),
+            "rate_history_1h_summary": rate_history.get("summary_1h", {}),
         },
         "merchant": {
             "name": merchant.name,
@@ -1982,11 +2214,21 @@ def validate_action(decision: dict[str, Any]) -> dict[str, Any]:
     params = decision.get("params")
     if not isinstance(params, dict):
         params = {}
+
+    reason = str(decision.get("reason", ""))[:300]
+    sleep_seconds = decision.get("sleep_seconds")
+
+    # If model quota is exhausted (HTTP 403), force a long cooldown fallback.
+    if action == "wait" and (
+        "llm_error:http_403" in reason or "access_terminated_error" in reason
+    ):
+        sleep_seconds = 4 * 60 * 60
+
     return {
         "action": action,
         "params": params,
-        "reason": str(decision.get("reason", ""))[:300],
-        "sleep_seconds": decision.get("sleep_seconds"),
+        "reason": reason,
+        "sleep_seconds": sleep_seconds,
     }
 
 
@@ -2084,6 +2326,34 @@ def apply_action_guardrails(
                 "sleep_seconds": action.get("sleep_seconds"),
             }
 
+    planner = observation.get("planner", {}) or {}
+    phase_a_candidates = planner.get("phase_a_candidates", []) or []
+    phase_a_actions = {
+        str(row.get("action", "")).strip()
+        for row in phase_a_candidates
+        if isinstance(row, dict) and str(row.get("action", "")).strip()
+    }
+    if phase_a_actions and action["action"] not in phase_a_actions and action["action"] != "wait":
+        top = phase_a_candidates[0]
+        return {
+            "action": str(top.get("action", "wait")) or "wait",
+            "params": top.get("params", {}) or {},
+            "reason": f"phase_a_reroute:{action['action']}",
+            "sleep_seconds": action.get("sleep_seconds"),
+        }
+
+    ev_probe = _estimate_action_ev(
+        {"action": action.get("action"), "params": action.get("params", {})},
+        observation,
+    )
+    if action["action"] != "wait" and float(ev_probe.get("ev_score", 0.0) or 0.0) < 18.0:
+        return {
+            "action": "wait",
+            "params": {},
+            "reason": f"ev_gate_block:{action['action']}",
+            "sleep_seconds": settings.step_seconds,
+        }
+
     # Capacity unlock mode: when no seats remain, avoid actions that cannot resolve seat pressure.
     remain_seats = int(observation.get("zoo", {}).get("remain_seats", 0) or 0)
     if remain_seats <= 0 and action["action"] in {
@@ -2122,6 +2392,50 @@ def apply_action_guardrails(
         summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
         best_income = summary.get("best_income_option") or {}
         payback_minutes = float(best_income.get("payback_minutes", 10**9) or 10**9)
+
+        bank = observation.get("bank", {}) or {}
+        player = observation.get("player", {}) or {}
+        rate = max(1, int(bank.get("rate_rub_usd", 1) or 1))
+        min_rate = max(1, int(bank.get("min_rate_rub_usd", rate) or rate))
+        max_rate = max(min_rate, int(bank.get("max_rate_rub_usd", rate) or rate))
+        history_summary = bank.get("rate_history_1h_summary", {}) or {}
+        hour_min = max(1, int(history_summary.get("min", min_rate) or min_rate))
+        hour_max = max(hour_min, int(history_summary.get("max", max_rate) or max_rate))
+        hour_spread = max(1, hour_max - hour_min)
+
+        # High rate means bad USD buy price (more RUB for 1 USD).
+        # Use last-hour range (not global min/max), so rising local peaks are blocked reliably.
+        near_hour_top = rate >= (hour_min + int(hour_spread * 0.75))
+
+        next_unlock = summary.get("next_unlock") or {}
+        target_usd = int(next_unlock.get("target_usd", 0) or 0)
+        player_usd = int(player.get("usd", 0) or 0)
+        player_rub = int(player.get("rub", 0) or 0)
+        effective_usd = float(player_usd) + float(player_rub) / max(1, rate)
+        urgent_unlock = bool(target_usd > 0 and effective_usd < target_usd)
+
+        mode = str((action.get("params") or {}).get("mode", "")).strip().lower()
+        amount = int((action.get("params") or {}).get("amount", 0) or 0)
+        micro_amount_trade = mode == "amount" and amount <= rate
+
+        # Hard guard: do not exchange near local highs unless unlock is truly blocked.
+        if near_hour_top and not urgent_unlock:
+            return {
+                "action": "wait",
+                "params": {},
+                "reason": "bad_rate_guard:exchange_bank",
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
+
+        # Avoid 1$ micro-loop spam when there is no urgency.
+        if micro_amount_trade and player_rub >= rate * 3 and not urgent_unlock:
+            return {
+                "action": "wait",
+                "params": {},
+                "reason": "micro_exchange_guard",
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
+
         if (
             remain_seats > 0
             and int(best_income.get("affordable_quantity", 0) or 0) > 0
@@ -2221,8 +2535,11 @@ def compute_smart_sleep_seconds(
     default_sleep: int,
 ) -> int:
     smart_sleep = int(default_sleep)
-    if result and result.get("status") == "error":
-        return settings.min_sleep_seconds
+    status = str((result or {}).get("status", "")).strip().lower()
+    if status == "error":
+        return min(settings.max_sleep_seconds, max(settings.step_seconds, settings.min_sleep_seconds * 3))
+    if status in {"failed", "skipped"}:
+        smart_sleep = min(settings.max_sleep_seconds, max(settings.step_seconds, smart_sleep * 2))
     if wake_trigger.get("source") == "event":
         smart_sleep = min(smart_sleep, settings.step_seconds)
     if not observation:
@@ -2258,6 +2575,19 @@ def compute_smart_sleep_seconds(
             smart_sleep = min(
                 smart_sleep, max(settings.min_sleep_seconds, int(best_eta))
             )
+
+    phase_a = (planner.get("phase_a_candidates") or []) if isinstance(planner, dict) else []
+    if phase_a:
+        top = phase_a[0] if isinstance(phase_a[0], dict) else {}
+        top_score = float(top.get("combined_score", 0.0) or 0.0)
+        top_ev = float(((top.get("ev") or {}).get("ev_score", 0.0) or 0.0))
+        if top_score >= 80 or top_ev >= 60:
+            smart_sleep = min(smart_sleep, settings.min_sleep_seconds)
+        elif top_score >= 60:
+            smart_sleep = min(smart_sleep, settings.step_seconds)
+
+    if status in {"failed", "skipped"}:
+        smart_sleep = max(settings.step_seconds, int(smart_sleep))
 
     return clamp_npc_sleep_seconds(smart_sleep)
 

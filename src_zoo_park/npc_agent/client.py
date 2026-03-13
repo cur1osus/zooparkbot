@@ -18,6 +18,7 @@ class ActionDecision(BaseModel):
     params: dict[str, Any]
     reason: str
     sleep_seconds: int
+    trait_update: dict[str, Any] | None = None
 
 
 class ReflectionOutput(BaseModel):
@@ -42,6 +43,7 @@ class ToolDecision(BaseModel):
     input: dict[str, Any]
     reason: str
     sleep_seconds: int
+    trait_update: dict[str, Any] | None = None
 
 
 ACTION_REASONING_STEPS = """
@@ -85,7 +87,7 @@ Rules:
 - Use planner.recommended_actions as your default 2-5 step roadmap unless the current board state clearly invalidates it.
 - Respect memory.behavior_guidance.avoid_actions and anti_loop_guard.blocked_actions.
 - If zoo.remain_seats <= 0, do NOT choose animal-buying actions; prioritize buy_aviary/exchange_bank/wait.
-- Prefer exchange_bank only on favorable bank rate (closer to min_rate_rub_usd than to max_rate_rub_usd), unless exchange is urgently needed for the next unlock.
+- For exchange_bank, use bank.rate_history_1h and bank.rate_history_1h_summary to judge timing; high rate is worse, low rate is better. Do not dump all RUB at local highs unless the unlock is truly urgent.
 - Economy first: avoid chat entertainment spend (transfers/games) unless there is a clear surplus and core growth is not blocked.
 - Claiming available chat transfers is positive EV and can be prioritized when available.
 - Join/claim only entities marked as official chat (`source_chat_id == CHAT_ID`); skip private/user contexts.
@@ -95,12 +97,16 @@ Rules:
 - Return sleep_seconds as the planned delay until the next wake-up.
 - Keep sleep_seconds within the limits from wake_context.constraints.
 - Use decision_brief first when it exists because it already ranks the best legal options.
+- Treat planner.cycle_goal as the objective for this wake.
+- Use planner.phase_a_candidates as shortlist, then choose final action in phase B using current constraints.
 - Use execution_feedback (if present) to avoid repeating failed actions and to pick alternatives from allowed_actions.
 - Use momentum to break stale loops and detect when waiting is no longer productive.
 - Respond with JSON only.
-- JSON shape: {"action": "...", "params": {...}, "reason": "short text", "sleep_seconds": 300}
+- JSON shape: {"action": "...", "params": {...}, "reason": "short text", "sleep_seconds": 300, "trait_update": {"trait": "...", "delta": 1, "reason": "..."}}
+- trait_update is optional; use it when you want to shift personality BEFORE the chosen action.
+- Use only traits from memory.profile.traits and respect memory.profile.trait_limits in observation.
 - Keep reason short.
-- Never invent fields outside action, params, reason, sleep_seconds.
+- Never invent fields outside action, params, reason, sleep_seconds, trait_update.
 - If no action is attractive, return {"action": "wait", "params": {}, "reason": "...", "sleep_seconds": 300}
 
 __ACTION_REASONING_STEPS__
@@ -150,7 +156,7 @@ You are an OpenClaw-style NPC runtime using tool selection.
 
 Choose exactly one tool call for this turn.
 Return JSON only with this shape:
-{"tool":"tool_name","input":{},"reason":"short text","sleep_seconds":300}
+{"tool":"tool_name","input":{},"reason":"short text","sleep_seconds":300,"trait_update":{"trait":"risk_tolerance","delta":1,"reason":"..."}}
 
 Rules:
 - You MUST choose from available_tools only.
@@ -159,6 +165,8 @@ Rules:
 - Do not choose unaffordable buys when affordable_quantity=0 unless eta is near-term and no better action exists.
 - Respect seat constraints: when remain_seats <= 0, prioritize capacity unlock flow.
 - Keep reason short and concrete.
+- trait_update is optional; use it when the planned action should shape personality.
+- Use only traits from memory.profile.traits and keep changes within memory.profile.trait_limits.
 """.strip()
 
 CHAT_SYSTEM_PROMPT = """
@@ -387,6 +395,7 @@ class NpcDecisionClient:
             "params": params,
             "reason": str(tool_decision.get("reason", "v2_tool_selection"))[:220],
             "sleep_seconds": int(tool_decision.get("sleep_seconds", 300) or 300),
+            "trait_update": tool_decision.get("trait_update"),
         }
 
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
