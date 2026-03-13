@@ -207,13 +207,20 @@ async def execute_invest_for_income(
         )
     best_income_option = signal.get("best_income_option")
     if best_income_option:
+        quantity = max(
+            1,
+            min(
+                int(best_income_option.get("affordable_quantity", 1) or 1),
+                int(observation.get("zoo", {}).get("remain_seats", 1) or 1),
+            ),
+        )
         return await execute_buy_rarity_animal(
             session=session,
             user=user,
             params={
                 "animal": best_income_option["animal"],
                 "rarity": best_income_option["rarity"],
-                "quantity": 1,
+                "quantity": quantity,
             },
             observation=observation,
         )

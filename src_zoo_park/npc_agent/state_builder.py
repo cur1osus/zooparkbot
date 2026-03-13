@@ -831,7 +831,8 @@ async def build_allowed_actions(
 
     for row in affordable_variants[:4]:
         affordable_quantity = int(row.get("affordable_quantity", 0) or 0)
-        suggested_quantity = max(1, min(affordable_quantity, remain_seats, 5))
+        # No hard cap: suggest full currently available quantity.
+        suggested_quantity = max(1, min(affordable_quantity, remain_seats))
         _append_unique_action(
             actions,
             "buy_rarity_animal",
@@ -2131,7 +2132,6 @@ def apply_action_guardrails(
                 min(
                     int(best_income.get("affordable_quantity", 1) or 1),
                     max(1, remain_seats),
-                    10,
                 ),
             )
             return {
@@ -2175,7 +2175,6 @@ def apply_action_guardrails(
                 min(
                     int(best_income.get("affordable_quantity", 1) or 1),
                     max(1, remain_seats),
-                    10,
                 ),
             )
             return {
