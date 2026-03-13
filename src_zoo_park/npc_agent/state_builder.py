@@ -30,6 +30,7 @@ from tools.unity import (
     check_condition_2nd_lvl,
     check_condition_3rd_lvl,
     count_income_unity,
+    get_data_by_lvl_unity,
     get_unity_idpk,
 )
 from tools.value import get_value
@@ -425,6 +426,10 @@ async def build_unity_state(session: AsyncSession, user: User) -> dict[str, Any]
                     key=lambda row: (row["income"], row["animals"], row["usd"]),
                     reverse=True,
                 )
+            upgrade_requirements = await get_unity_upgrade_requirements(
+                session=session,
+                unity=unity,
+            )
             current = {
                 "idpk": unity.idpk,
                 "name": unity.name,
@@ -432,7 +437,8 @@ async def build_unity_state(session: AsyncSession, user: User) -> dict[str, Any]
                 "members": int(unity.get_number_members()),
                 "owner_idpk": int(unity.idpk_user),
                 "income": int(await count_income_unity(session=session, unity=unity)),
-                "can_upgrade": await can_upgrade_unity(session=session, unity=unity),
+                "can_upgrade": bool(upgrade_requirements.get("can_upgrade", False)),
+                "upgrade_requirements": upgrade_requirements,
                 "is_owner": unity.idpk_user == user.idpk,
                 "pending_requests": pending_requests[: settings.top_candidates_limit],
                 "pending_requests_count": len(pending_requests),
@@ -478,6 +484,54 @@ async def can_upgrade_unity(session: AsyncSession, unity: Unity) -> bool:
         case 2:
             return await check_condition_3rd_lvl(session=session, unity=unity)
     return False
+
+
+async def get_unity_upgrade_requirements(
+    session: AsyncSession, unity: Unity
+) -> dict[str, Any]:
+    level = int(unity.level)
+    if level >= 3:
+        return {
+            "can_upgrade": False,
+            "next_level": None,
+            "blockers": ["unity_max_level"],
+            "metrics": {},
+        }
+
+    data = await get_data_by_lvl_unity(session=session, lvl=level, unity=unity)
+    blockers: list[str] = []
+    metrics: dict[str, Any] = {}
+
+    if "amount_members" in data:
+        required = int(data.get("amount_members", 0) or 0)
+        current = int(data.get("f_amount_members", 0) or 0)
+        metrics["members"] = {"current": current, "required": required}
+        if current < required:
+            blockers.append(f"need_members:{current}/{required}")
+
+    if "amount_income" in data:
+        required = int(data.get("amount_income", 0) or 0)
+        current = int(data.get("f_current_income", 0) or 0)
+        metrics["income_per_minute_rub"] = {"current": current, "required": required}
+        if current < required:
+            blockers.append(f"need_income:{current}/{required}")
+
+    if "amount_animals" in data:
+        required = int(data.get("amount_animals", 0) or 0)
+        not_have = str(data.get("f_members_not_have_amount_animals", "") or "").strip()
+        metrics["animals_per_member"] = {
+            "required": required,
+            "members_missing": not_have,
+        }
+        if not_have:
+            blockers.append("need_animals_per_member")
+
+    return {
+        "can_upgrade": len(blockers) == 0,
+        "next_level": int(data.get("next_lvl", level + 1) or (level + 1)),
+        "blockers": blockers,
+        "metrics": metrics,
+    }
 
 
 async def build_item_opportunities(session: AsyncSession, user: User) -> dict[str, Any]:
