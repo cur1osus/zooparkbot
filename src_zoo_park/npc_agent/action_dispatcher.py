@@ -188,12 +188,20 @@ async def execute_invest_for_income(
 ) -> dict[str, Any]:
     signal = observation["strategy_signals"]["summary"]
     if signal["need_seats"] and signal["best_aviary_option"]:
+        best_aviary = signal["best_aviary_option"]
+        aviary_size = max(1, int(best_aviary.get("size", 1) or 1))
+        affordable_quantity = max(1, int(best_aviary.get("affordable_quantity", 1) or 1))
+        # Open a practical seat buffer in one move when possible.
+        target_new_seats = max(aviary_size, 6)
+        quantity = max(1, (target_new_seats + aviary_size - 1) // aviary_size)
+        quantity = min(quantity, affordable_quantity)
+
         return await execute_buy_aviary(
             session=session,
             user=user,
             params={
-                "code_name_aviary": signal["best_aviary_option"]["code_name"],
-                "quantity": 1,
+                "code_name_aviary": best_aviary["code_name"],
+                "quantity": quantity,
             },
             observation=observation,
         )
