@@ -1449,22 +1449,57 @@ def build_strategy_signals(observation: dict[str, Any]) -> dict[str, Any]:
     standings = observation["standings"]["self"]
     unity_current = observation.get("unity", {}).get("current") or {}
     pending_requests = unity_current.get("pending_requests", []) or []
+    memory_relationships = observation.get("memory", {}).get("relationships", []) or []
+    
+    nemesis_ids = {int(r.get("subject_idpk", 0)) for r in memory_relationships if int(r.get("trust", 500)) < 300}
+    favorite_ids = {int(r.get("subject_idpk", 0)) for r in memory_relationships if int(r.get("trust", 500)) > 700}
+
     social_target = None
     if pending_requests:
+        first_req = pending_requests[0]
+        req_id = int(first_req.get("idpk_user", 0))
         social_target = {
             "mode": "review_request",
-            "target": pending_requests[0],
+            "target": first_req,
+            "is_nemesis": req_id in nemesis_ids,
+            "is_favorite": req_id in favorite_ids,
         }
     elif observation.get("unity", {}).get("recruit_targets") or []:
-        social_target = {
-            "mode": "recruit",
-            "target": observation["unity"]["recruit_targets"][0],
-        }
+        for target in observation["unity"]["recruit_targets"]:
+            tid = int(target.get("idpk", 0))
+            if tid not in nemesis_ids:
+                social_target = {
+                    "mode": "recruit",
+                    "target": target,
+                    "is_nemesis": False,
+                    "is_favorite": tid in favorite_ids,
+                }
+                break
+        if not social_target:
+            social_target = {
+                "mode": "recruit",
+                "target": observation["unity"]["recruit_targets"][0],
+                "is_nemesis": True,
+                "is_favorite": False,
+            }
     elif observation.get("unity", {}).get("candidates") or []:
-        social_target = {
-            "mode": "join",
-            "target": observation["unity"]["candidates"][0],
-        }
+        for target in observation["unity"]["candidates"]:
+            tid = int(target.get("owner_idpk", 0))
+            if tid not in nemesis_ids:
+                social_target = {
+                    "mode": "join",
+                    "target": target,
+                    "is_nemesis": False,
+                    "is_favorite": tid in favorite_ids,
+                }
+                break
+        if not social_target:
+             social_target = {
+                "mode": "join",
+                "target": observation["unity"]["candidates"][0],
+                "is_nemesis": True,
+                "is_favorite": False,
+            }
 
     return {
         "summary": {
@@ -1584,7 +1619,19 @@ def _estimate_action_ev(action_entry: dict[str, Any], observation: dict[str, Any
             ev_score = (seats / price) * 160.0
             fail_risk = 0.1 if int(option.get("affordable_quantity", 0) or 0) > 0 else 0.8
     elif action_name == "exchange_bank":
-        ev_score = 58.0 if bool(summary.get("next_unlock")) else 42.0
+        bank = observation.get("bank", {}) or {}
+        rate = float(int(bank.get("rate_rub_usd", 0) or 0))
+        min_rate = float(int(bank.get("min_rate_rub_usd", 0) or 0))
+        max_rate = float(int(bank.get("max_rate_rub_usd", 0) or 0))
+        if max_rate > min_rate and rate > 0:
+            # Lower rate is better for RUB->USD exchange.
+            cheapness = (max_rate - rate) / (max_rate - min_rate)
+            cheapness = max(0.0, min(1.0, cheapness))
+            ev_score = 22.0 + cheapness * 28.0
+        else:
+            ev_score = 28.0
+        if bool(summary.get("next_unlock")):
+            ev_score += 6.0
         fail_risk = 0.15
     elif action_name in {"claim_daily_bonus", "claim_chat_transfer", "review_unity_request"}:
         ev_score = 72.0
@@ -2072,6 +2119,8 @@ async def build_observation(
     observation["strategy_signals"]["goal_focus"] = [
         goal.get("topic") for goal in observation["memory"].get("active_goals", [])
     ][: settings.memory_goal_limit]
+    observation["player"]["current_mood"] = observation["memory"].get("profile", {}).get("current_mood", "neutral")
+    observation["player"]["affinity_score"] = observation["memory"].get("profile", {}).get("affinity_score", 50)
     return observation
 
 
@@ -2430,25 +2479,7 @@ def apply_action_guardrails(
                 "sleep_seconds": action.get("sleep_seconds"),
             }
 
-    ev_probe = _estimate_action_ev(
-        {"action": action.get("action"), "params": action.get("params", {})},
-        observation,
-    )
-    need_seats = bool(
-        (observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")
-    )
-    # Do not EV-block aviary buys when seat capacity is the active bottleneck.
-    if (
-        action["action"] != "wait"
-        and float(ev_probe.get("ev_score", 0.0) or 0.0) < 18.0
-        and not (action.get("action") == "buy_aviary" and need_seats)
-    ):
-        return {
-            "action": "wait",
-            "params": {},
-            "reason": f"ev_gate_block:{action['action']}",
-            "sleep_seconds": settings.step_seconds,
-        }
+    # EV is used for ranking/planner context only; do not hard-block actions here.
 
     # Capacity unlock mode: when no seats remain, avoid actions that cannot resolve seat pressure.
     remain_seats = int(observation.get("zoo", {}).get("remain_seats", 0) or 0)

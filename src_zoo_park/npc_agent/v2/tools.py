@@ -45,6 +45,28 @@ def _tool_schema_for_action(action: str) -> dict[str, Any]:
                 "rerolls": {"type": "integer", "minimum": 0},
             },
         },
+        "change_own_mood": {
+            "type": "object",
+            "properties": {"mood": {"type": "string"}},
+            "required": ["mood"],
+        },
+        "set_tactical_focus": {
+            "type": "object",
+            "properties": {"focus": {"type": "string"}},
+            "required": ["focus"],
+        },
+        "send_npc_signal": {
+            "type": "object",
+            "properties": {
+                "target_idpk": {"type": "integer"},
+                "signal_type": {
+                    "type": "string",
+                    "enum": ["request_funds", "propose_alliance", "taunt", "info"]
+                },
+                "message": {"type": "string"}
+            },
+            "required": ["target_idpk", "signal_type", "message"],
+        },
     }
     return schemas.get(action, {"type": "object"})
 
@@ -106,5 +128,18 @@ def normalize_tool_call(tool: str, raw_input: dict[str, Any] | None) -> dict[str
 
     if tool == "claim_daily_bonus":
         return {"rerolls": max(0, _to_int(payload.get("rerolls"), default=0))}
+
+    if tool == "change_own_mood":
+        return {"mood": str(payload.get("mood", "neutral")).strip()[:32]}
+
+    if tool == "set_tactical_focus":
+        return {"focus": str(payload.get("focus", "economy")).strip()[:32]}
+
+    if tool == "send_npc_signal":
+        return {
+            "target_idpk": _to_int(payload.get("target_idpk"), default=0),
+            "signal_type": str(payload.get("signal_type", "info")).strip()[:32],
+            "message": str(payload.get("message", "")).strip()[:100],
+        }
 
     return payload

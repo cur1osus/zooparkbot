@@ -23,6 +23,7 @@ EVENT_KIND = "event"
 REFLECTION_KIND = "reflection"
 GOAL_KIND = "goal"
 RELATIONSHIP_KIND = "relationship"
+FACT_KIND = "fact"
 
 TRAIT_NAMES = (
     "risk_tolerance",
@@ -502,6 +503,9 @@ def _rehydrate_profile_payload(
             "npc_id_user": int(user.id_user),
             "nickname": user.nickname,
         },
+        "current_mood": str(source.get("current_mood", "neutral"))[:32],
+        "affinity_score": _clamp(int(source.get("affinity_score", 50) or 50), 1, 100),
+        "recent_sent_chats": source.get("recent_sent_chats", [])[:3],
         "core_traits": core_traits,
         "adaptive_traits": adaptive_traits,
         "traits": effective_traits,
@@ -2123,6 +2127,21 @@ async def _maybe_create_reflection(
             llm_reflection.get("tactical_focus"),
             4,
         )
+        semantic_facts = _pick_strings(
+            llm_reflection.get("semantic_facts"),
+            4,
+        )
+        for fact in semantic_facts:
+            if fact:
+                await _append_memory_row(
+                    session=session,
+                    user_idpk=user.idpk,
+                    kind=FACT_KIND,
+                    topic=f"fact:{hashlib.md5(fact.encode('utf-8')).hexdigest()[:8]}",
+                    payload={"fact": fact, "source_reflection": reflection_payload.get("summary", "")[:50]},
+                    importance=500,
+                    confidence=800,
+                )
     reflection_payload["covered_event_count"] = len(recent_events)
     reflection_payload["generated_at"] = _now().isoformat()
     importance = max(
@@ -2147,15 +2166,13 @@ async def trim_npc_memory(session: AsyncSession, user: User) -> None:
         .where(
             NpcMemory.idpk_user == user.idpk,
             NpcMemory.kind == EVENT_KIND,
-            NpcMemory.status == "active",
         )
         .order_by(NpcMemory.created_at.desc())
     )
     for index, row in enumerate(active_events.all(), start=1):
         if index <= settings.memory_max_active_events:
             continue
-        row.status = "archived"
-        row.updated_at = _now()
+        await session.delete(row)
 
     active_reflections = await session.scalars(
         select(NpcMemory)
@@ -2661,6 +2678,30 @@ async def build_npc_memory_context(
     relationships_for_context = [
         _relationship_summary_for_context(payload) for payload in selected_relationships
     ]
+    fact_rows = await session.scalars(
+        select(NpcMemory)
+        .where(
+            NpcMemory.idpk_user == user.idpk,
+            NpcMemory.kind == FACT_KIND,
+            NpcMemory.status == "active",
+        )
+        .order_by(NpcMemory.created_at.desc())
+    )
+    semantic_facts = []
+    incoming_signals = []
+    for row in fact_rows.all()[:settings.memory_goal_limit * 2]:
+        fact_payload = _json_loads(row.payload)
+        fact_text = fact_payload.get("fact")
+
+        if row.topic and row.topic.startswith("incoming_signal:"):
+            incoming_signals.append({
+                "from_id": row.topic.split(":")[1],
+                "message": fact_text,
+                "created_at": str(row.created_at)
+            })
+        elif fact_text:
+            semantic_facts.append(fact_text)
+
     lessons = []
     for reflection in reflections:
         for lesson in reflection.get("lessons", []):
@@ -2708,4 +2749,6 @@ async def build_npc_memory_context(
         "behavior_guidance": behavior_guidance,
         "open_loops": open_loops[: settings.memory_relationship_limit],
         "active_tactics": profile_for_context.get("active_tactics", []),
+        "semantic_facts": semantic_facts[:settings.memory_goal_limit],
+        "incoming_signals": incoming_signals,
     }

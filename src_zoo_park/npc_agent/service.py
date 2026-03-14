@@ -302,7 +302,10 @@ def _fallback_action_without_llm(observation: dict[str, Any], retry_delay: int) 
 
 
 async def run_npc_players_turn() -> None:
-    if not settings.enabled or not settings.api_key:
+    # CLI mode doesn't require api_key; HTTP mode does.
+    if not settings.enabled:
+        return
+    if settings.transport != "cli" and not settings.api_key:
         return
 
     import logging
@@ -446,6 +449,14 @@ async def run_npc_players_turn() -> None:
                             retry_delay=retry_delay,
                         )
                         decision["reason"] = f"llm_error:{err_text[:180]} | {decision['reason']}"
+
+                if decision.get("action") not in {"wait"} and "llm_error" not in str(decision.get("reason", "")):
+                    with contextlib.suppress(Exception):
+                        eval_result = await client.evaluate_decision(decision=decision, observation=observation)
+                        if not eval_result.get("is_valid") and isinstance(eval_result.get("correction"), dict):
+                            corrected = dict(eval_result["correction"])
+                            corrected["reason"] = f"critic_correction:{eval_result.get('reason', '')} | {corrected.get('reason', '')}"
+                            decision.update(corrected)
 
                 action = apply_action_guardrails(
                     action=validate_action(decision=decision),
@@ -618,6 +629,14 @@ async def run_npc_players_turn() -> None:
 
             if last_action and last_result and last_observation and last_after_snapshot:
                 with contextlib.suppress(Exception):
+                    is_proactive = False
+                    if wake_trigger and wake_trigger.get("source") == "scheduled":
+                        player_obs = last_observation.get("player", {})
+                        mood = player_obs.get("current_mood", "neutral")
+                        affinity = player_obs.get("affinity_score", 50)
+                        if mood in {"energetic", "positive", "chatty", "focused"} or affinity > 70:
+                            is_proactive = True
+
                     await maybe_send_npc_chat_comment(
                         client=client,
                         user=npc_user,
@@ -627,6 +646,7 @@ async def run_npc_players_turn() -> None:
                         action=last_action,
                         result=last_result,
                         planned_sleep_seconds=planned_sleep_seconds,
+                        is_proactive=is_proactive,
                     )
 
 
@@ -683,12 +703,16 @@ async def maybe_send_npc_chat_comment(
     action: dict[str, Any],
     result: dict[str, Any],
     planned_sleep_seconds: int,
+    is_proactive: bool = False,
 ) -> None:
     if not settings.chat_enabled:
         return
 
     cooldown_seconds = settings.chat_min_interval_seconds
-    if cooldown_seconds <= 0:
+    if is_proactive:
+        cooldown_seconds = max(10, cooldown_seconds // 3)
+
+    if cooldown_seconds <= 0 and not is_proactive:
         return
 
     cooldown_set = await redis.set(
@@ -801,6 +825,18 @@ async def maybe_send_npc_chat_comment(
         text=html.escape(f"{signature}{message}", quote=False),
         disable_notification=True,
     )
+
+    async with _sessionmaker_for_func() as session:
+        from .memory import ensure_npc_profile_memory, _json_loads
+        profile_row = await ensure_npc_profile_memory(session, user)
+        profile_data = _json_loads(profile_row.payload)
+        recent = profile_data.get("recent_sent_chats", [])
+        if not isinstance(recent, list):
+            recent = []
+        recent.insert(0, message)
+        profile_data["recent_sent_chats"] = recent[:3]
+        profile_row.payload = json.dumps(profile_data)
+        await session.commit()
 
 
 def resolve_npc_sleep_seconds(

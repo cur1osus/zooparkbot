@@ -111,6 +111,9 @@ async def execute_action(
         "claim_chat_transfer": execute_claim_chat_transfer,
         "create_chat_game": execute_create_chat_game,
         "join_chat_game": execute_join_chat_game,
+        "change_own_mood": execute_change_own_mood,
+        "set_tactical_focus": execute_set_tactical_focus,
+        "send_npc_signal": execute_send_npc_signal,
     }
     handler = handlers.get(action_name, execute_wait)
     extra_kwargs = {}
@@ -184,6 +187,80 @@ async def execute_wait(
     observation: dict[str, Any],
 ) -> dict[str, Any]:
     return {"status": "ok", "summary": "wait"}
+
+
+async def execute_change_own_mood(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    from .memory import ensure_npc_profile_memory, _json_loads
+    profile_row = await ensure_npc_profile_memory(session, user)
+    profile = _json_loads(profile_row.payload)
+    mood = str(params.get("mood", "neutral")).strip()[:32]
+    profile["current_mood"] = mood
+    profile_row.payload = json.dumps(profile)
+    await session.flush()
+    return {"status": "ok", "summary": f"mood changed to {mood}"}
+
+
+async def execute_set_tactical_focus(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    from .memory import ensure_npc_profile_memory, _json_loads
+    profile_row = await ensure_npc_profile_memory(session, user)
+    profile = _json_loads(profile_row.payload)
+    focus = str(params.get("focus", "economy")).strip()[:32]
+    tactics = profile.get("active_tactics", [])
+    if isinstance(tactics, list):
+        if focus not in tactics:
+            tactics.append(focus)
+        profile["active_tactics"] = tactics[-3:]
+    profile_row.payload = json.dumps(profile)
+    await session.flush()
+    return {"status": "ok", "summary": f"tactical focus included {focus}"}
+
+
+async def execute_send_npc_signal(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    target_idpk = int(params.get("target_idpk", 0) or 0)
+    if not target_idpk or target_idpk == user.idpk:
+        return {"status": "error", "summary": "invalid_target_idpk"}
+    
+    target_user = await session.get(User, target_idpk)
+    if not target_user:
+        return {"status": "error", "summary": "target_not_found"}
+
+    # only npc can receive ping this way for now
+    if not (target_user.id_user < 0 or target_user.username.startswith("npc_")):
+        return {"status": "error", "summary": "target_not_npc"}
+
+    signal_type = str(params.get("signal_type", "info")).strip()[:32]
+    message = str(params.get("message", "")).strip()[:100]
+
+    from .memory import NpcMemory, FACT_KIND
+    signal_fact = NpcMemory(
+        idpk_user=target_idpk,
+        kind=FACT_KIND,
+        topic=f"incoming_signal:{user.idpk}",
+        payload=json.dumps({
+            "fact": f"Signal '{signal_type}' from {user.nickname} (id:{user.idpk}): {message}",
+            "confidence": 1000,
+            "source": "npc_link"
+        })
+    )
+    session.add(signal_fact)
+    await session.flush()
+    
+    return {"status": "ok", "summary": f"signal sent to {target_user.nickname}"}
 
 
 async def execute_claim_daily_bonus(

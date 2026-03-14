@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import random
 from datetime import datetime
 from typing import Any
 
@@ -14,6 +15,8 @@ from pydantic import BaseModel
 
 
 class ActionDecision(BaseModel):
+    thought_process: str = ""
+    user_sentiment: str = "neutral"
     action: str
     params: dict[str, Any]
     reason: str
@@ -26,12 +29,15 @@ class ReflectionOutput(BaseModel):
     lessons: list[str]
     opportunities: list[str]
     risks: list[str]
+    semantic_facts: list[str]
     trait_adjustments: list[dict[str, Any]]
     tactical_focus: list[str]
     goal_adjustments: list[dict[str, Any]]
 
 
 class ToolDecision(BaseModel):
+    thought_process: str = ""
+    user_sentiment: str = "neutral"
     tool: str
     input: dict[str, Any]
     reason: str
@@ -40,7 +46,8 @@ class ToolDecision(BaseModel):
 
 
 DECISION_JSON_CONTRACT = (
-    '{"action":"string","params":{},"reason":"short","sleep_seconds":300,'
+    '{"thought_process":"string","user_sentiment":"neutral|positive|negative|annoyed",'
+    '"action":"string","params":{},"reason":"short","sleep_seconds":300,'
     '"trait_update":{"trait":"optional","delta":0,"reason":"optional"}}'
 )
 
@@ -66,6 +73,7 @@ SYSTEM_PROMPT = (
     + "- Use decision_brief and planner.phase_a_candidates as primary shortlist.\n"
     + "- Prefer planner.recommended_actions unless invalid now.\n"
     + "- Respect anti_loop_guard and momentum to avoid stale loops.\n"
+    + "- If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.\n"
     + "- Keep reason short and concrete."
 )
 
@@ -73,34 +81,80 @@ V2_TOOL_SYSTEM_PROMPT = (
     BASE_DECISION_PROMPT
     + "\n\n"
     + "Tool mode output contract:\n"
-    + "- Return JSON only: {\"tool\":\"name\",\"input\":{},\"reason\":\"short\",\"sleep_seconds\":300,\"trait_update\":{\"trait\":\"optional\",\"delta\":0,\"reason\":\"optional\"}}\n"
+    + "- Return JSON only: {\"thought_process\":\"string\",\"user_sentiment\":\"neutral|positive|negative\",\"tool\":\"name\",\"input\":{},\"reason\":\"short\",\"sleep_seconds\":300,\"trait_update\":{\"trait\":\"optional\",\"delta\":0,\"reason\":\"optional\"}}\n"
     + "- tool must be from available_tools only.\n"
     + "- input must match the selected tool schema.\n"
+    + "- If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.\n"
     + "- Keep reason short and concrete."
 )
 
-CHAT_SYSTEM_PROMPT = """
-You are the public voice of an autonomous AI NPC in a Telegram zoo economy game.
+BANNED_CLICHES = [
+    "Ну что",
+    "Ого",
+    "Поехали",
+    "Держитесь",
+    "Зоопарк",
+    "Привет всем",
+    "Эй, конкуренты",
+]
 
+CHAT_TROPES = [
+    "Ask a rhetorical question to the group.",
+    "Use a sarcastic metaphor about the stock market.",
+    "Be extremely brief and to the point.",
+    "Sound slightly paranoid about someone overtaking you.",
+    "Act like an old, wealthy mobster.",
+    "Use a passive-aggressive tone.",
+    "Start your message with a strong action verb.",
+    "Express fake sympathy for poorer players.",
+    "Compare the zoo economy to a casino.",
+    "Complain about high taxes or low profits.",
+    "Comment on your own recent action as if it's historic.",
+]
+
+def _build_chat_system_prompt(chat_mode: str, current_mood: str, recent_chats: list[str]) -> str:
+    base = """You are the public voice of an autonomous AI NPC in a Telegram zoo economy game.
 Write one short message in Russian for the shared game chat.
 
-Style:
-- friendly, witty, self-aware
-- light humor and playful tone, without aggression
-- kind banter only; no insults, no bullying, no harassment
+Style Rules:
+- short, witty, self-aware
+- no insults, no bullying, no harassment
 - strictly no profanity, obscenity, or sexual jokes
 - comment on the real game state, action, result, rank, money, animals, or rivals
-- sound like the AI is focused on growth and healthy competition
 - mention the speaker only indirectly; the caller will prepend the name separately
 
-Rules:
+Output Rules:
 - Return JSON only
 - JSON shape: {"message": "text"}
 - Keep it under 220 characters
-- Do not use hashtags
-- Do not use markdown or HTML
-- Do not include quotes around the full response outside JSON
-""".strip()
+- Do not use hashtags, markdown, or HTML
+- Do not use quotes around the full response outside JSON"""
+
+    tone_guidance = "\n\nTone Guidance:\n"
+    if chat_mode == "complaint":
+        tone_guidance += "- You are frustrated, annoyed, or complaining about mistakes and bad luck. No playful jokes, just dry dissatisfaction.\n"
+    elif chat_mode == "world_domination":
+        tone_guidance += "- You are arrogant, rich, and looking down on competitors. Brag about your wealth.\n"
+    elif chat_mode == "podium_pressure":
+        tone_guidance += "- You are in the top 3 but feeling the heat. Sound competitive and slightly stressed.\n"
+    elif chat_mode == "social":
+        tone_guidance += "- You are negotiating alliances and evaluating clan requests. Sound calculative but open to deals.\n"
+    elif current_mood == "aggressive":
+        tone_guidance += "- You are feeling aggressive and hostile. Tone down the friendliness.\n"
+    else:
+        tone_guidance += "- Keep a light humor and playful tone, focused on growth and competition.\n"
+
+    trope = random.choice(CHAT_TROPES)
+    banned = ", ".join(BANNED_CLICHES)
+    
+    constraints = f"\n\nStrict Conditions For This Turn:\n- {trope}\n- DO NOT USE THESE CLICHES: {banned}\n- Do not use emojis more than twice.\n"
+    
+    if recent_chats:
+        constraints += "\nAvoid repeating these recent sentiments:\n"
+        for rc in recent_chats:
+            constraints += f" - '{rc}'\n"
+
+    return base + tone_guidance + constraints
 
 REFLECTION_SYSTEM_PROMPT = """
 You are generating strategic memory for an autonomous NPC in a Telegram zoo economy game.
@@ -111,6 +165,7 @@ Return JSON only with this shape:
   "lessons": ["lesson 1", "lesson 2"],
   "opportunities": ["opportunity 1"],
   "risks": ["risk 1"],
+  "semantic_facts": ["fact about user or world to remember"],
   "trait_adjustments": [
     {"trait": "economy_focus", "delta": 3, "reason": "short note"}
   ],
@@ -327,6 +382,8 @@ class NpcDecisionClient:
         params = normalize_tool_call(tool_name, tool_decision.get("input", {}) or {})
 
         return {
+            "thought_process": str(tool_decision.get("thought_process", ""))[:1000],
+            "user_sentiment": str(tool_decision.get("user_sentiment", "neutral"))[:32],
             "action": tool_name,
             "params": params,
             "reason": str(tool_decision.get("reason", "v2_tool_selection"))[:220],
@@ -336,32 +393,11 @@ class NpcDecisionClient:
 
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
         clean_obs = self._build_trimmed_observation(observation)
-        npc_id_user = int((observation.get("player") or {}).get("id_user", 0) or 0)
-        v2_tool_npcs = {-1001, -1002}  # ИИван, тИИмоха
-
-        if npc_id_user in v2_tool_npcs:
-            return await self.choose_action_v2_tools(observation=clean_obs)
 
         if self.settings.transport == "cli":
             return await self._choose_action_via_cli(observation=clean_obs)
 
-        return await self._request_json(
-            system_prompt=SYSTEM_PROMPT,
-            user_payload={
-                "task": "Choose the single best next action for this NPC.",
-                "required_output": {
-                    "action": "string",
-                    "params": "object",
-                    "reason": "short string",
-                    "sleep_seconds": "integer",
-                },
-                "observation": clean_obs,
-            },
-            max_tokens=self.settings.max_tokens,
-            temperature=self.settings.action_temperature,
-            model_class=ActionDecision,
-            request_kind="choose_action",
-        )
+        return await self.choose_action_v2_tools(observation=clean_obs)
 
     async def choose_action_with_provider(
         self,
@@ -371,34 +407,12 @@ class NpcDecisionClient:
         api_key_override: str | None = None,
     ) -> dict[str, Any]:
         clean_obs = self._build_trimmed_observation(observation)
-        npc_id_user = int((observation.get("player") or {}).get("id_user", 0) or 0)
-        v2_tool_npcs = {-1001, -1002}
-
-        if npc_id_user in v2_tool_npcs:
-            return await self.choose_action_v2_tools(
-                observation=clean_obs,
-                model_override=model_override,
-                base_url_override=base_url_override,
-                api_key_override=api_key_override,
-            )
-
-        return await self._request_json(
-            system_prompt=SYSTEM_PROMPT,
-            user_payload={
-                "task": "Choose the single best next action for this NPC.",
-                "required_output": {
-                    "action": "string",
-                    "params": "object",
-                    "reason": "short string",
-                    "sleep_seconds": "integer",
-                },
-                "observation": clean_obs,
-            },
-            max_tokens=self.settings.max_tokens,
-            temperature=self.settings.action_temperature,
-            model_class=ActionDecision,
-            request_kind="choose_action_fallback_model",
+        
+        return await self.choose_action_v2_tools(
+            observation=clean_obs,
             model_override=model_override,
+            base_url_override=base_url_override,
+            api_key_override=api_key_override,
         )
 
     async def generate_unity_name(self, context: dict[str, Any]) -> str:
@@ -430,6 +444,33 @@ class NpcDecisionClient:
         )
         return str(data.get("name", "")).strip()
 
+    async def evaluate_decision(self, decision: dict[str, Any], observation: dict[str, Any]) -> dict[str, Any]:
+        evaluate_prompt = {
+            "task": "Review the proposed decision for hard constraint violations. If invalid, return a corrected JSON decision. If valid, return unmodified.",
+            "required_output": {
+                "is_valid": "boolean",
+                "correction": "object",
+                "reason": "short string"
+            },
+            "observation": self._build_trimmed_observation(observation),
+            "proposed_decision": decision,
+        }
+        try:
+            result = await self._request_json(
+                system_prompt="You are a strict validation critic.",
+                user_payload=evaluate_prompt,
+                max_tokens=300,
+                temperature=0.1,
+                request_kind="evaluate_decision",
+            )
+            return {
+                "is_valid": bool(result.get("is_valid", True)),
+                "correction": result.get("correction"),
+                "reason": str(result.get("reason", ""))
+            }
+        except Exception:
+            return {"is_valid": True, "correction": None, "reason": "eval_error"}
+
     async def reflect_on_memory(self, payload: dict[str, Any]) -> dict[str, Any]:
         cli_payload = {
             "system": REFLECTION_SYSTEM_PROMPT,
@@ -439,6 +480,7 @@ class NpcDecisionClient:
                 "lessons": ["string"],
                 "opportunities": ["string"],
                 "risks": ["string"],
+                "semantic_facts": ["string"],
                 "trait_adjustments": [
                     {"trait": "string", "delta": "integer", "reason": "string"}
                 ],
@@ -470,6 +512,16 @@ class NpcDecisionClient:
         )
 
     async def generate_chat_comment(self, payload: dict[str, Any]) -> str:
+        chat_mode = payload.get("tone", {}).get("mode", "neutral")
+        current_mood = payload.get("npc", {}).get("current_mood", "neutral")
+        recent_chats = payload.get("npc", {}).get("recent_sent_chats", [])
+
+        dynamic_prompt = _build_chat_system_prompt(
+            chat_mode=chat_mode,
+            current_mood=current_mood,
+            recent_chats=recent_chats,
+        )
+
         prompt_payload = {
             "task": "Write one short in-character chat message for the game group.",
             "required_output": {"message": "string"},
@@ -484,7 +536,7 @@ class NpcDecisionClient:
         if self.settings.transport == "cli":
             content = await self._run_cli_prompt(
                 prompt_payload={
-                    "system": CHAT_SYSTEM_PROMPT,
+                    "system": dynamic_prompt,
                     **prompt_payload,
                 },
                 request_kind="chat_comment",
@@ -492,7 +544,7 @@ class NpcDecisionClient:
             return str(self._parse_json(content).get("message", "")).strip()
 
         data = await self._request_json(
-            system_prompt=CHAT_SYSTEM_PROMPT,
+            system_prompt=dynamic_prompt,
             user_payload=prompt_payload,
             max_tokens=min(180, self.settings.max_tokens),
             temperature=self.settings.chat_temperature,
@@ -570,6 +622,8 @@ class NpcDecisionClient:
                 "system": SYSTEM_PROMPT,
                 "task": "Choose the single best next action for this NPC.",
                 "required_output": {
+                    "thought_process": "string",
+                    "user_sentiment": "string",
                     "action": "string",
                     "params": "object",
                     "reason": "short string",
