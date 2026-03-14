@@ -31,13 +31,6 @@ class ReflectionOutput(BaseModel):
     goal_adjustments: list[dict[str, Any]]
 
 
-class ActionReasoning(BaseModel):
-    bottleneck: str
-    viable_actions: list[str]
-    best_choice: str
-    reason: str
-
-
 class ToolDecision(BaseModel):
     tool: str
     input: dict[str, Any]
@@ -46,128 +39,45 @@ class ToolDecision(BaseModel):
     trait_update: dict[str, Any] | None = None
 
 
-ACTION_REASONING_STEPS = """
-Before producing the final answer, think through this 3-step checklist internally:
-STEP 1 - BOTTLENECK: identify the single biggest constraint right now.
-STEP 2 - VIABLE ACTIONS: consider only actions that are executable right now from allowed_actions.
-STEP 3 - BEST ROI: choose the viable action with the highest compounding value.
-Then return only the final JSON.
-""".strip()
+DECISION_JSON_CONTRACT = (
+    '{"action":"string","params":{},"reason":"short","sleep_seconds":300,'
+    '"trait_update":{"trait":"optional","delta":0,"reason":"optional"}}'
+)
 
 
-ACTION_FEW_SHOTS = """
-Examples of correct decisions:
+BASE_DECISION_PROMPT = f"""
+You choose exactly one next legal action for an autonomous NPC in a Telegram zoo economy.
 
-[Seats full, enough USD for aviary]
-{"action": "buy_aviary", "params": {"code_name_aviary": "aviary_1", "quantity": 1}, "reason": "seats=0 blocks all animal growth", "sleep_seconds": 120}
-
-[Bonus available, nothing else affordable now]
-{"action": "claim_daily_bonus", "params": {"rerolls": 0}, "reason": "free value while next unlock is still far", "sleep_seconds": 180}
-
-[Enough RUB for exchange, next unlock is close]
-{"action": "exchange_bank", "params": {"mode": "all"}, "reason": "convert RUB to reach the next ROI unlock sooner", "sleep_seconds": 90}
+Directives:
+- Allowed actions are the only executable actions.
+- action_contract is mandatory policy (must_do / must_not_do / hard_constraints).
+- execution_feedback is mandatory (avoid failed repeats, prefer suggested alternatives).
+- Optimize long-term compounding value and unblock hard bottlenecks first.
+- Keep sleep_seconds inside wake_context.constraints.
+- Return JSON only using this contract: {DECISION_JSON_CONTRACT}
+- Do not output any fields outside the contract.
 """.strip()
 
 
 SYSTEM_PROMPT = (
-    """
-You are an autonomous NPC player in a Telegram zoo economy game.
-Your task is to choose exactly one next action for your player and decide when to wake up next.
-
-Rules:
-- Use only the allowed actions from the observation.
-- Optimize for long-term compounding income, efficient spending, leaderboard progress, and unity value.
-- If you own a unity, prefer accepting strong applicants and recruiting strong free players.
-- For unity decisions, prioritize players with high income, many animals, and no current unity.
-- If you create a unity, prefer providing a short original name in params.name.
-- Avoid wasting money on weak item upgrades or overpriced purchases when a stronger ROI option exists.
-- You may use item activation/deactivation/selling and daily bonus rerolls when useful.
-- Prefer legal, concrete, high-EV actions.
-- Respect the NPC profile, adaptive traits, active tactics, active goals, and lessons from memory.
-- Use planner.recommended_actions as your default 2-5 step roadmap unless the current board state clearly invalidates it.
-- Respect memory.behavior_guidance.avoid_actions and anti_loop_guard.blocked_actions.
-- If zoo.remain_seats <= 0, do NOT choose animal-buying actions; prioritize buy_aviary/exchange_bank/wait.
-- For exchange_bank, use bank.rate_history_1h and bank.rate_history_1h_summary to judge timing; high rate is worse, low rate is better. Do not dump all RUB at local highs unless the unlock is truly urgent.
-- Economy first: avoid chat entertainment spend (transfers/games) unless there is a clear surplus and core growth is not blocked.
-- Claiming available chat transfers is positive EV and can be prioritized when available.
-- Join/claim only entities marked as official chat (`source_chat_id == CHAT_ID`); skip private/user contexts.
-- If you choose wait, align sleep_seconds with planner.next_unlock.eta_seconds or the nearest meaningful event instead of arbitrary long delays.
-- Watch strategy_signals.top_rivals and social targets; the zoo is competitive, not empty.
-- Avoid repeating recently failed actions unless the state clearly changed.
-- Return sleep_seconds as the planned delay until the next wake-up.
-- Keep sleep_seconds within the limits from wake_context.constraints.
-- Use decision_brief first when it exists because it already ranks the best legal options.
-- Treat planner.cycle_goal as the objective for this wake.
-- Use planner.phase_a_candidates as shortlist, then choose final action in phase B using current constraints.
-- Use execution_feedback (if present) to avoid repeating failed actions and to pick alternatives from allowed_actions.
-- Use momentum to break stale loops and detect when waiting is no longer productive.
-- Respond with JSON only.
-- JSON shape: {"action": "...", "params": {...}, "reason": "short text", "sleep_seconds": 300, "trait_update": {"trait": "...", "delta": 1, "reason": "..."}}
-- trait_update is optional; use it when you want to shift personality BEFORE the chosen action.
-- Use only traits from memory.profile.traits and respect memory.profile.trait_limits in observation.
-- Keep reason short.
-- Never invent fields outside action, params, reason, sleep_seconds, trait_update.
-- If no action is attractive, return {"action": "wait", "params": {}, "reason": "...", "sleep_seconds": 300}
-
-__ACTION_REASONING_STEPS__
-
-__ACTION_FEW_SHOTS__
-""".replace("__ACTION_REASONING_STEPS__", ACTION_REASONING_STEPS)
-    .replace("__ACTION_FEW_SHOTS__", ACTION_FEW_SHOTS)
-    .strip()
+    BASE_DECISION_PROMPT
+    + "\n\n"
+    + "Specific policy:\n"
+    + "- Use decision_brief and planner.phase_a_candidates as primary shortlist.\n"
+    + "- Prefer planner.recommended_actions unless invalid now.\n"
+    + "- Respect anti_loop_guard and momentum to avoid stale loops.\n"
+    + "- Keep reason short and concrete."
 )
 
-ACTION_REASONING_PROMPT = """
-You are analyzing a Telegram zoo economy NPC turn.
-
-Return JSON only with this shape:
-{
-  "bottleneck": "single biggest constraint",
-  "viable_actions": ["action names executable right now"],
-  "best_choice": "best action name",
-  "reason": "short tactical reason"
-}
-
-Rules:
-- Use only the provided observation.
-- Treat allowed_actions as the source of truth for what is executable right now.
-- Use execution_feedback (if present) to explain failed attempts and avoid repeats.
-- Prefer decision_brief and momentum over raw guesswork.
-- Keep it concise and tactical.
-""".strip()
-
-FINALIZE_ACTION_PROMPT = """
-You are finalizing one NPC action for a Telegram zoo economy game.
-
-Use the provided observation plus prior reasoning.
-Return JSON only with this exact shape:
-{"action": "...", "params": {...}, "reason": "short text", "sleep_seconds": 300}
-
-Rules:
-- The final action must be executable from allowed_actions right now.
-- Re-check params carefully before answering.
-- Use execution_feedback when present: do not repeat the same failed action unless state clearly changed.
-- Keep reason short.
-- If the prior reasoning conflicts with the observation, fix it and still return the best legal action.
-""".strip()
-
-V2_TOOL_SYSTEM_PROMPT = """
-You are an OpenClaw-style NPC runtime using tool selection.
-
-Choose exactly one tool call for this turn.
-Return JSON only with this shape:
-{"tool":"tool_name","input":{},"reason":"short text","sleep_seconds":300,"trait_update":{"trait":"risk_tolerance","delta":1,"reason":"..."}}
-
-Rules:
-- You MUST choose from available_tools only.
-- Input must be valid for the selected tool.
-- Prefer high-EV compounding actions.
-- Do not choose unaffordable buys when affordable_quantity=0 unless eta is near-term and no better action exists.
-- Respect seat constraints: when remain_seats <= 0, prioritize capacity unlock flow.
-- Keep reason short and concrete.
-- trait_update is optional; use it when the planned action should shape personality.
-- Use only traits from memory.profile.traits and keep changes within memory.profile.trait_limits.
-""".strip()
+V2_TOOL_SYSTEM_PROMPT = (
+    BASE_DECISION_PROMPT
+    + "\n\n"
+    + "Tool mode output contract:\n"
+    + "- Return JSON only: {\"tool\":\"name\",\"input\":{},\"reason\":\"short\",\"sleep_seconds\":300,\"trait_update\":{\"trait\":\"optional\",\"delta\":0,\"reason\":\"optional\"}}\n"
+    + "- tool must be from available_tools only.\n"
+    + "- input must match the selected tool schema.\n"
+    + "- Keep reason short and concrete."
+)
 
 CHAT_SYSTEM_PROMPT = """
 You are the public voice of an autonomous AI NPC in a Telegram zoo economy game.
@@ -432,9 +342,6 @@ class NpcDecisionClient:
         if npc_id_user in v2_tool_npcs:
             return await self.choose_action_v2_tools(observation=clean_obs)
 
-        if self.settings.action_two_pass_reasoning:
-            return await self.choose_action_with_reasoning(observation=clean_obs)
-
         if self.settings.transport == "cli":
             return await self._choose_action_via_cli(observation=clean_obs)
 
@@ -492,79 +399,6 @@ class NpcDecisionClient:
             model_class=ActionDecision,
             request_kind="choose_action_fallback_model",
             model_override=model_override,
-        )
-
-    async def choose_action_with_reasoning(
-        self, observation: dict[str, Any]
-    ) -> dict[str, Any]:
-        reasoning = await self._request_action_reasoning(observation=observation)
-        if self.settings.transport == "cli":
-            content = await self._run_cli_prompt(
-                prompt_payload={
-                    "system": FINALIZE_ACTION_PROMPT,
-                    "task": "Finalize the single best next action for this NPC.",
-                    "required_output": {
-                        "action": "string",
-                        "params": "object",
-                        "reason": "short string",
-                        "sleep_seconds": "integer",
-                    },
-                    "reasoning": reasoning,
-                    "observation": observation,
-                },
-                request_kind="choose_action_final",
-            )
-            return self._parse_json(content, model_class=ActionDecision)
-
-        return await self._request_json(
-            system_prompt=FINALIZE_ACTION_PROMPT,
-            user_payload={
-                "task": "Finalize the single best next action for this NPC.",
-                "required_output": {
-                    "action": "string",
-                    "params": "object",
-                    "reason": "short string",
-                    "sleep_seconds": "integer",
-                },
-                "reasoning": reasoning,
-                "observation": observation,
-            },
-            max_tokens=min(220, self.settings.max_tokens),
-            temperature=self.settings.action_temperature,
-            model_class=ActionDecision,
-            request_kind="choose_action_final",
-        )
-
-    async def _request_action_reasoning(
-        self, observation: dict[str, Any]
-    ) -> dict[str, Any]:
-        payload = {
-            "task": "Analyze the board before choosing the next action.",
-            "required_output": {
-                "bottleneck": "string",
-                "viable_actions": ["string"],
-                "best_choice": "string",
-                "reason": "string",
-            },
-            "observation": observation,
-        }
-        if self.settings.transport == "cli":
-            content = await self._run_cli_prompt(
-                prompt_payload={
-                    "system": ACTION_REASONING_PROMPT,
-                    **payload,
-                },
-                request_kind="choose_action_reasoning",
-            )
-            return self._parse_json(content, model_class=ActionReasoning)
-
-        return await self._request_json(
-            system_prompt=ACTION_REASONING_PROMPT,
-            user_payload=payload,
-            max_tokens=min(320, self.settings.max_tokens),
-            temperature=self.settings.action_temperature,
-            model_class=ActionReasoning,
-            request_kind="choose_action_reasoning",
         )
 
     async def generate_unity_name(self, context: dict[str, Any]) -> str:

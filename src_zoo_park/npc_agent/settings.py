@@ -31,7 +31,6 @@ class NpcAgentSettings:
     action_temperature: float
     chat_temperature: float
     chat_enabled: bool
-    action_two_pass_reasoning: bool
     max_observation_animals: int
     top_candidates_limit: int
     recruit_min_income_abs: int
@@ -101,7 +100,6 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         ),
         chat_temperature=float(os.getenv("NPC_CHAT_TEMPERATURE", "0.8")),
         chat_enabled=_get_bool("NPC_CHAT_ENABLED", True),
-        action_two_pass_reasoning=_get_bool("NPC_ACTION_TWO_PASS_REASONING", False),
         max_observation_animals=max(
             3, int(os.getenv("NPC_MAX_OBSERVATION_ANIMALS", "12"))
         ),
