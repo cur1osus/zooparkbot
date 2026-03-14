@@ -708,6 +708,15 @@ async def maybe_send_npc_chat_comment(
     if not settings.chat_enabled:
         return
 
+    import datetime as dt
+    import pytz
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    moscow_time = dt.datetime.now(moscow_tz)
+    
+    # Do not chat between 23:00 and 09:00 Moscow time
+    if moscow_time.hour >= 23 or moscow_time.hour < 9:
+        return
+
     cooldown_seconds = settings.chat_min_interval_seconds
     if is_proactive:
         cooldown_seconds = max(10, cooldown_seconds // 3)
