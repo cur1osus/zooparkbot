@@ -368,21 +368,47 @@ class NpcDecisionClient:
 
         return clean_obs
 
-    async def choose_action_v2_tools(self, observation: dict[str, Any]) -> dict[str, Any]:
+    async def choose_action_v2_tools(
+        self,
+        observation: dict[str, Any],
+        model_override: str | None = None,
+        base_url_override: str | None = None,
+        api_key_override: str | None = None,
+    ) -> dict[str, Any]:
         available_tools = build_tool_catalog(observation.get("allowed_actions", []) or [])
         payload = {
             "task": "Select one tool call for this NPC turn.",
             "available_tools": available_tools,
             "observation": observation,
         }
-        tool_decision = await self._request_json(
-            system_prompt=V2_TOOL_SYSTEM_PROMPT,
-            user_payload=payload,
-            max_tokens=min(260, self.settings.max_tokens),
-            temperature=self.settings.action_temperature,
-            model_class=ToolDecision,
-            request_kind="choose_action_v2_tools",
+
+        use_cli = (
+            self.settings.transport == "cli"
+            and not model_override
+            and not base_url_override
+            and not api_key_override
         )
+        if use_cli:
+            content = await self._run_cli_prompt(
+                prompt_payload={
+                    "system": V2_TOOL_SYSTEM_PROMPT,
+                    **payload,
+                },
+                request_kind="choose_action_v2_tools",
+            )
+            tool_decision = self._parse_json(content, model_class=ToolDecision)
+        else:
+            tool_decision = await self._request_json(
+                system_prompt=V2_TOOL_SYSTEM_PROMPT,
+                user_payload=payload,
+                max_tokens=min(260, self.settings.max_tokens),
+                temperature=self.settings.action_temperature,
+                model_class=ToolDecision,
+                request_kind="choose_action_v2_tools",
+                model_override=model_override,
+                base_url_override=base_url_override,
+                api_key_override=api_key_override,
+            )
         tool_name = str(tool_decision.get("tool", "wait")).strip() or "wait"
         allowed_tool_names = {str(item.get("name", "")).strip() for item in available_tools}
         if tool_name not in allowed_tool_names:
@@ -428,6 +454,44 @@ class NpcDecisionClient:
             temperature=self.settings.action_temperature,
             model_class=ActionDecision,
             request_kind="choose_action",
+        )
+
+    async def choose_action_with_provider(
+        self,
+        observation: dict[str, Any],
+        model_override: str,
+        base_url_override: str | None = None,
+        api_key_override: str | None = None,
+    ) -> dict[str, Any]:
+        clean_obs = self._build_trimmed_observation(observation)
+        npc_id_user = int((observation.get("player") or {}).get("id_user", 0) or 0)
+        v2_tool_npcs = {-1001, -1002}
+
+        if npc_id_user in v2_tool_npcs:
+            return await self.choose_action_v2_tools(
+                observation=clean_obs,
+                model_override=model_override,
+                base_url_override=base_url_override,
+                api_key_override=api_key_override,
+            )
+
+        return await self._request_json(
+            system_prompt=SYSTEM_PROMPT,
+            user_payload={
+                "task": "Choose the single best next action for this NPC.",
+                "required_output": {
+                    "action": "string",
+                    "params": "object",
+                    "reason": "short string",
+                    "sleep_seconds": "integer",
+                },
+                "observation": clean_obs,
+            },
+            max_tokens=self.settings.max_tokens,
+            temperature=self.settings.action_temperature,
+            model_class=ActionDecision,
+            request_kind="choose_action_fallback_model",
+            model_override=model_override,
         )
 
     async def choose_action_with_reasoning(
@@ -610,10 +674,13 @@ class NpcDecisionClient:
         temperature: float,
         model_class=None,
         request_kind: str = "http_request",
+        model_override: str | None = None,
+        base_url_override: str | None = None,
+        api_key_override: str | None = None,
     ) -> dict[str, Any]:
-        request_url = self._build_request_url()
+        request_url = self._build_request_url(base_url_override=base_url_override)
         payload = {
-            "model": self.settings.model,
+            "model": (model_override or self.settings.model),
             "temperature": temperature,
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
@@ -627,7 +694,7 @@ class NpcDecisionClient:
         }
         timeout = aiohttp.ClientTimeout(total=self.settings.timeout_seconds)
         headers = {
-            "Authorization": f"Bearer {self.settings.api_key}",
+            "Authorization": f"Bearer {api_key_override or self.settings.api_key}",
             "Content-Type": "application/json",
         }
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -653,8 +720,8 @@ class NpcDecisionClient:
             content, model_class=model_class
         )  # fix: was hardcoded ActionDecision
 
-    def _build_request_url(self) -> str:
-        base_url = self.settings.base_url.rstrip("/")
+    def _build_request_url(self, base_url_override: str | None = None) -> str:
+        base_url = (base_url_override or self.settings.base_url).rstrip("/")
         if base_url.endswith("/chat/completions"):
             return base_url
         if base_url.endswith("/v1"):
@@ -719,6 +786,7 @@ class NpcDecisionClient:
         process = await asyncio.create_subprocess_exec(
             self.settings.cli_bin,
             "--quiet",
+            "--thinking",
             "--config",
             json.dumps(config, ensure_ascii=False),
             "-w",

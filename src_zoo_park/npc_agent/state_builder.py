@@ -2068,6 +2068,7 @@ async def build_observation(
     )
     observation["planner"] = build_npc_plan(observation=observation)
     observation["anti_loop_guard"] = build_anti_loop_guard(observation=observation)
+    observation["action_contract"] = build_action_contract(observation=observation)
     observation["strategy_signals"]["goal_focus"] = [
         goal.get("topic") for goal in observation["memory"].get("active_goals", [])
     ][: settings.memory_goal_limit]
@@ -2255,6 +2256,39 @@ def _matches_allowed_params(
     return True
 
 
+def build_action_contract(observation: dict[str, Any]) -> dict[str, Any]:
+    summary = (observation.get("strategy_signals", {}).get("summary", {}) or {})
+    remain_seats = int(observation.get("zoo", {}).get("remain_seats", 0) or 0)
+    must_do: list[str] = []
+    must_not_do: list[str] = []
+
+    if remain_seats <= 0 or bool(summary.get("need_seats")):
+        aviary_allowed = [
+            row
+            for row in (observation.get("allowed_actions", []) or [])
+            if isinstance(row, dict) and str(row.get("action", "")).strip() == "buy_aviary"
+        ]
+        if aviary_allowed:
+            must_do.append("buy_aviary")
+        must_not_do.extend([
+            "buy_rarity_animal",
+            "invest_for_top_animals",
+            "buy_merchant_discount_offer",
+            "buy_merchant_random_offer",
+            "buy_merchant_targeted_offer",
+        ])
+
+    return {
+        "must_do": list(dict.fromkeys(must_do)),
+        "must_not_do": list(dict.fromkeys(must_not_do)),
+        "blocked_until": {},
+        "hard_constraints": {
+            "remain_seats": remain_seats,
+            "need_seats": bool(summary.get("need_seats")),
+        },
+    }
+
+
 def apply_action_guardrails(
     action: dict[str, Any],
     observation: dict[str, Any],
@@ -2290,7 +2324,54 @@ def apply_action_guardrails(
     }
     fallback = guard.get("fallback") or {}
 
-    if action["action"] in blocked_actions:
+    contract = observation.get("action_contract", {}) or {}
+    must_do = [str(x).strip() for x in (contract.get("must_do") or []) if str(x).strip()]
+    must_not_do = {str(x).strip() for x in (contract.get("must_not_do") or []) if str(x).strip()}
+
+    if action.get("action") in must_not_do:
+        for required in must_do:
+            candidate = next(
+                (
+                    row for row in allowed_entries
+                    if str(row.get("action", "")).strip() == required
+                ),
+                None,
+            )
+            if candidate:
+                return {
+                    "action": required,
+                    "params": candidate.get("params", {}) or {},
+                    "reason": f"must_do_reroute:{action.get('action')}",
+                    "sleep_seconds": action.get("sleep_seconds"),
+                }
+
+    # Golden rule: don't instantly repeat the same failed action unless state changed.
+    feedback = observation.get("execution_feedback", {}) or {}
+    failed_action = str(feedback.get("failed_action", "")).strip()
+    if action.get("action") == failed_action and bool(feedback.get("retryable", False)):
+        alternatives = [
+            str(name).strip()
+            for name in (feedback.get("suggested_alternatives") or [])
+            if str(name).strip()
+        ]
+        for alt in alternatives:
+            if alt and alt != action.get("action") and alt not in blocked_actions:
+                alt_entry = next(
+                    (
+                        row
+                        for row in allowed_entries
+                        if str(row.get("action", "")).strip() == alt
+                    ),
+                    {},
+                )
+                return {
+                    "action": alt,
+                    "params": alt_entry.get("params", {}) or {},
+                    "reason": f"failed_action_reroute:{failed_action}",
+                    "sleep_seconds": max(settings.step_seconds, int(feedback.get('cooldown_sec', settings.step_seconds) or settings.step_seconds)),
+                }
+
+    if action["action"] in blocked_actions and action["action"] not in must_do:
         fallback_action = str(fallback.get("action", "wait")).strip() or "wait"
         if fallback_action and fallback_action not in blocked_actions:
             return {
@@ -2333,20 +2414,35 @@ def apply_action_guardrails(
         for row in phase_a_candidates
         if isinstance(row, dict) and str(row.get("action", "")).strip()
     }
-    if phase_a_actions and action["action"] not in phase_a_actions and action["action"] != "wait":
+    if (
+        phase_a_actions
+        and action["action"] not in phase_a_actions
+        and action["action"] != "wait"
+        and action["action"] not in must_do
+    ):
         top = phase_a_candidates[0]
-        return {
-            "action": str(top.get("action", "wait")) or "wait",
-            "params": top.get("params", {}) or {},
-            "reason": f"phase_a_reroute:{action['action']}",
-            "sleep_seconds": action.get("sleep_seconds"),
-        }
+        top_action = str(top.get("action", "wait")) or "wait"
+        if top_action not in must_not_do:
+            return {
+                "action": top_action,
+                "params": top.get("params", {}) or {},
+                "reason": f"phase_a_reroute:{action['action']}",
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
 
     ev_probe = _estimate_action_ev(
         {"action": action.get("action"), "params": action.get("params", {})},
         observation,
     )
-    if action["action"] != "wait" and float(ev_probe.get("ev_score", 0.0) or 0.0) < 18.0:
+    need_seats = bool(
+        (observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")
+    )
+    # Do not EV-block aviary buys when seat capacity is the active bottleneck.
+    if (
+        action["action"] != "wait"
+        and float(ev_probe.get("ev_score", 0.0) or 0.0) < 18.0
+        and not (action.get("action") == "buy_aviary" and need_seats)
+    ):
         return {
             "action": "wait",
             "params": {},
@@ -2433,6 +2529,20 @@ def apply_action_guardrails(
                 "action": "wait",
                 "params": {},
                 "reason": "micro_exchange_guard",
+                "sleep_seconds": action.get("sleep_seconds"),
+            }
+
+        # Golden rule: no repetitive exchange loops without progressing unlocks.
+        last_actions = [
+            str(name).strip()
+            for name in (observation.get("momentum", {}).get("last_3_actions") or [])
+            if str(name).strip()
+        ]
+        if last_actions.count("exchange_bank") >= 2 and not urgent_unlock:
+            return {
+                "action": "wait",
+                "params": {},
+                "reason": "exchange_loop_guard",
                 "sleep_seconds": action.get("sleep_seconds"),
             }
 

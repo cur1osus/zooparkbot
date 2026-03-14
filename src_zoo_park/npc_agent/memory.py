@@ -1720,6 +1720,97 @@ async def evolve_npc_profile(
     row.updated_at = _now()
 
 
+async def apply_planned_trait_update(
+    session: AsyncSession,
+    user: User,
+    decision: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    plan = (decision or {}).get("trait_update") or {}
+    if not isinstance(plan, dict):
+        return None
+
+    trait = str(plan.get("trait", "")).strip()
+    if trait not in TRAIT_NAMES:
+        return {
+            "status": "ignored",
+            "reason": "invalid_trait",
+            "allowed_traits": list(TRAIT_NAMES),
+        }
+
+    requested_delta = int(plan.get("delta", 0) or 0)
+    if requested_delta == 0:
+        return {"status": "ignored", "reason": "zero_delta", "trait": trait}
+
+    row = await ensure_npc_profile_memory(session=session, user=user)
+    profile = _rehydrate_profile_payload(user=user, payload=_json_loads(row.payload))
+    adaptive_traits = profile.get("adaptive_traits", {})
+    adaptation_signals = profile.get("adaptation_signals", {})
+
+    clamped_step = _clamp(
+        requested_delta,
+        -settings.memory_trait_step_limit,
+        settings.memory_trait_step_limit,
+    )
+    current_value = int(adaptive_traits.get(trait, 0) or 0)
+    new_value = _clamp(
+        current_value + clamped_step,
+        -settings.memory_trait_delta_limit,
+        settings.memory_trait_delta_limit,
+    )
+    applied_delta = new_value - current_value
+
+    if applied_delta == 0:
+        return {
+            "status": "capped",
+            "trait": trait,
+            "current": current_value,
+            "requested_delta": requested_delta,
+            "applied_delta": 0,
+            "limit": int(settings.memory_trait_delta_limit),
+        }
+
+    adaptive_traits[trait] = new_value
+    profile["adaptive_traits"] = adaptive_traits
+
+    effective_traits = _compute_effective_traits(profile["core_traits"], adaptive_traits)
+    profile.update(_derive_profile_story(effective_traits))
+    profile["traits"] = effective_traits
+
+    tactic_scores_raw = _sanitize_tactic_scores_raw(
+        profile.get("tactic_scores_raw", profile.get("tactic_scores")),
+        effective_traits,
+    )
+    profile["tactic_scores_raw"] = tactic_scores_raw
+    profile["tactic_scores"] = _normalize_tactic_scores(tactic_scores_raw, scale_max=1000)
+    profile["active_tactics"] = _derive_active_tactics(tactic_scores_raw)
+
+    shift_log = list(adaptation_signals.get("recent_trait_shifts", []))
+    shift_log.append(
+        _trait_shift_entry(
+            trait=trait,
+            delta=applied_delta,
+            reason=str(plan.get("reason", "planned_action_tuning"))[:140],
+            source="decision_plan",
+        )
+    )
+    adaptation_signals["recent_trait_shifts"] = _limit_entries(shift_log, 16)
+    adaptation_signals["last_updated_at"] = _now().isoformat()
+    profile["adaptation_signals"] = adaptation_signals
+
+    row.payload = _json_dumps(profile)
+    row.updated_at = _now()
+
+    return {
+        "status": "ok",
+        "trait": trait,
+        "requested_delta": requested_delta,
+        "applied_delta": applied_delta,
+        "current": new_value,
+        "step_limit": int(settings.memory_trait_step_limit),
+        "adaptive_limit": int(settings.memory_trait_delta_limit),
+    }
+
+
 def _build_event_payload(
     user: User,
     observation: dict[str, Any],
@@ -1928,6 +2019,12 @@ async def _maybe_create_reflection(
         )
         .order_by(NpcMemory.created_at.desc())
     )
+    min_interval = int(settings.memory_reflection_min_interval_seconds or 0)
+    if last_reflection is not None and min_interval > 0:
+        elapsed = (_now() - last_reflection.created_at).total_seconds()
+        if elapsed < min_interval:
+            return None
+
     recent_events_rows = await session.scalars(
         select(NpcMemory)
         .where(
@@ -2348,6 +2445,14 @@ def _profile_summary_for_context(payload: dict[str, Any]) -> dict[str, Any]:
         "adaptation_signals": {
             "success_streak": adaptation_signals.get("success_streak"),
             "failure_streak": adaptation_signals.get("failure_streak"),
+        },
+        "trait_limits": {
+            "per_turn_step_limit": int(settings.memory_trait_step_limit),
+            "adaptive_min": -int(settings.memory_trait_delta_limit),
+            "adaptive_max": int(settings.memory_trait_delta_limit),
+            "effective_min": 0,
+            "effective_max": 100,
+            "traits": list(TRAIT_NAMES),
         },
     }
 

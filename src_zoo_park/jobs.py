@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
+import json
 import logging
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from aiogram.utils.deep_linking import create_start_link
 from bot.keyboards import ik_start_created_game, rk_main_menu
@@ -165,6 +166,48 @@ async def update_rate_bank(session: AsyncSession):
     await session.execute(
         update(Value).where(Value.name == "RATE_RUB_USD").values(value_int=current_rate)
     )
+
+    # Keep lightweight rate history for NPC reasoning (last 24h max).
+    history_raw = await get_value(
+        session=session,
+        value_name="RATE_RUB_USD_HISTORY_JSON",
+        value_type="str",
+        cache_=False,
+    )
+    try:
+        history = json.loads(history_raw) if history_raw else []
+        if not isinstance(history, list):
+            history = []
+    except Exception:
+        history = []
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    history.append({"ts": now_ts, "rate": int(current_rate)})
+    cutoff = now_ts - 24 * 3600
+    history = [
+        row
+        for row in history
+        if isinstance(row, dict)
+        and int(row.get("ts", 0) or 0) >= cutoff
+        and int(row.get("rate", 0) or 0) > 0
+    ]
+    history = history[-2000:]
+
+    # value_str in DB is limited (String(4096)); store compact JSON and trim oldest
+    # points until payload fits safely.
+    max_payload_chars = 3900
+    while True:
+        payload = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
+        if len(payload) <= max_payload_chars or len(history) <= 1:
+            break
+        history = history[1:]
+
+    await session.execute(
+        update(Value)
+        .where(Value.name == "RATE_RUB_USD_HISTORY_JSON")
+        .values(value_str=payload)
+    )
+
     return {
         "previous": int(previous_rate),
         "current": int(current_rate),
@@ -234,6 +277,7 @@ async def create_game_for_chat():
         )
         game.id_mess = msg.message_id
         game.activate = True
+        await wake_all_npcs_now(session=session, reason="chat_game_auto_created")
         await session.commit()
 
 

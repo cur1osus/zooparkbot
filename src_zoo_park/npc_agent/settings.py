@@ -30,9 +30,13 @@ class NpcAgentSettings:
     temperature: float
     action_temperature: float
     chat_temperature: float
+    chat_enabled: bool
     action_two_pass_reasoning: bool
     max_observation_animals: int
     top_candidates_limit: int
+    recruit_min_income_abs: int
+    recruit_min_income_ratio_vs_owner: float
+    recruit_min_score_ratio_vs_best: float
     log_path: str
     unity_invite_ttl_seconds: int
     event_wake_ttl_seconds: int
@@ -46,12 +50,17 @@ class NpcAgentSettings:
     memory_reflection_every_events: int
     memory_reflection_event_window: int
     memory_reflection_min_importance: int
+    memory_reflection_min_interval_seconds: int
     memory_use_llm_reflection: bool
     memory_trait_delta_limit: int
     memory_trait_step_limit: int
     memory_tactic_step_limit: int
     cli_bin: str
     cli_workdir: str
+    cli_model: str
+    fallback_model: str
+    fallback_api_key: str
+    fallback_base_url: str
 
 
 def load_npc_agent_settings() -> NpcAgentSettings:
@@ -64,8 +73,8 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         enabled=_get_bool("NPC_AGENT_ENABLED", False),
         transport=os.getenv("NPC_LLM_TRANSPORT", "http").strip().lower(),
         api_key=os.getenv(
-            "MOONSHOT_API_KEY",
-            os.getenv("KIMI_API_KEY", os.getenv("NPC_LLM_API_KEY", "")),
+            "NPC_LLM_API_KEY",
+            os.getenv("MOONSHOT_API_KEY", os.getenv("KIMI_API_KEY", "")),
         ).strip(),
         base_url=os.getenv(
             "NPC_LLM_BASE_URL",
@@ -91,11 +100,21 @@ def load_npc_agent_settings() -> NpcAgentSettings:
             )
         ),
         chat_temperature=float(os.getenv("NPC_CHAT_TEMPERATURE", "0.8")),
+        chat_enabled=_get_bool("NPC_CHAT_ENABLED", True),
         action_two_pass_reasoning=_get_bool("NPC_ACTION_TWO_PASS_REASONING", False),
         max_observation_animals=max(
             3, int(os.getenv("NPC_MAX_OBSERVATION_ANIMALS", "12"))
         ),
         top_candidates_limit=max(3, int(os.getenv("NPC_TOP_CANDIDATES_LIMIT", "5"))),
+        recruit_min_income_abs=max(
+            0, int(os.getenv("NPC_RECRUIT_MIN_INCOME_ABS", "200"))
+        ),
+        recruit_min_income_ratio_vs_owner=max(
+            0.0, float(os.getenv("NPC_RECRUIT_MIN_INCOME_RATIO_VS_OWNER", "0.65"))
+        ),
+        recruit_min_score_ratio_vs_best=max(
+            0.0, min(1.0, float(os.getenv("NPC_RECRUIT_MIN_SCORE_RATIO_VS_BEST", "0.6")))
+        ),
         log_path=os.getenv(
             "NPC_AGENT_LOG_PATH",
             "logs/npc_agent_decisions.jsonl",
@@ -132,6 +151,9 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         memory_reflection_min_importance=max(
             100, int(os.getenv("NPC_MEMORY_REFLECTION_MIN_IMPORTANCE", "700"))
         ),
+        memory_reflection_min_interval_seconds=max(
+            0, int(os.getenv("NPC_MEMORY_REFLECTION_MIN_INTERVAL_SECONDS", "28800"))
+        ),
         memory_use_llm_reflection=_get_bool("NPC_MEMORY_USE_LLM_REFLECTION", True),
         memory_trait_delta_limit=max(
             8, int(os.getenv("NPC_MEMORY_TRAIT_DELTA_LIMIT", "28"))
@@ -144,6 +166,19 @@ def load_npc_agent_settings() -> NpcAgentSettings:
         ),
         cli_bin=os.getenv("NPC_KIMI_CLI_BIN", "/root/kimi-cli-venv/bin/kimi").strip(),
         cli_workdir=os.getenv("NPC_KIMI_CLI_WORKDIR", "/root/zooparkbot").strip(),
+        cli_model=os.getenv(
+            "NPC_KIMI_CLI_MODEL",
+            os.getenv("NPC_LLM_MODEL", "kimi-k2-0711-preview"),
+        ).strip(),
+        fallback_model=os.getenv("NPC_LLM_FALLBACK_MODEL", "").strip(),
+        fallback_api_key=os.getenv(
+            "NPC_LLM_FALLBACK_API_KEY",
+            os.getenv("GROQ_API_KEY", os.getenv("NPC_LLM_API_KEY", "")),
+        ).strip(),
+        fallback_base_url=os.getenv(
+            "NPC_LLM_FALLBACK_BASE_URL",
+            "https://api.groq.com/openai/v1",
+        ).strip(),
     )
 
 

@@ -14,6 +14,7 @@ from bot.keyboards import (
 )
 from db import Game, User
 from game_variables import games, translated_currencies
+from npc_agent.schedule import wake_all_npcs_now
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
@@ -243,5 +244,6 @@ async def game_activate(chosen_result: ChosenInlineResult, session: AsyncSession
     game.id_mess = chosen_result.inline_message_id
 
     await session.flush()
+    await wake_all_npcs_now(session=session, reason="chat_game_created")
     await session.execute(delete(Game).where(Game.activate == False))
     await session.commit()

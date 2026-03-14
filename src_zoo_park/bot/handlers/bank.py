@@ -32,6 +32,9 @@ async def bank(
     edit: bool = False,
 ):
     rate = await get_rate(session=session, user=user)
+    base_rate = await get_value(
+        session=session, value_name="RATE_RUB_USD", cache_=False
+    )
     time_to_update_bank = 60 - datetime.now().second
     dict_func = {
         True: message.edit_text,
@@ -45,15 +48,26 @@ async def bank(
     # if d := await get_values_from_item(info_about_items=user.info_about_items, code_name_item="item_6"):
     #     if d["is_activate"] and not d.get("date_end"):
     #         keyboard = await ik_bank_modify()
+    text = await get_text_message(
+        "bank_info",
+        r=rate,
+        ub=time_to_update_bank,
+        rub=user.rub,
+        usd=user.usd,
+        bank_storage=bank_storage,
+    )
+
+    # If item properties modified the effective rate, show original bank rate in brackets.
+    if int(rate) != int(base_rate):
+        marker = f"{int(rate)}₽"
+        replacement = f"{int(rate)}₽ ({int(base_rate)}₽)"
+        if marker in text:
+            text = text.replace(marker, replacement, 1)
+        else:
+            text += f"\n\n(Оригинальный курс банка: 1$ = {int(base_rate)}₽)"
+
     await dict_func[edit](
-        text=await get_text_message(
-            "bank_info",
-            r=rate,
-            ub=time_to_update_bank,
-            rub=user.rub,
-            usd=user.usd,
-            bank_storage=bank_storage,
-        ),
+        text=text,
         reply_markup=keyboard,
     )
 

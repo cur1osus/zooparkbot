@@ -159,3 +159,6 @@ alembic/
 *.png
 src_photos/
 celery/
+# local deployment notes
+DEPLOY.md
+deploy-safe.sh

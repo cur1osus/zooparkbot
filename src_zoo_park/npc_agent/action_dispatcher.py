@@ -62,6 +62,17 @@ from .state_builder import (
 )
 
 
+def _infer_resource_deficit(error_code: str) -> str | None:
+    code = str(error_code or "").lower()
+    if "not_enough_usd" in code:
+        return "usd"
+    if "not_enough_rub" in code or "amount_too_small" in code:
+        return "rub"
+    if "not_enough_seat" in code or "no_seat" in code:
+        return "seats"
+    return None
+
+
 async def execute_action(
     session: AsyncSession,
     user: User,
@@ -135,10 +146,31 @@ async def execute_action(
             if str(name).strip()
         ]
 
+        retryable_codes = {
+            "not_enough_usd",
+            "not_enough_rub",
+            "amount_too_small",
+            "not_enough_seats",
+            "no_seat_capacity",
+            "invite_already_sent",
+            "recruit_target_unavailable",
+            "unity_request_exists",
+            "unity_request_not_found",
+            "applicant_already_in_unity",
+        }
+        retryable = any(code in error_code for code in retryable_codes)
+        suggested_alternatives = [
+            name for name in allowed_actions if name != action_name
+        ][:5]
+
         result["failed_action"] = action_name
         result["error_code"] = error_code
         result["error_message"] = summary
         result["allowed_actions"] = allowed_actions
+        result["retryable"] = bool(retryable)
+        result["cooldown_sec"] = 120 if retryable else 300
+        result["suggested_alternatives"] = suggested_alternatives
+        result["resource_deficit"] = _infer_resource_deficit(error_code)
         if blocked_actions:
             result["blocked_actions"] = blocked_actions
 

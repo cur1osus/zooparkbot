@@ -15,6 +15,7 @@ from bot.filters import FindIntegers
 from bot.keyboards import ik_get_money, ik_get_money_one_piece
 from db import TransferMoney, User
 from game_variables import translated_currencies
+from npc_agent.schedule import wake_all_npcs_now
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
@@ -216,6 +217,7 @@ async def pagination_demo(chosen_result: ChosenInlineResult, session: AsyncSessi
     if chosen_result.inline_message_id:
         tr.id_mess = str(chosen_result.inline_message_id)
     await session.flush()
+    await wake_all_npcs_now(session=session, reason="chat_transfer_created")
     await session.execute(delete(TransferMoney).where(TransferMoney.status == False))
     await session.commit()
 

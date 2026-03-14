@@ -19,7 +19,7 @@ from tools.value import get_value
 
 from .client import NpcDecisionClient
 from .logs import log_npc_decision
-from .memory import build_npc_snapshot, remember_npc_turn
+from .memory import build_npc_snapshot, remember_npc_turn, apply_planned_trait_update
 from .schedule import (
     clear_npc_event_wake,
     clamp_npc_sleep_seconds,
@@ -57,6 +57,10 @@ def npc_chat_cooldown_key(user_idpk: int) -> str:
 
 def npc_llm_degraded_key(user_idpk: int) -> str:
     return f"npc_llm_degraded:{user_idpk}"
+
+
+def npc_llm_error_streak_key(user_idpk: int) -> str:
+    return f"npc_llm_error_streak:{user_idpk}"
 
 
 def npc_v2_memory_key(user_idpk: int) -> str:
@@ -236,6 +240,67 @@ def build_rival_pressure(observation: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _classify_llm_error(error_text: str) -> str:
+    t = str(error_text or "").lower()
+    if "http_401" in t or "http_403" in t:
+        return "auth"
+    if "http_429" in t or "rate limit" in t:
+        return "rate_limit"
+    if "http_5" in t or "timeout" in t:
+        return "transient"
+    if "http_404" in t:
+        return "endpoint"
+    return "other"
+
+
+def _fallback_action_without_llm(observation: dict[str, Any], retry_delay: int) -> dict[str, Any]:
+    allowed = [
+        row for row in (observation.get("allowed_actions", []) or []) if isinstance(row, dict)
+    ]
+
+    # Capacity lock mode: prefer opening seats first, then liquidity.
+    need_seats = bool(
+        (observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")
+    )
+    if need_seats:
+        seat_lock_priority = ["buy_aviary", "exchange_bank", "invest_for_income", "wait"]
+        for action_name in seat_lock_priority:
+            for row in allowed:
+                if str(row.get("action", "")).strip() == action_name:
+                    return {
+                        "action": action_name,
+                        "params": row.get("params", {}) or {},
+                        "reason": "llm_degraded_fallback_policy:seat_lock",
+                        "sleep_seconds": retry_delay,
+                    }
+
+    priority = [
+        "claim_daily_bonus",
+        "review_unity_request",
+        "buy_aviary",
+        "buy_rarity_animal",
+        "exchange_bank",
+        "invest_for_income",
+        "claim_chat_transfer",
+        "wait",
+    ]
+    for action_name in priority:
+        for row in allowed:
+            if str(row.get("action", "")).strip() == action_name:
+                return {
+                    "action": action_name,
+                    "params": row.get("params", {}) or {},
+                    "reason": "llm_degraded_fallback_policy",
+                    "sleep_seconds": retry_delay,
+                }
+    return {
+        "action": "wait",
+        "params": {},
+        "reason": "llm_degraded_no_legal_actions",
+        "sleep_seconds": retry_delay,
+    }
+
+
 async def run_npc_players_turn() -> None:
     if not settings.enabled or not settings.api_key:
         return
@@ -297,6 +362,7 @@ async def run_npc_players_turn() -> None:
                 try:
                     decision = await client.choose_action(observation=observation)
                     llm_error_count = 0  # reset streak on success
+                    await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
                     if await redis.delete(npc_llm_degraded_key(npc_user.idpk)):
                         logging.warning(
                             "NPC %s: LLM connection recovered, decision loop back to normal.",
@@ -306,34 +372,80 @@ async def run_npc_players_turn() -> None:
                     logging.exception(
                         f"LLM Error during action decision for {npc_user.nickname}"
                     )
-                    llm_error_count += 1
-                    # Exponential backoff with ±10% jitter (#4)
-                    base_delay = default_npc_sleep_seconds(
-                        user=npc_user, salt="llm_error"
-                    )
-                    retry_delay = min(int(base_delay * (2**llm_error_count)), 300)
-                    retry_delay += int(retry_delay * random.uniform(-0.1, 0.1))
 
-                    # Degraded mode alert (one message per 30 min max)
-                    degraded_mark = await redis.set(
-                        npc_llm_degraded_key(npc_user.idpk),
-                        datetime.now().isoformat(),
-                        ex=1800,
-                        nx=True,
-                    )
-                    if degraded_mark:
-                        logging.warning(
-                            "NPC %s: LLM degraded (%s). Switching to backoff mode for retries.",
-                            npc_user.nickname,
-                            type(exc).__name__,
+                    # On any primary LLM error, try secondary provider/model once.
+                    err_text = str(exc)
+                    fallback_model_ok = False
+                    if settings.fallback_model and settings.fallback_api_key and settings.fallback_base_url:
+                        try:
+                            decision = await client.choose_action_with_provider(
+                                observation=observation,
+                                model_override=settings.fallback_model,
+                                base_url_override=settings.fallback_base_url,
+                                api_key_override=settings.fallback_api_key,
+                            )
+                            decision["reason"] = (
+                                f"fallback_model:{settings.fallback_model} | {decision.get('reason','')}"
+                            )[:280]
+                            llm_error_count = 0
+                            fallback_model_ok = True
+                            await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
+                        except Exception as fallback_exc:
+                            logging.exception(
+                                f"Fallback model error for {npc_user.nickname}"
+                            )
+                            exc = fallback_exc
+                            err_text = str(exc)
+                            kind = _classify_llm_error(err_text)
+                            if kind in {"rate_limit", "transient"}:
+                                try:
+                                    await asyncio.sleep(2)
+                                    decision = await client.choose_action_with_provider(
+                                        observation=observation,
+                                        model_override=settings.fallback_model,
+                                        base_url_override=settings.fallback_base_url,
+                                        api_key_override=settings.fallback_api_key,
+                                    )
+                                    decision["reason"] = (
+                                        f"fallback_retry:{settings.fallback_model} | {decision.get('reason','')}"
+                                    )[:280]
+                                    llm_error_count = 0
+                                    fallback_model_ok = True
+                                    await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
+                                except Exception as fallback_retry_exc:
+                                    exc = fallback_retry_exc
+                                    err_text = str(exc)
+
+                    if not fallback_model_ok:
+                        llm_error_count += 1
+                        streak = int(await redis.incr(npc_llm_error_streak_key(npc_user.idpk)) or 1)
+                        await redis.expire(npc_llm_error_streak_key(npc_user.idpk), 3600)
+                        # Exponential backoff with ±10% jitter
+                        base_delay = default_npc_sleep_seconds(
+                            user=npc_user, salt="llm_error"
                         )
+                        retry_delay = min(int(base_delay * (2**min(streak, 6))), 4 * 3600)
+                        retry_delay += int(retry_delay * random.uniform(-0.1, 0.1))
 
-                    decision = {
-                        "action": "wait",
-                        "params": {},
-                        "reason": f"llm_error:{str(exc)[:250]}",
-                        "sleep_seconds": retry_delay,
-                    }
+                        # Degraded mode alert (one message per 30 min max)
+                        degraded_mark = await redis.set(
+                            npc_llm_degraded_key(npc_user.idpk),
+                            datetime.now().isoformat(),
+                            ex=1800,
+                            nx=True,
+                        )
+                        if degraded_mark:
+                            logging.warning(
+                                "NPC %s: LLM degraded (%s). Fallback policy enabled.",
+                                npc_user.nickname,
+                                type(exc).__name__,
+                            )
+
+                        decision = _fallback_action_without_llm(
+                            observation=observation,
+                            retry_delay=retry_delay,
+                        )
+                        decision["reason"] = f"llm_error:{err_text[:180]} | {decision['reason']}"
 
                 action = apply_action_guardrails(
                     action=validate_action(decision=decision),
@@ -343,6 +455,14 @@ async def run_npc_players_turn() -> None:
                 # Phase 3: Execute in DB and Commit
                 async with _sessionmaker_for_func() as session:
                     npc_user_refreshed = await session.get(User, npc_user.idpk)
+                    trait_update_result = await apply_planned_trait_update(
+                        session=session,
+                        user=npc_user_refreshed,
+                        decision=decision,
+                    )
+                    if trait_update_result is not None:
+                        action["trait_update"] = trait_update_result
+
                     try:
                         result = await execute_action(
                             session=session,
@@ -425,6 +545,28 @@ async def run_npc_players_turn() -> None:
                             "snapshot_before": before_snapshot,
                             "snapshot_after": after_snapshot,
                             "observation": observation,
+                            "decision_trace": {
+                                "phase_1_observation": {
+                                    "wake_context": observation.get("wake_context"),
+                                    "planner": observation.get("planner"),
+                                    "anti_loop_guard": observation.get("anti_loop_guard"),
+                                    "action_contract": observation.get("action_contract"),
+                                },
+                                "phase_2_decision": decision,
+                                "phase_2_guardrailed": action,
+                                "phase_3_execution": result,
+                                "phase_3_delta": {
+                                    "usd": int(after_snapshot.get("usd", 0) or 0) - int(before_snapshot.get("usd", 0) or 0),
+                                    "rub": int(after_snapshot.get("rub", 0) or 0) - int(before_snapshot.get("rub", 0) or 0),
+                                    "income_per_minute_rub": int(after_snapshot.get("income_per_minute_rub", 0) or 0) - int(before_snapshot.get("income_per_minute_rub", 0) or 0),
+                                    "animals": int(after_snapshot.get("total_animals", 0) or 0) - int(before_snapshot.get("total_animals", 0) or 0),
+                                },
+                                "quality_metrics": {
+                                    "decision_execution_match": str(decision.get("action", "")).strip() == str(action.get("action", "")).strip(),
+                                    "rerouted": str(decision.get("action", "")).strip() != str(action.get("action", "")).strip(),
+                                    "status_ok": str(result.get("status", "")).strip().lower() == "ok",
+                                },
+                            },
                         },
                     )
                 except Exception:
@@ -438,6 +580,10 @@ async def run_npc_players_turn() -> None:
                         "error_message": str(result.get("error_message") or result.get("summary") or "action unavailable"),
                         "allowed_actions": list(result.get("allowed_actions") or []),
                         "blocked_actions": list(result.get("blocked_actions") or []),
+                        "retryable": bool(result.get("retryable", False)),
+                        "cooldown_sec": int(result.get("cooldown_sec", 0) or 0),
+                        "suggested_alternatives": list(result.get("suggested_alternatives") or []),
+                        "resource_deficit": result.get("resource_deficit"),
                     }
                 else:
                     reflection_feedback = None
@@ -538,6 +684,9 @@ async def maybe_send_npc_chat_comment(
     result: dict[str, Any],
     planned_sleep_seconds: int,
 ) -> None:
+    if not settings.chat_enabled:
+        return
+
     cooldown_seconds = settings.chat_min_interval_seconds
     if cooldown_seconds <= 0:
         return
