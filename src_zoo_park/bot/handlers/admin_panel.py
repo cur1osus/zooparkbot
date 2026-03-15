@@ -188,34 +188,58 @@ def _render_usage_plot_24h(stats: dict) -> str:
     completion_vals = [int(by_hour[h]["completion"]) for h in hours]
     total_vals = [int(by_hour[h]["total"]) for h in hours]
     labels = [h.strftime("%H:%M") for h in hours]
+    x = list(range(len(hours)))
 
-    fig, ax = plt.subplots(figsize=(12, 4.5))
-    fig.patch.set_facecolor("#1f1f1f")
-    ax.set_facecolor("#f2f2f2")
+    fig, (ax_top, ax_bottom) = plt.subplots(
+        2,
+        1,
+        figsize=(12.5, 6.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.1, 1.6]},
+    )
+    fig.patch.set_facecolor("#111827")
 
-    ax.bar(labels, prompt_vals, color="#4e79d9", alpha=0.85, label="prompt")
-    ax.bar(
-        labels,
+    for ax in (ax_top, ax_bottom):
+        ax.set_facecolor("#f8fafc")
+        ax.grid(True, axis="y", linestyle="--", alpha=0.25)
+
+    # Top: total line with area
+    ax_top.fill_between(x, total_vals, color="#93c5fd", alpha=0.35)
+    ax_top.plot(x, total_vals, color="#2563eb", linewidth=2.2, label="total")
+    ax_top.set_ylabel("total")
+    ax_top.legend(loc="upper left")
+
+    # Bottom: stacked bars prompt/completion
+    ax_bottom.bar(x, prompt_vals, color="#3b82f6", alpha=0.92, label="prompt")
+    ax_bottom.bar(
+        x,
         completion_vals,
         bottom=prompt_vals,
-        color="#4fd1a5",
-        alpha=0.85,
+        color="#10b981",
+        alpha=0.92,
         label="completion",
     )
-    ax.plot(labels, total_vals, color="#1f1f1f", linewidth=1.6, label="total")
+    ax_bottom.set_ylabel("tokens")
+    ax_bottom.legend(loc="upper left")
 
-    ax.set_title("NPC LLM usage за последние 24ч", fontsize=12)
-    ax.set_ylabel("tokens")
-    ax.grid(True, axis="y", alpha=0.25)
-    ax.legend(loc="upper left")
-    for tick in ax.get_xticklabels():
-        tick.set_rotation(45)
-        tick.set_ha("right")
+    # x-axis: avoid clutter (show every 2nd tick)
+    tick_idx = [idx for idx in x if idx % 2 == 0]
+    if len(tick_idx) < 2 and x:
+        tick_idx = x
+    ax_bottom.set_xticks(tick_idx)
+    ax_bottom.set_xticklabels([labels[i] for i in tick_idx], rotation=0)
 
-    fig.tight_layout()
+    fig.suptitle(
+        "NPC LLM usage · последние 24 часа",
+        fontsize=14,
+        fontweight="bold",
+        color="#f9fafb",
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
     USAGE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     filename = USAGE_PLOT_DIR / f"usage24h_{uuid4().hex}.png"
-    plt.savefig(filename, dpi=170, bbox_inches="tight")
+    plt.savefig(filename, dpi=190, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     return str(filename)
 
