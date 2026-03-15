@@ -1,14 +1,18 @@
 import json
 import math
-from datetime import datetime
+import tempfile
+from collections import defaultdict
+from datetime import datetime, timedelta
 from enum import Enum
 from html import escape
+from pathlib import Path
+from uuid import uuid4
 
 from aiogram import F, Router
 from aiogram.filters.callback_data import CallbackData
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.state import any_state
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.keyboards import ADMIN_PANEL_BUTTON
 from bot.states import UserState
@@ -26,6 +30,8 @@ from npc_agent.schedule import wake_npc_now
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import formatter
+
+import matplotlib.pyplot as plt
 
 router = Router()
 flags = {"throttling_key": "default"}
@@ -45,11 +51,14 @@ USER_EVENTS_PER_PAGE = 5
 NPC_BUTTON_LABEL_LIMIT = 12
 HISTORY_USER_LABEL_LIMIT = 11
 HISTORY_EVENT_LABEL_LIMIT = 26
+USAGE_LOG_PATH = Path("logs/npc_agent_decisions_usage.jsonl")
+USAGE_PLOT_DIR = Path(tempfile.gettempdir()) / "zooparkbot_admin_usage"
 
 
 class AdminPanelAction(str, Enum):
     LIST = "list"
     REFRESH = "refresh"
+    USAGE_24H = "usage24h"
 
 
 class AdminNpcSection(str, Enum):
@@ -98,6 +107,138 @@ def _is_admin(user: User | None, telegram_id: int) -> bool:
 
 def _fmt_number(value: int | float | None) -> str:
     return formatter.format_large_number(int(value or 0))
+
+
+def _fmt_int(value: int | float | None) -> str:
+    return f"{int(value or 0):,}".replace(",", " ")
+
+
+def _load_usage_rows_24h(log_path: Path) -> list[dict]:
+    if not log_path.exists():
+        return []
+    threshold = datetime.now() - timedelta(hours=24)
+    rows: list[dict] = []
+    for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        try:
+            ts = datetime.fromisoformat(str(payload.get("time", "")))
+        except Exception:
+            continue
+        if ts < threshold:
+            continue
+        payload["_ts"] = ts
+        rows.append(payload)
+    return rows
+
+
+def _usage_stats_24h(rows: list[dict]) -> dict:
+    calls = len(rows)
+    prompt_sum = 0
+    completion_sum = 0
+    total_sum = 0
+    by_kind: dict[str, int] = defaultdict(int)
+    by_hour: dict[datetime, dict[str, int]] = defaultdict(
+        lambda: {"prompt": 0, "completion": 0, "total": 0}
+    )
+
+    for row in rows:
+        prompt = int(row.get("prompt_tokens_est", 0) or 0)
+        completion = int(row.get("response_tokens_est", 0) or 0)
+        total = int(row.get("total_tokens_est", prompt + completion) or 0)
+        kind = str(row.get("request_kind", "unknown"))
+        ts: datetime = row.get("_ts")
+        hour = ts.replace(minute=0, second=0, microsecond=0)
+
+        prompt_sum += prompt
+        completion_sum += completion
+        total_sum += total
+        by_kind[kind] += total
+        by_hour[hour]["prompt"] += prompt
+        by_hour[hour]["completion"] += completion
+        by_hour[hour]["total"] += total
+
+    top_kinds = sorted(by_kind.items(), key=lambda item: item[1], reverse=True)[:3]
+    avg_per_call = round(total_sum / max(1, calls), 1)
+    return {
+        "calls": calls,
+        "prompt": prompt_sum,
+        "completion": completion_sum,
+        "total": total_sum,
+        "avg_per_call": avg_per_call,
+        "top_kinds": top_kinds,
+        "by_hour": by_hour,
+    }
+
+
+def _render_usage_plot_24h(stats: dict) -> str:
+    by_hour = stats.get("by_hour", {}) or {}
+    if not by_hour:
+        raise ValueError("Нет данных для графика")
+
+    hours = sorted(by_hour.keys())
+    prompt_vals = [int(by_hour[h]["prompt"]) for h in hours]
+    completion_vals = [int(by_hour[h]["completion"]) for h in hours]
+    total_vals = [int(by_hour[h]["total"]) for h in hours]
+    labels = [h.strftime("%H:%M") for h in hours]
+
+    fig, ax = plt.subplots(figsize=(12, 4.5))
+    fig.patch.set_facecolor("#1f1f1f")
+    ax.set_facecolor("#f2f2f2")
+
+    ax.bar(labels, prompt_vals, color="#4e79d9", alpha=0.85, label="prompt")
+    ax.bar(
+        labels,
+        completion_vals,
+        bottom=prompt_vals,
+        color="#4fd1a5",
+        alpha=0.85,
+        label="completion",
+    )
+    ax.plot(labels, total_vals, color="#1f1f1f", linewidth=1.6, label="total")
+
+    ax.set_title("NPC LLM usage за последние 24ч", fontsize=12)
+    ax.set_ylabel("tokens")
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.legend(loc="upper left")
+    for tick in ax.get_xticklabels():
+        tick.set_rotation(45)
+        tick.set_ha("right")
+
+    fig.tight_layout()
+    USAGE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    filename = USAGE_PLOT_DIR / f"usage24h_{uuid4().hex}.png"
+    plt.savefig(filename, dpi=170, bbox_inches="tight")
+    plt.close(fig)
+    return str(filename)
+
+
+def _build_usage_caption_24h(stats: dict) -> str:
+    top_kinds = stats.get("top_kinds", []) or []
+    top_text = (
+        "\n".join(
+            [f"• {name}: {_fmt_int(tokens)}" for name, tokens in top_kinds]
+        )
+        if top_kinds
+        else "• нет"
+    )
+    return (
+        "📊 <b>Юзедж за 24ч</b>\n"
+        f"🔁 Вызовы: {_fmt_int(stats.get('calls', 0))}\n"
+        f"🧮 Всего токенов: {_fmt_int(stats.get('total', 0))}\n"
+        f"🔺 Prompt: {_fmt_int(stats.get('prompt', 0))}\n"
+        f"🔻 Completion: {_fmt_int(stats.get('completion', 0))}\n"
+        f"◽ Среднее на вызов: {stats.get('avg_per_call', 0)}\n\n"
+        "🏷 Топ по расходу:\n"
+        f"{top_text}"
+    )
 
 
 def _fmt_dt(value: datetime | None) -> str:
@@ -335,10 +476,14 @@ async def _build_admin_panel_text(session: AsyncSession) -> str:
 
 def _build_admin_panel_keyboard(npcs: list[User]):
     builder = InlineKeyboardBuilder()
-    row_sizes = [2]
+    row_sizes = [2, 1]
     builder.button(
         text="📜 История",
         callback_data=AdminHistoryListCallback(page=1),
+    )
+    builder.button(
+        text="📊 Юзедж 24ч",
+        callback_data=AdminPanelCallback(action=AdminPanelAction.USAGE_24H),
     )
     builder.button(
         text="🔄 Обновить",
@@ -996,6 +1141,27 @@ async def admin_panel_callbacks(
         return
     npcs = await _get_npc_users(session=session)
     action = callback_data.action.value
+
+    if action == AdminPanelAction.USAGE_24H.value:
+        rows = _load_usage_rows_24h(USAGE_LOG_PATH)
+        if not rows:
+            await query.answer("Нет usage-данных за 24ч", show_alert=True)
+            return
+        stats = _usage_stats_24h(rows)
+        try:
+            chart_path = _render_usage_plot_24h(stats)
+        except Exception:
+            await query.answer("Не удалось собрать график usage", show_alert=True)
+            return
+
+        if query.message:
+            await query.message.answer_photo(
+                photo=FSInputFile(path=chart_path),
+                caption=_build_usage_caption_24h(stats),
+            )
+        await query.answer("Готово")
+        return
+
     text = _clip_text(await _build_admin_panel_text(session=session))
     if action not in {"list", "refresh"}:
         await query.answer("Неизвестное действие", show_alert=True)
