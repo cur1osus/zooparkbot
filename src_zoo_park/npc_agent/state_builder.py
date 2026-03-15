@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from datetime import datetime
 from itertools import combinations
@@ -34,6 +35,7 @@ from tools.unity import (
     get_unity_idpk,
 )
 from tools.value import get_value
+from tools.unity_projects import get_or_create_project, get_user_chests
 
 from .memory import build_npc_memory_context
 from .schedule import clamp_npc_sleep_seconds
@@ -997,6 +999,27 @@ async def build_allowed_actions(
             if current_unity.get("can_upgrade"):
                 _append_unique_action(actions, "upgrade_unity_level", {})
             pending_requests = current_unity.get("pending_requests") or []
+            # Clan project tooling for NPC
+            with contextlib.suppress(Exception):
+                unity_idpk = int(current_unity.get("idpk", 0) or 0)
+                if unity_idpk:
+                    unity_obj = await session.get(Unity, unity_idpk)
+                    if unity_obj is not None:
+                        project = await get_or_create_project(session=session, unity=unity_obj)
+                        if str(project.get("status", "active")) == "active":
+                            if rub >= 50_000:
+                                _append_unique_action(actions, "contribute_clan_project", {"rub": min(rub, 200_000), "usd": 0})
+                            if usd >= 5_000:
+                                _append_unique_action(actions, "contribute_clan_project", {"rub": 0, "usd": min(usd, 20_000)})
+
+            with contextlib.suppress(Exception):
+                ch = await get_user_chests(session=session, user_idpk=user.idpk)
+                if int(ch.get("epic", 0) or 0) > 0:
+                    _append_unique_action(actions, "open_clan_chest", {"chest_type": "epic"})
+                if int(ch.get("rare", 0) or 0) > 0:
+                    _append_unique_action(actions, "open_clan_chest", {"chest_type": "rare"})
+                if int(ch.get("common", 0) or 0) > 0:
+                    _append_unique_action(actions, "open_clan_chest", {"chest_type": "common"})
             for row in pending_requests[:2]:
                 applicant_id = int(row.get("idpk_user", 0) or 0)
                 _append_unique_action(
@@ -1192,6 +1215,10 @@ def _score_allowed_action(
             83,
             f"current unity can level up from {int(current_unity.get('level', 0) or 0)}",
         )
+    if action_name == "contribute_clan_project":
+        return 75, "supports clan project progress and contributor rewards"
+    if action_name == "open_clan_chest":
+        return 73, "converts stored chest rewards into immediate RUB/USD"
     if action_name == "exit_from_unity":
         return 45, "leaves current unity to switch social strategy"
     if action_name == "send_chat_transfer":
@@ -1339,10 +1366,26 @@ def build_decision_brief(observation: dict[str, Any]) -> dict[str, Any]:
         )
         next_unaffordable = next_unaffordable_candidates[0]
 
+    clan_project = observation.get("clan_project", {}) or {}
+    clan_context = None
+    if clan_project:
+        status = str(clan_project.get("status", "active"))
+        pr_rub = int(clan_project.get("progress_rub", 0) or 0)
+        tg_rub = int(clan_project.get("target_rub", 0) or 0)
+        pr_usd = int(clan_project.get("progress_usd", 0) or 0)
+        tg_usd = int(clan_project.get("target_usd", 0) or 0)
+        clan_context = (
+            "Clan project context: project has a 3-day deadline. "
+            "Contributors receive chest rewards; if deadline is missed, rewards are still split only among contributors. "
+            f"Current project {clan_project.get('name', 'Заповедник')} L{int(clan_project.get('level', 1) or 1)} "
+            f"status={status}, progress RUB {pr_rub}/{tg_rub}, USD {pr_usd}/{tg_usd}."
+        )
+
     return {
         "bottleneck": bottleneck,
         "top_affordable_actions": top_affordable_actions[:4],
         "next_unaffordable": next_unaffordable,
+        "clan_project_context": clan_context,
     }
 
 
@@ -2032,6 +2075,26 @@ async def build_observation(
         cache_=False,
     )
     rate_history = _build_rate_history_snapshot(rate_history_raw)
+    clan_project_summary = {}
+    with contextlib.suppress(Exception):
+        unity_idpk = int(get_unity_idpk(user.current_unity) or 0)
+        if unity_idpk:
+            unity_obj = await session.get(Unity, unity_idpk)
+            if unity_obj is not None:
+                project = await get_or_create_project(session=session, unity=unity_obj)
+                pr = project.get("progress", {}) or {}
+                tg = project.get("target", {}) or {}
+                clan_project_summary = {
+                    "name": str(project.get("name", "Заповедник")),
+                    "status": str(project.get("status", "active")),
+                    "level": int(project.get("level", 1) or 1),
+                    "ends_at": str(project.get("ends_at", "")),
+                    "progress_rub": int(pr.get("rub", 0) or 0),
+                    "target_rub": int(tg.get("rub", 0) or 0),
+                    "progress_usd": int(pr.get("usd", 0) or 0),
+                    "target_usd": int(tg.get("usd", 0) or 0),
+                }
+
     observation = {
         "schema_version": 5,
         "current_time": datetime.now().isoformat(),
@@ -2094,6 +2157,7 @@ async def build_observation(
         "items": items,
         "item_opportunities": item_opportunities,
         "unity": unity,
+        "clan_project": clan_project_summary,
         "chat_games": chat_games,
         "chat_transfers": chat_transfers,
         "standings": standings,
@@ -2342,307 +2406,7 @@ def apply_action_guardrails(
     action: dict[str, Any],
     observation: dict[str, Any],
 ) -> dict[str, Any]:
-    allowed_entries = [
-        item
-        for item in observation.get("allowed_actions", [])
-        if isinstance(item, dict)
-    ]
-    allowed_actions = {str(item.get("action", "wait")) for item in allowed_entries}
-    matching_entries = [
-        item
-        for item in allowed_entries
-        if str(item.get("action", "wait")) == action["action"]
-    ]
-
-    if action["action"] not in allowed_actions:
-        action["action"] = "wait"
-        action["params"] = {}
-        action["reason"] = f"invalid_action_fallback:{action['reason'][:120]}"
-    elif matching_entries and not any(
-        _matches_allowed_params(action["params"], item.get("params", {}) or {})
-        for item in matching_entries
-    ):
-        fallback_entry = matching_entries[0]
-        action["action"] = str(fallback_entry.get("action", "wait"))
-        action["params"] = fallback_entry.get("params", {}) or {}
-        action["reason"] = f"invalid_params_fallback:{action['reason'][:120]}"
-
-    guard = observation.get("anti_loop_guard", {})
-    blocked_actions = {
-        str(item) for item in guard.get("blocked_actions", []) if str(item).strip()
-    }
-    fallback = guard.get("fallback") or {}
-
-    contract = observation.get("action_contract", {}) or {}
-    must_do = [str(x).strip() for x in (contract.get("must_do") or []) if str(x).strip()]
-    must_not_do = {str(x).strip() for x in (contract.get("must_not_do") or []) if str(x).strip()}
-
-    if action.get("action") in must_not_do:
-        for required in must_do:
-            candidate = next(
-                (
-                    row for row in allowed_entries
-                    if str(row.get("action", "")).strip() == required
-                ),
-                None,
-            )
-            if candidate:
-                return {
-                    "action": required,
-                    "params": candidate.get("params", {}) or {},
-                    "reason": f"must_do_reroute:{action.get('action')}",
-                    "sleep_seconds": action.get("sleep_seconds"),
-                }
-
-    # Golden rule: don't instantly repeat the same failed action unless state changed.
-    feedback = observation.get("execution_feedback", {}) or {}
-    failed_action = str(feedback.get("failed_action", "")).strip()
-    if action.get("action") == failed_action and bool(feedback.get("retryable", False)):
-        alternatives = [
-            str(name).strip()
-            for name in (feedback.get("suggested_alternatives") or [])
-            if str(name).strip()
-        ]
-        for alt in alternatives:
-            if alt and alt != action.get("action") and alt not in blocked_actions:
-                alt_entry = next(
-                    (
-                        row
-                        for row in allowed_entries
-                        if str(row.get("action", "")).strip() == alt
-                    ),
-                    {},
-                )
-                return {
-                    "action": alt,
-                    "params": alt_entry.get("params", {}) or {},
-                    "reason": f"failed_action_reroute:{failed_action}",
-                    "sleep_seconds": max(settings.step_seconds, int(feedback.get('cooldown_sec', settings.step_seconds) or settings.step_seconds)),
-                }
-
-    if action["action"] in blocked_actions and action["action"] not in must_do:
-        fallback_action = str(fallback.get("action", "wait")).strip() or "wait"
-        if fallback_action and fallback_action not in blocked_actions:
-            return {
-                "action": fallback_action,
-                "params": fallback.get("params", {}) or {},
-                "reason": f"guardrail_reroute:{action['action']}",
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-        return {
-            "action": "wait",
-            "params": {},
-            "reason": f"guardrail_blocked:{action['action']}",
-            "sleep_seconds": settings.step_seconds,
-        }
-
-    repeated_action = str(guard.get("repeated_action", "")).strip()
-    if (
-        repeated_action
-        and repeated_action == action["action"]
-        and repeated_action in {"wait", "exchange_bank"}
-        and fallback
-    ):
-        fallback_action = str(fallback.get("action", "")).strip()
-        if (
-            fallback_action
-            and fallback_action not in blocked_actions
-            and fallback_action != action["action"]
-        ):
-            return {
-                "action": fallback_action,
-                "params": fallback.get("params", {}) or {},
-                "reason": f"loop_breaker:{action['action']}",
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-
-    planner = observation.get("planner", {}) or {}
-    phase_a_candidates = planner.get("phase_a_candidates", []) or []
-    phase_a_actions = {
-        str(row.get("action", "")).strip()
-        for row in phase_a_candidates
-        if isinstance(row, dict) and str(row.get("action", "")).strip()
-    }
-    if (
-        phase_a_actions
-        and action["action"] not in phase_a_actions
-        and action["action"] != "wait"
-        and action["action"] not in must_do
-    ):
-        top = phase_a_candidates[0]
-        top_action = str(top.get("action", "wait")) or "wait"
-        if top_action not in must_not_do:
-            return {
-                "action": top_action,
-                "params": top.get("params", {}) or {},
-                "reason": f"phase_a_reroute:{action['action']}",
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-
-    # EV is used for ranking/planner context only; do not hard-block actions here.
-
-    # Capacity unlock mode: when no seats remain, avoid actions that cannot resolve seat pressure.
-    remain_seats = int(observation.get("zoo", {}).get("remain_seats", 0) or 0)
-    if remain_seats <= 0 and action["action"] in {
-        "buy_rarity_animal",
-        "invest_for_top_animals",
-        "buy_merchant_discount_offer",
-        "buy_merchant_random_offer",
-        "buy_merchant_targeted_offer",
-    }:
-        planner = observation.get("planner", {}) or {}
-        for step in planner.get("recommended_actions", []) or []:
-            step_action = str(step.get("action", "")).strip()
-            if step_action in {
-                "buy_aviary",
-                "join_chat_game",
-                "send_chat_transfer",
-                "create_chat_game",
-                "invest_for_income",
-                "exchange_bank",
-            }:
-                return {
-                    "action": step_action,
-                    "params": step.get("params", {}) or {},
-                    "reason": f"capacity_mode_reroute:{action['action']}",
-                    "sleep_seconds": action.get("sleep_seconds"),
-                }
-        return {
-            "action": "wait",
-            "params": {},
-            "reason": f"capacity_mode_blocked:{action['action']}",
-            "sleep_seconds": settings.step_seconds,
-        }
-
-    # Prefer immediate high-ROI animal buy over extra bank exchange when seats are free.
-    if action["action"] == "exchange_bank":
-        summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
-        best_income = summary.get("best_income_option") or {}
-        payback_minutes = float(best_income.get("payback_minutes", 10**9) or 10**9)
-
-        bank = observation.get("bank", {}) or {}
-        player = observation.get("player", {}) or {}
-        rate = max(1, int(bank.get("rate_rub_usd", 1) or 1))
-        min_rate = max(1, int(bank.get("min_rate_rub_usd", rate) or rate))
-        max_rate = max(min_rate, int(bank.get("max_rate_rub_usd", rate) or rate))
-        history_summary = bank.get("rate_history_1h_summary", {}) or {}
-        hour_min = max(1, int(history_summary.get("min", min_rate) or min_rate))
-        hour_max = max(hour_min, int(history_summary.get("max", max_rate) or max_rate))
-        hour_spread = max(1, hour_max - hour_min)
-
-        # High rate means bad USD buy price (more RUB for 1 USD).
-        # Use last-hour range (not global min/max), so rising local peaks are blocked reliably.
-        near_hour_top = rate >= (hour_min + int(hour_spread * 0.75))
-
-        next_unlock = summary.get("next_unlock") or {}
-        target_usd = int(next_unlock.get("target_usd", 0) or 0)
-        player_usd = int(player.get("usd", 0) or 0)
-        player_rub = int(player.get("rub", 0) or 0)
-        effective_usd = float(player_usd) + float(player_rub) / max(1, rate)
-        urgent_unlock = bool(target_usd > 0 and effective_usd < target_usd)
-
-        mode = str((action.get("params") or {}).get("mode", "")).strip().lower()
-        amount = int((action.get("params") or {}).get("amount", 0) or 0)
-        micro_amount_trade = mode == "amount" and amount <= rate
-
-        # Hard guard: do not exchange near local highs unless unlock is truly blocked.
-        if near_hour_top and not urgent_unlock:
-            return {
-                "action": "wait",
-                "params": {},
-                "reason": "bad_rate_guard:exchange_bank",
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-
-        # Avoid 1$ micro-loop spam when there is no urgency.
-        if micro_amount_trade and player_rub >= rate * 3 and not urgent_unlock:
-            return {
-                "action": "wait",
-                "params": {},
-                "reason": "micro_exchange_guard",
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-
-        # Golden rule: no repetitive exchange loops without progressing unlocks.
-        last_actions = [
-            str(name).strip()
-            for name in (observation.get("momentum", {}).get("last_3_actions") or [])
-            if str(name).strip()
-        ]
-        if last_actions.count("exchange_bank") >= 2 and not urgent_unlock:
-            return {
-                "action": "wait",
-                "params": {},
-                "reason": "exchange_loop_guard",
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-
-        if (
-            remain_seats > 0
-            and int(best_income.get("affordable_quantity", 0) or 0) > 0
-            and payback_minutes <= 35
-        ):
-            quantity = max(
-                1,
-                min(
-                    int(best_income.get("affordable_quantity", 1) or 1),
-                    max(1, remain_seats),
-                ),
-            )
-            return {
-                "action": "buy_rarity_animal",
-                "params": {
-                    "animal": best_income.get("animal"),
-                    "rarity": best_income.get("rarity"),
-                    "quantity": quantity,
-                },
-                "reason": "roi_priority_reroute:exchange_bank",
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-
-    if action["action"] == "wait" and fallback:
-        fallback_action = str(fallback.get("action", "")).strip()
-        eta_seconds = fallback.get("eta_seconds")
-        if (
-            fallback_action
-            and fallback_action not in blocked_actions
-            and fallback_action != "wait"
-            and (eta_seconds is None or int(eta_seconds or 0) <= settings.step_seconds)
-        ):
-            return {
-                "action": fallback_action,
-                "params": fallback.get("params", {}) or {},
-                "reason": f"guardrail_no_idle:{fallback.get('reason', '')}"[:300],
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-
-    if action["action"] == "wait":
-        summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
-        best_income = summary.get("best_income_option") or {}
-        if (
-            remain_seats > 0
-            and int(best_income.get("affordable_quantity", 0) or 0) > 0
-            and best_income.get("animal")
-            and best_income.get("rarity")
-        ):
-            quantity = max(
-                1,
-                min(
-                    int(best_income.get("affordable_quantity", 1) or 1),
-                    max(1, remain_seats),
-                ),
-            )
-            return {
-                "action": "buy_rarity_animal",
-                "params": {
-                    "animal": best_income.get("animal"),
-                    "rarity": best_income.get("rarity"),
-                    "quantity": quantity,
-                },
-                "reason": "guardrail_no_idle_buy",
-                "sleep_seconds": action.get("sleep_seconds"),
-            }
-
+    # Guardrails disabled by operator request: execute validated LLM action as-is.
     return action
 
 

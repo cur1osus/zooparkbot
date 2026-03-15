@@ -30,12 +30,12 @@ router = Router()
 flags = {"throttling_key": "default"}
 
 SECTION_LABELS = {
-    "overview": "Обзор",
-    "tactics": "Такт.",
-    "goals": "Цели",
-    "reflections": "Рефл.",
-    "events": "Событ.",
-    "relationships": "Связи",
+    "overview": "🧭 Обзор",
+    "tactics": "⚙️ Такт.",
+    "goals": "🎯 Цели",
+    "reflections": "🪞 Рефл.",
+    "events": "🗂 Событ.",
+    "relationships": "🤝 Связи",
 }
 
 MAX_ADMIN_TEXT = 3900
@@ -227,12 +227,12 @@ def _append_pager_buttons(
 
     buttons = []
     if total_pages > 3:
-        buttons.append(("<<", callback_factory(1)))
-    buttons.append(("<", callback_factory(max(1, page - 1))))
+        buttons.append(("⏮", callback_factory(1)))
+    buttons.append(("◀️", callback_factory(max(1, page - 1))))
     buttons.append((f"{page}/{total_pages}", AdminHistoryNoopCallback(page=page)))
-    buttons.append((">", callback_factory(min(total_pages, page + 1))))
+    buttons.append(("▶️", callback_factory(min(total_pages, page + 1))))
     if total_pages > 3:
-        buttons.append((">>", callback_factory(total_pages)))
+        buttons.append(("⏭", callback_factory(total_pages)))
 
     for text, callback_data in buttons:
         builder.button(text=text, callback_data=callback_data)
@@ -326,11 +326,11 @@ def _build_admin_panel_keyboard(npcs: list[User]):
     builder = InlineKeyboardBuilder()
     row_sizes = [2]
     builder.button(
-        text="История",
+        text="📜 История",
         callback_data=AdminHistoryListCallback(page=1),
     )
     builder.button(
-        text="Обновить",
+        text="🔄 Обновить",
         callback_data=AdminPanelCallback(action=AdminPanelAction.REFRESH),
     )
     for npc in npcs:
@@ -373,11 +373,11 @@ def _build_user_history_list_keyboard(users: list[User], page: int, total_pages:
     if nav_size:
         row_sizes.append(nav_size)
     builder.button(
-        text="К NPC",
+        text="🤖 К NPC",
         callback_data=AdminPanelCallback(action=AdminPanelAction.LIST),
     )
     builder.button(
-        text="Обновить",
+        text="🔄 Обновить",
         callback_data=AdminHistoryListCallback(page=page),
     )
     row_sizes.append(2)
@@ -418,11 +418,11 @@ def _build_user_history_keyboard(
     if nav_size:
         row_sizes.append(nav_size)
     builder.button(
-        text="К списку",
+        text="📋 К списку",
         callback_data=AdminHistoryListCallback(page=list_page),
     )
     builder.button(
-        text="В начало",
+        text="⏮ В начало",
         callback_data=AdminHistoryUserCallback(
             user_idpk=target_user.idpk,
             page=1,
@@ -445,7 +445,7 @@ def _build_user_event_detail_keyboard(
     nav_size = 0
     if index > 0:
         builder.button(
-            text="< Новее",
+            text="⬅️ Новее",
             callback_data=AdminHistoryEventCallback(
                 user_idpk=target_user.idpk,
                 event_index=index - 1,
@@ -456,7 +456,7 @@ def _build_user_event_detail_keyboard(
         nav_size += 1
     if index + 1 < len(entries):
         builder.button(
-            text="Старее >",
+            text="Старее ➡️",
             callback_data=AdminHistoryEventCallback(
                 user_idpk=target_user.idpk,
                 event_index=index + 1,
@@ -466,7 +466,7 @@ def _build_user_event_detail_keyboard(
         )
         nav_size += 1
     builder.button(
-        text="К истории",
+        text="🧾 К истории",
         callback_data=AdminHistoryUserCallback(
             user_idpk=target_user.idpk,
             page=return_page,
@@ -474,7 +474,7 @@ def _build_user_event_detail_keyboard(
         ),
     )
     builder.button(
-        text="К списку",
+        text="📋 К списку",
         callback_data=AdminHistoryListCallback(page=list_page),
     )
     row_sizes = []
@@ -598,14 +598,14 @@ def _build_admin_npc_keyboard(npc: User, section: str):
         )
     row_sizes.extend([2, 2, 2])
     builder.button(
-        text="Разбудить",
+        text="⚡ Разбудить",
         callback_data=AdminNpcCallback(
             npc_idpk=npc.idpk,
             section=AdminNpcSection.WAKE,
         ),
     )
     builder.button(
-        text="К списку",
+        text="📋 К списку",
         callback_data=AdminPanelCallback(action=AdminPanelAction.LIST),
     )
     row_sizes.append(2)
@@ -690,9 +690,7 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
         f"- ETA: {(latest_plan.get('next_unlock') or {}).get('eta_seconds', '-')}",
         "",
         "Guard:",
-        f"- Idle streak: {latest_guard.get('idle_streak', 0)}",
-        f"- Blocked: {', '.join(latest_guard.get('blocked_actions', [])[:4]) or '-'}",
-        f"- Fallback: {(latest_guard.get('fallback') or {}).get('action', '-')}",
+        "- disabled",
         "",
         "Соперники:",
     ]
@@ -794,11 +792,7 @@ async def _build_tactics_text(session: AsyncSession, npc: User) -> str:
         lines.append("- нет")
     lines.append("")
     lines.append("Анти-луп:")
-    lines.append(
-        f"- blocked: {', '.join(latest_guard.get('blocked_actions', [])[:4]) or '-'}"
-    )
-    lines.append(f"- repeated: {latest_guard.get('repeated_action', '-')}")
-    lines.append(f"- idle streak: {latest_guard.get('idle_streak', 0)}")
+    lines.append("- disabled")
     lines.append("")
     lines.append("Действия:")
     ranked_actions = sorted(

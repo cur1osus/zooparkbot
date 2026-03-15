@@ -569,7 +569,6 @@ class NpcDecisionClient:
             "model": (model_override or self.settings.model),
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -578,6 +577,11 @@ class NpcDecisionClient:
                 },
             ],
         }
+        # Gonka gateway may reject OpenAI response_format=json_object in some routes.
+        # Keep strict JSON mode for other providers, disable only for Gonka-compatible base URLs.
+        target_base = (base_url_override or self.settings.base_url).lower()
+        if "gonka" not in target_base:
+            payload["response_format"] = {"type": "json_object"}
         timeout = aiohttp.ClientTimeout(total=self.settings.timeout_seconds)
         headers = {
             "Authorization": f"Bearer {api_key_override or self.settings.api_key}",

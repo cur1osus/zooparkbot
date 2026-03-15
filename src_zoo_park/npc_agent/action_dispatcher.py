@@ -36,6 +36,7 @@ from tools.unity import get_unity_idpk
 
 from tools import add_to_currency, add_user_to_used, gen_key, in_used
 from tools.value import get_value
+from tools.unity_projects import contribute_to_project, get_user_chests, open_user_chests
 
 from .client import NpcDecisionClient
 from .settings import settings
@@ -107,6 +108,8 @@ async def execute_action(
         "upgrade_unity_level": execute_upgrade_unity_level,
         "review_unity_request": execute_review_unity_request,
         "exit_from_unity": execute_exit_from_unity,
+        "contribute_clan_project": execute_contribute_clan_project,
+        "open_clan_chest": execute_open_clan_chest,
         "send_chat_transfer": execute_send_chat_transfer,
         "claim_chat_transfer": execute_claim_chat_transfer,
         "create_chat_game": execute_create_chat_game,
@@ -998,6 +1001,76 @@ async def execute_review_unity_request(
     await session.delete(request)
     return {"status": "ok", "summary": f"accept_unity_request:{applicant.nickname}"}
 
+
+
+
+async def execute_contribute_clan_project(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    unity_idpk = int(get_unity_idpk(user.current_unity) or 0)
+    if not unity_idpk:
+        return {"status": "error", "summary": "no_unity"}
+    unity = await session.get(Unity, unity_idpk)
+    if not unity:
+        return {"status": "error", "summary": "unity_not_found"}
+
+    rub = max(0, int(params.get("rub", 0) or 0))
+    usd = max(0, int(params.get("usd", 0) or 0))
+    if rub == 0 and usd == 0:
+        rub = min(int(user.rub or 0), 50_000)
+        usd = min(int(user.usd or 0), 5_000)
+
+    ok, msg, project = await contribute_to_project(
+        session=session,
+        user=user,
+        unity=unity,
+        rub=rub,
+        usd=usd,
+    )
+    if not ok:
+        return {"status": "skipped", "summary": f"project_contribution_skipped:{msg}"}
+
+    pr = project.get("progress", {})
+    tg = project.get("target", {})
+    return {
+        "status": "ok",
+        "summary": (
+            f"project_contribution:+{rub}RUB +{usd}USD | "
+            f"progress rub {int(pr.get('rub',0))}/{int(tg.get('rub',0))}, "
+            f"usd {int(pr.get('usd',0))}/{int(tg.get('usd',0))}"
+        ),
+    }
+
+
+async def execute_open_clan_chest(
+    session: AsyncSession,
+    user: User,
+    params: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    chest_type = str(params.get("chest_type", "best") or "best").strip().lower()
+    kwargs = {"open_common": 0, "open_rare": 0, "open_epic": 0}
+    if chest_type == "common":
+        kwargs["open_common"] = 1
+    elif chest_type == "rare":
+        kwargs["open_rare"] = 1
+    elif chest_type == "epic":
+        kwargs["open_epic"] = 1
+
+    ok, msg, balance, rewards = await open_user_chests(session=session, user=user, **kwargs)
+    if not ok:
+        return {"status": "skipped", "summary": f"open_chest_skipped:{msg}"}
+
+    return {
+        "status": "ok",
+        "summary": (
+            f"open_chest:{chest_type} +{int(rewards.get('rub',0))}RUB +{int(rewards.get('usd',0))}USD | "
+            f"left c:{int(balance.get('common',0))} r:{int(balance.get('rare',0))} e:{int(balance.get('epic',0))}"
+        ),
+    }
 
 async def execute_exit_from_unity(
     session: AsyncSession,
