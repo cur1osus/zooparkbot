@@ -5,6 +5,7 @@ import json
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.callbacks import (
     AccountBackCallback,
     AccountBackTarget,
@@ -37,6 +38,78 @@ from tools import (
     income_,
     synchronize_info_about_items,
 )
+from tools.unity_projects import get_user_chests, open_user_chests, _income_scale
+
+
+
+
+async def _account_text(session: AsyncSession, user: User) -> str:
+    return await get_text_message(
+        "account_info",
+        nn=user.nickname,
+        rub=user.rub,
+        usd=user.usd,
+        pawc=user.paw_coins,
+        income=await income_(session=session, user=user),
+    )
+
+
+def _chests_menu_kb(balance: dict[str, int]):
+    b = InlineKeyboardBuilder()
+    b.button(text=f"🟤 Обычный ({int(balance.get('common',0))})", callback_data="open_chest:common")
+    b.button(text=f"🔵 Редкий ({int(balance.get('rare',0))})", callback_data="open_chest:rare")
+    b.button(text=f"🟣 Эпический ({int(balance.get('epic',0))})", callback_data="open_chest:epic")
+    b.button(text="⬅️ Назад", callback_data="open_chests_back")
+    b.adjust(1, 1, 1, 1)
+    return b.as_markup()
+
+
+def _chests_menu_text() -> str:
+    return "🎁 Меню сундуков\n\nВыбери тип сундука:" 
+
+
+def _scaled_ranges(kind: str, income_per_min: int) -> tuple[tuple[int,int], tuple[int,int], str]:
+    scale = _income_scale(int(income_per_min or 0))
+    if kind == "common":
+        rub = (int(15_000 * scale), int(60_000 * scale))
+        usd = (int(80 * scale), int(260 * scale))
+        animal = "Шанс на животное: 15%\nРедкость: редкое 90% / эпическое 10%"
+    elif kind == "rare":
+        rub = (int(80_000 * scale), int(260_000 * scale))
+        usd = (int(400 * scale), int(1400 * scale))
+        animal = "Шанс на животное: 35%\nРедкость: редкое 65% / эпическое 30% / мифическое 5%"
+    else:
+        rub = (int(300_000 * scale), int(900_000 * scale))
+        usd = (int(1500 * scale), int(5000 * scale))
+        animal = "Шанс на животное: 60%\nРедкость: эпическое 55% / мифическое 35% / легендарное 10%"
+    return rub, usd, animal
+
+
+def _chest_title(kind: str) -> str:
+    return {
+        "common": "🟤 Обычный сундук",
+        "rare": "🔵 Редкий сундук",
+        "epic": "🟣 Эпический сундук",
+    }.get(kind, "🎁 Сундук")
+
+
+def _chest_info_text(kind: str, income_per_min: int) -> str:
+    rub, usd, animal = _scaled_ranges(kind, income_per_min)
+    return (
+        f"{_chest_title(kind)}\n\n"
+        f"Выплата: {rub[0]:,}–{rub[1]:,} рублей\n"
+        f"Выплата: {usd[0]:,}–{usd[1]:,} долларов\n\n"
+        f"{animal}"
+    ).replace(",", " ")
+
+
+def _chest_info_kb(kind: str):
+    b = InlineKeyboardBuilder()
+    b.button(text="🎁 Открыть сундук", callback_data=f"open_chest_do:{kind}")
+    b.button(text="⬅️ К меню сундуков", callback_data="open_chests")
+    b.adjust(1, 1)
+    return b.as_markup()
+
 
 flags = {"throttling_key": "default"}
 router = Router()
@@ -209,14 +282,7 @@ async def process_back_to_menu(
     match back_to:
         case AccountBackTarget.account:
             await query.message.edit_text(
-                text=await get_text_message(
-                    "account_info",
-                    nn=user.nickname,
-                    rub=user.rub,
-                    usd=user.usd,
-                    pawc=user.paw_coins,
-                    income=await income_(session=session, user=user),
-                ),
+                text=await _account_text(session=session, user=user),
                 reply_markup=await ik_account_menu(),
             )
         case AccountBackTarget.items:
@@ -375,3 +441,87 @@ async def sell_item_yes(
             page=page,
         ),
     )
+
+
+
+
+@router.callback_query(UserState.main_menu, F.data == "open_chests")
+async def open_chests_menu(query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User):
+    balance = await get_user_chests(session=session, user_idpk=user.idpk)
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(
+            text=_chests_menu_text(),
+            reply_markup=_chests_menu_kb(balance),
+        )
+    await query.answer()
+
+
+@router.callback_query(UserState.main_menu, F.data == "open_chests_back")
+async def open_chests_back(query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User):
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(
+            text=await _account_text(session=session, user=user),
+            reply_markup=await ik_account_menu(),
+        )
+    await query.answer()
+
+
+@router.callback_query(UserState.main_menu, F.data.startswith("open_chest:"))
+async def chest_info_screen(query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User):
+    kind = (query.data or "").split(":", 1)[-1]
+    if kind not in {"common", "rare", "epic"}:
+        await query.answer("Неизвестный тип сундука", show_alert=True)
+        return
+    income_per_min = int(await income_(session=session, user=user))
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(
+            text=_chest_info_text(kind, income_per_min),
+            reply_markup=_chest_info_kb(kind),
+        )
+    await query.answer()
+
+
+@router.callback_query(UserState.main_menu, F.data.startswith("open_chest_do:"))
+async def open_chest_do(query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User):
+    kind = (query.data or "").split(":", 1)[-1]
+    kwargs = {"open_common": 0, "open_rare": 0, "open_epic": 0}
+    if kind == "common":
+        kwargs["open_common"] = 1
+    elif kind == "rare":
+        kwargs["open_rare"] = 1
+    elif kind == "epic":
+        kwargs["open_epic"] = 1
+    else:
+        await query.answer("Неизвестный тип сундука", show_alert=True)
+        return
+
+    ok, msg, balance, rewards = await open_user_chests(session=session, user=user, **kwargs)
+    await session.commit()
+    if not ok:
+        await query.answer(msg, show_alert=True)
+        return
+
+    animals = rewards.get("animals", []) or []
+    animal_line = ""
+    if animals:
+        an_text = ", ".join([f"{d.get('code_name')} x{int(d.get('quantity',0) or 0)}" for d in animals])
+        animal_line = f"\n🐾 Животные: {an_text}"
+
+    result_text = (
+        f"✅ Открыт сундук: {_chest_title(kind)}\n"
+        f"+{int(rewards.get('rub',0))} рублей\n"
+        f"+{int(rewards.get('usd',0))} долларов"
+        f"{animal_line}"
+    )
+
+    # separate message with reward result
+    with contextlib.suppress(Exception):
+        await query.message.answer(result_text)
+
+    # keep menu message as menu with updated counts
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(
+            text=_chests_menu_text(),
+            reply_markup=_chests_menu_kb(balance),
+        )
+    await query.answer("Сундук открыт")

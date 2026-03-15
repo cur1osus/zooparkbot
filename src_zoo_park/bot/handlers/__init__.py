@@ -33,6 +33,7 @@ def setup_message_routers() -> Router:
         start,
         top,
         unity,
+        unity_project,
         unity_level,
         unity_members,
         unity_top,
@@ -55,6 +56,7 @@ def setup_message_routers() -> Router:
     router.include_router(referrals.router)
     router.include_router(zoomarket.router)
     router.include_router(unity.router)
+    router.include_router(unity_project.router)
     router.include_router(unity_level.router)
     router.include_router(unity_members.router)
     router.include_router(unity_top.router)

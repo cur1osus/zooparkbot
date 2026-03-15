@@ -3,7 +3,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from config import ADMIN_ID
 
 
-ADMIN_PANEL_BUTTON = "Админ"
+ADMIN_PANEL_BUTTON = "👑 Админ"
 
 
 async def rk_main_menu(user_id: int | None = None):
@@ -18,7 +18,7 @@ async def rk_main_menu(user_id: int | None = None):
         builder.button(text=ADMIN_PANEL_BUTTON)
 
     if user_id == ADMIN_ID:
-        builder.adjust(3, 2, 1, 1)
+        builder.adjust(3, 2, 2)
     else:
         builder.adjust(3, 2, 1)
     return builder.as_markup(resize_keyboard=True)
@@ -41,8 +41,14 @@ async def rk_unity_menu():
     builder.button(text=await tools.get_text_button("level"))
     builder.button(text=await tools.get_text_button("unity_members"))
     builder.button(text=await tools.get_text_button("top_unity"))
+    builder.button(text="🏗 Проект клана")
     builder.button(text=await tools.get_text_button("exit_from_unity"))
     builder.button(text=await tools.get_text_button("back"))
 
-    builder.adjust(3, 2)
+    builder.adjust(3, 2, 1)
     return builder.as_markup(resize_keyboard=True)
+
+
+async def ik_empty_inline():
+    builder = InlineKeyboardBuilder()
+    return builder.as_markup()

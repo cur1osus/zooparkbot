@@ -338,7 +338,8 @@ async def ik_account_menu():
         text=await tools.get_text_button("referrals_system"),
         callback_data="referrals_system",
     )
-    builder.adjust(2, 2)
+    builder.button(text="🎁 Открыть сундуки", callback_data="open_chests")
+    builder.adjust(2, 2, 1)
     return builder.as_markup()
 
 

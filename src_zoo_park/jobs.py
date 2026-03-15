@@ -42,6 +42,7 @@ from tools import (
     factory_text_account_animals,
     formatter,
 )
+from tools.unity_projects import settle_all_due_projects
 
 job_minute_lock = asyncio.Lock()
 
@@ -82,6 +83,7 @@ async def job_minute() -> None:
             await update_rate_bank(session=session)
             await check_inaction(session=session)
             await deleter_request_to_unity(session=session)
+            await settle_all_due_projects(session=session)
             await session.commit()
 
 

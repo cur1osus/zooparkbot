@@ -16,6 +16,8 @@ class UserState(StatesGroup):
     game = State()
     send_mess_to_support = State()
     answer_on_question = State()
+    unity_project_custom_rub = State()
+    unity_project_custom_usd = State()
 
 
 class AdminState(StatesGroup):
