@@ -183,32 +183,43 @@ def _render_usage_plot_24h(stats: dict) -> str:
     if not by_hour:
         raise ValueError("Нет данных для графика")
 
-    hours = sorted(by_hour.keys())
-    # Keep visual exactly like reference: compact last 4 active points
-    if len(hours) > 4:
-        hours = hours[-4:]
+    # Reference-like layout: exactly last 4 wall-clock hours (e.g. 18:00..21:00)
+    now_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
+    hours = [now_hour - timedelta(hours=3 - i) for i in range(4)]
 
-    prompt_vals = [int(by_hour[h]["prompt"]) for h in hours]
-    completion_vals = [int(by_hour[h]["completion"]) for h in hours]
-    total_vals = [int(by_hour[h]["total"]) for h in hours]
+    prompt_vals = [int((by_hour.get(h) or {}).get("prompt", 0)) for h in hours]
+    completion_vals = [int((by_hour.get(h) or {}).get("completion", 0)) for h in hours]
+    total_vals = [int((by_hour.get(h) or {}).get("total", 0)) for h in hours]
+
+    # If no calls in current 4-hour window, fallback to last 4 active hours
+    if sum(total_vals) <= 0:
+        active_hours = sorted(by_hour.keys())
+        if active_hours:
+            hours = active_hours[-4:]
+            prompt_vals = [int((by_hour.get(h) or {}).get("prompt", 0)) for h in hours]
+            completion_vals = [int((by_hour.get(h) or {}).get("completion", 0)) for h in hours]
+            total_vals = [int((by_hour.get(h) or {}).get("total", 0)) for h in hours]
+
     labels = [h.strftime("%H:%M") for h in hours]
     x = list(range(len(hours)))
 
-    # Match reference style 1:1 (single panel, dark canvas, light chart area)
     fig, ax = plt.subplots(figsize=(16.0, 5.9), facecolor="#202124")
     ax.set_facecolor("#d9d9d9")
 
-    bar_prompt = ax.bar(x, prompt_vals, width=0.8, color="#4f79d8", alpha=0.78, label="prompt")
+    bar_prompt = ax.bar(x, prompt_vals, width=0.8, color="#4e73c8", alpha=0.82, label="prompt")
     bar_completion = ax.bar(
         x,
         completion_vals,
         width=0.8,
         bottom=prompt_vals,
-        color="#63d1ae",
-        alpha=0.78,
+        color="#66d1b1",
+        alpha=0.82,
         label="completion",
     )
-    (line_total,) = ax.plot(x, total_vals, color="#1a1a1a", linewidth=1.6, label="total")
+    (line_total,) = ax.plot(x, total_vals, color="#1f1f1f", linewidth=1.6, label="total")
+
+    max_y = max(1, max(total_vals) if total_vals else 1)
+    ax.set_ylim(0, max_y * 1.05)
 
     ax.set_title("NPC LLM usage за последние 24ч", fontsize=17, pad=6)
     ax.set_ylabel("tokens", fontsize=12)
@@ -216,8 +227,13 @@ def _render_usage_plot_24h(stats: dict) -> str:
     ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.grid(True, axis="y", linestyle="-", linewidth=0.8, alpha=0.20, color="#9a9a9a")
 
-    # Legend order: total, prompt, completion
-    ax.legend(handles=[line_total, bar_prompt, bar_completion], loc="upper left", frameon=True, facecolor="#efefef", framealpha=0.85)
+    ax.legend(
+        handles=[line_total, bar_prompt, bar_completion],
+        loc="upper left",
+        frameon=True,
+        facecolor="#efefef",
+        framealpha=0.85,
+    )
 
     fig.subplots_adjust(left=0.06, right=0.985, top=0.90, bottom=0.30)
     USAGE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
