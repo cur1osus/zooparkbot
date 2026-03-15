@@ -20,14 +20,46 @@ flags = {"throttling_key": "default"}
 PROJECT_BUTTON_TEXT = "🏗 Проект клана"
 
 
-def _kb():
+def _remaining_by_currency(project: dict) -> tuple[int, int]:
+    progress = project.get("progress", {}) or {}
+    target = project.get("target", {}) or {}
+    rub_left = max(0, int(target.get("rub", 0)) - int(progress.get("rub", 0)))
+    usd_left = max(0, int(target.get("usd", 0)) - int(progress.get("usd", 0)))
+    return rub_left, usd_left
+
+
+def _kb(project: dict):
     b = InlineKeyboardBuilder()
-    b.button(text="💸 +100k RUB", callback_data="clprj:rub:100000")
-    b.button(text="💵 +10k USD", callback_data="clprj:usd:10000")
-    b.button(text="Ввести RUB ⌨️", callback_data="clprj:custom:rub")
-    b.button(text="Ввести USD ⌨️", callback_data="clprj:custom:usd")
+
+    rub_left, usd_left = _remaining_by_currency(project)
+    rub_step = min(100_000, rub_left)
+    usd_step = min(10_000, usd_left)
+
+    if rub_step > 0:
+        b.button(text=f"💸 +{rub_step:,} RUB".replace(",", " "), callback_data=f"clprj:rub:{rub_step}")
+    else:
+        b.button(text="✅ RUB цель закрыта", callback_data="clprj:noop:rub")
+
+    if usd_step > 0:
+        b.button(text=f"💵 +{usd_step:,} USD".replace(",", " "), callback_data=f"clprj:usd:{usd_step}")
+    else:
+        b.button(text="✅ USD цель закрыта", callback_data="clprj:noop:usd")
+
+    if rub_left > 0:
+        b.button(text="Ввести RUB ⌨️", callback_data="clprj:custom:rub")
+    if usd_left > 0:
+        b.button(text="Ввести USD ⌨️", callback_data="clprj:custom:usd")
+
     b.button(text="🔄 Обновить", callback_data="clprj:refresh")
-    b.adjust(2, 2, 1)
+
+    custom_count = int(rub_left > 0) + int(usd_left > 0)
+    if custom_count == 2:
+        b.adjust(2, 2, 1)
+    elif custom_count == 1:
+        b.adjust(2, 1, 1)
+    else:
+        b.adjust(2, 1)
+
     return b.as_markup()
 
 
@@ -44,7 +76,7 @@ async def open_project(message: Message, session: AsyncSession, user: User):
     project = await get_or_create_project(session=session, unity=unity)
     active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
     await session.commit()
-    await message.answer(format_project_text(project, active_buff), reply_markup=_kb())
+    await message.answer(format_project_text(project, active_buff), reply_markup=_kb(project))
 
 
 @router.callback_query(StateFilter(UserState.unity_menu), F.data.startswith("clprj:"))
@@ -76,8 +108,18 @@ async def on_project_cb(query: CallbackQuery, session: AsyncSession, user: User,
         project = await get_or_create_project(session=session, unity=unity)
         active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
         await session.commit()
-        await query.message.edit_text(format_project_text(project, active_buff), reply_markup=_kb())
+        await query.message.edit_text(format_project_text(project, active_buff), reply_markup=_kb(project))
         await query.answer("Обновлено")
+        return
+
+    if action == "noop":
+        currency = parts[2] if len(parts) > 2 else ""
+        if currency == "rub":
+            await query.answer("Цель по RUB уже закрыта")
+        elif currency == "usd":
+            await query.answer("Цель по USD уже закрыта")
+        else:
+            await query.answer("Эта цель уже закрыта")
         return
 
     currency = action
@@ -97,7 +139,7 @@ async def on_project_cb(query: CallbackQuery, session: AsyncSession, user: User,
         return
 
     active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
-    await query.message.edit_text(format_project_text(project, active_buff), reply_markup=_kb())
+    await query.message.edit_text(format_project_text(project, active_buff), reply_markup=_kb(project))
     await query.answer(msg)
 
 
@@ -138,7 +180,7 @@ async def _handle_custom_contribution(message: Message, session: AsyncSession, u
     await message.answer(msg)
     if ok:
         active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
-        await message.answer(format_project_text(project, active_buff), reply_markup=_kb())
+        await message.answer(format_project_text(project, active_buff), reply_markup=_kb(project))
         await state.set_state(UserState.unity_menu)
 
 
