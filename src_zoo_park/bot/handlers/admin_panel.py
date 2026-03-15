@@ -184,6 +184,10 @@ def _render_usage_plot_24h(stats: dict) -> str:
         raise ValueError("Нет данных для графика")
 
     hours = sorted(by_hour.keys())
+    # Keep visual exactly like reference: compact last 4 active points
+    if len(hours) > 4:
+        hours = hours[-4:]
+
     prompt_vals = [int(by_hour[h]["prompt"]) for h in hours]
     completion_vals = [int(by_hour[h]["completion"]) for h in hours]
     total_vals = [int(by_hour[h]["total"]) for h in hours]
@@ -191,31 +195,31 @@ def _render_usage_plot_24h(stats: dict) -> str:
     x = list(range(len(hours)))
 
     # Match reference style 1:1 (single panel, dark canvas, light chart area)
-    fig, ax = plt.subplots(figsize=(12.8, 5.2), facecolor="#1f1f1f")
-    ax.set_facecolor("#dcdcdc")
+    fig, ax = plt.subplots(figsize=(16.0, 5.9), facecolor="#202124")
+    ax.set_facecolor("#d9d9d9")
 
-    bar_prompt = ax.bar(x, prompt_vals, width=0.8, color="#4f79d8", alpha=0.80, label="prompt")
+    bar_prompt = ax.bar(x, prompt_vals, width=0.8, color="#4f79d8", alpha=0.78, label="prompt")
     bar_completion = ax.bar(
         x,
         completion_vals,
         width=0.8,
         bottom=prompt_vals,
         color="#63d1ae",
-        alpha=0.80,
+        alpha=0.78,
         label="completion",
     )
-    (line_total,) = ax.plot(x, total_vals, color="#1f1f1f", linewidth=1.6, label="total")
+    (line_total,) = ax.plot(x, total_vals, color="#1a1a1a", linewidth=1.6, label="total")
 
     ax.set_title("NPC LLM usage за последние 24ч", fontsize=17, pad=6)
-    ax.set_ylabel("tokens", fontsize=13)
+    ax.set_ylabel("tokens", fontsize=12)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.grid(True, axis="y", linestyle="-", alpha=0.22)
+    ax.grid(True, axis="y", linestyle="-", linewidth=0.8, alpha=0.20, color="#9a9a9a")
 
     # Legend order: total, prompt, completion
-    ax.legend(handles=[line_total, bar_prompt, bar_completion], loc="upper left", frameon=True)
+    ax.legend(handles=[line_total, bar_prompt, bar_completion], loc="upper left", frameon=True, facecolor="#efefef", framealpha=0.85)
 
-    fig.subplots_adjust(left=0.07, right=0.985, top=0.90, bottom=0.22)
+    fig.subplots_adjust(left=0.06, right=0.985, top=0.90, bottom=0.30)
     USAGE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     filename = USAGE_PLOT_DIR / f"usage24h_{uuid4().hex}.png"
     plt.savefig(filename, dpi=180, facecolor=fig.get_facecolor())
