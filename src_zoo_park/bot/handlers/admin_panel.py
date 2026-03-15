@@ -190,33 +190,35 @@ def _render_usage_plot_24h(stats: dict) -> str:
     labels = [h.strftime("%H:%M") for h in hours]
     x = list(range(len(hours)))
 
-    fig, ax = plt.subplots(figsize=(12.5, 6.2))
-    fig.patch.set_facecolor("#1f1f1f")
-    ax.set_facecolor("#e9e9e9")
+    # Match reference style 1:1 (single panel, dark canvas, light chart area)
+    fig, ax = plt.subplots(figsize=(12.8, 5.2), facecolor="#1f1f1f")
+    ax.set_facecolor("#dcdcdc")
 
-    bar_prompt = ax.bar(x, prompt_vals, color="#4b74c8", alpha=0.82, label="prompt")
+    bar_prompt = ax.bar(x, prompt_vals, width=0.8, color="#4f79d8", alpha=0.80, label="prompt")
     bar_completion = ax.bar(
         x,
         completion_vals,
+        width=0.8,
         bottom=prompt_vals,
-        color="#60d3b1",
-        alpha=0.82,
+        color="#63d1ae",
+        alpha=0.80,
         label="completion",
     )
-    (line_total,) = ax.plot(x, total_vals, color="#222222", linewidth=1.7, label="total")
+    (line_total,) = ax.plot(x, total_vals, color="#1f1f1f", linewidth=1.6, label="total")
 
-    ax.set_title("NPC LLM usage за последние 24ч", fontsize=14, color="black")
-    ax.set_ylabel("tokens")
+    ax.set_title("NPC LLM usage за последние 24ч", fontsize=17, pad=6)
+    ax.set_ylabel("tokens", fontsize=13)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.grid(True, axis="y", alpha=0.25)
+    ax.grid(True, axis="y", linestyle="-", alpha=0.22)
 
-    ax.legend(handles=[line_total, bar_prompt, bar_completion], loc="upper left")
+    # Legend order: total, prompt, completion
+    ax.legend(handles=[line_total, bar_prompt, bar_completion], loc="upper left", frameon=True)
 
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.07, right=0.985, top=0.90, bottom=0.22)
     USAGE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     filename = USAGE_PLOT_DIR / f"usage24h_{uuid4().hex}.png"
-    plt.savefig(filename, dpi=185, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(filename, dpi=180, facecolor=fig.get_facecolor())
     plt.close(fig)
     return str(filename)
 
