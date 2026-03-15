@@ -203,7 +203,7 @@ def _render_usage_plot_24h(stats: dict) -> str:
     labels = [h.strftime("%H:%M") for h in hours]
     x = list(range(len(hours)))
 
-    fig, ax = plt.subplots(figsize=(16.0, 5.9), facecolor="#202124")
+    fig, ax = plt.subplots(figsize=(16.0, 5.9), facecolor="#ffffff")
     ax.set_facecolor("#d9d9d9")
 
     bar_prompt = ax.bar(x, prompt_vals, width=0.8, color="#4e73c8", alpha=0.82, label="prompt")
@@ -238,7 +238,7 @@ def _render_usage_plot_24h(stats: dict) -> str:
     fig.subplots_adjust(left=0.06, right=0.985, top=0.90, bottom=0.30)
     USAGE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     filename = USAGE_PLOT_DIR / f"usage24h_{uuid4().hex}.png"
-    plt.savefig(filename, dpi=180, facecolor=fig.get_facecolor())
+    plt.savefig(filename, dpi=180, facecolor="#ffffff", bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
     return str(filename)
 
