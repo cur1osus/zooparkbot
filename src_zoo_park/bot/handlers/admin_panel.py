@@ -2,6 +2,7 @@ import json
 import math
 from datetime import datetime
 from enum import Enum
+from html import escape
 
 from aiogram import F, Router
 from aiogram.filters.callback_data import CallbackData
@@ -198,6 +199,16 @@ def _history_event_preview(event_text: str, limit: int = 56) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
+
+
+def _format_event_body_html(event_text: str, expandable: bool = False) -> str:
+    raw = str(event_text or "-").strip() or "-"
+    formatted = escape(raw)
+    formatted = formatted.replace(" | ", "\n")
+    formatted = formatted.replace(" -> ", "\n→ ")
+    formatted = formatted.replace("; ", ";\n")
+    quote_tag = "blockquote expandable" if expandable else "blockquote"
+    return f"<{quote_tag}>{formatted}</{quote_tag.split()[0]}>"
 
 
 def _build_npc_button_text(npc: User) -> str:
@@ -535,10 +546,10 @@ def _build_user_history_text(
         total_items=total_events,
     )
     lines = [
-        f"История: {target_user.nickname}",
-        f"TG ID: {target_user.id_user} · DB ID: {target_user.idpk}",
-        f"События: {total_events} · Показано: {range_start}-{range_end}",
-        f"Страница: {page}/{total_pages}",
+        f"<b>История:</b> {escape(str(target_user.nickname or '-'))}",
+        f"<code>TG {target_user.id_user}</code> · <code>DB {target_user.idpk}</code>",
+        f"<b>События:</b> {total_events} · <b>Показано:</b> {range_start}-{range_end}",
+        f"<b>Страница:</b> {page}/{total_pages}",
         "",
     ]
     if not page_entries:
@@ -546,9 +557,11 @@ def _build_user_history_text(
         return "\n".join(lines)
     for entry in page_entries:
         lines.append(
-            f"{entry['index'] + 1}. {entry['time'].strftime('%d.%m.%Y %H:%M:%S')}"
+            f"<b>{entry['index'] + 1}.</b> <code>{entry['time'].strftime('%d.%m.%Y %H:%M:%S')}</code>"
         )
-        lines.append(f"   {_history_event_preview(entry['event'], 140)}")
+        lines.append(
+            _format_event_body_html(_history_event_preview(entry["event"], 140))
+        )
     return "\n".join(lines)
 
 
@@ -559,11 +572,11 @@ def _build_user_event_detail_text(
 ) -> str:
     entry = entries[index]
     lines = [
-        f"Событие пользователя: {target_user.nickname}",
-        f"Запись: {index + 1}/{len(entries)}",
-        f"Время: {entry['time'].strftime('%d.%m.%Y %H:%M:%S.%f')}",
+        f"<b>Событие пользователя:</b> {escape(str(target_user.nickname or '-'))}",
+        f"<b>Запись:</b> <code>{index + 1}/{len(entries)}</code>",
+        f"<b>Время:</b> <code>{entry['time'].strftime('%d.%m.%Y %H:%M:%S.%f')}</code>",
         "",
-        str(entry["event"]),
+        _format_event_body_html(str(entry["event"]), expandable=True),
     ]
     return "\n".join(lines)
 
@@ -868,22 +881,32 @@ async def _build_reflection_text(session: AsyncSession, npc: User) -> str:
 
 async def _build_event_text(session: AsyncSession, npc: User) -> str:
     rows = await _get_memory_rows(session=session, npc=npc, kind=EVENT_KIND, limit=10)
-    lines = [f"События NPC: {npc.nickname}", ""]
+    lines = [f"<b>События NPC:</b> {escape(str(npc.nickname or '-'))}", ""]
     if not rows:
         lines.append("Событий пока нет.")
         return "\n".join(lines)
-    for row in rows:
+    for idx, row in enumerate(rows, start=1):
         payload = _load_payload(row)
         action = payload.get("action", {})
         result = payload.get("result", {})
         delta = payload.get("delta", {})
-        lines.append(f"- {_fmt_iso(payload.get('time'))}")
-        lines.append(f"  {action.get('name', '-')} · {result.get('status', '-')}")
-        lines.append(f"  {result.get('summary', '-')[:72]}")
+        lines.append(f"<b>{idx}.</b> <code>{_fmt_iso(payload.get('time'))}</code>")
         lines.append(
-            f"  dUSD {delta.get('usd', 0):+} · dIncome {delta.get('income_per_minute_rub', 0):+} · dAnimals {delta.get('animals', 0):+} · сон {action.get('sleep_seconds', '-')}"
+            f"<b>{escape(str(action.get('name', '-')))}</b> · <code>{escape(str(result.get('status', '-')))}</code>"
         )
-    return "\n".join(lines)
+        lines.append(
+            _format_event_body_html(str(result.get("summary", "-") or "-")[:180])
+        )
+        lines.append(
+            "<code>"
+            f"dUSD {int(delta.get('usd', 0) or 0):+} · "
+            f"dIncome {int(delta.get('income_per_minute_rub', 0) or 0):+} · "
+            f"dAnimals {int(delta.get('animals', 0) or 0):+} · "
+            f"сон {action.get('sleep_seconds', '-')}"
+            "</code>"
+        )
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 async def _build_relationship_text(session: AsyncSession, npc: User) -> str:

@@ -165,13 +165,17 @@ def _is_project_completed(payload: dict[str, Any]) -> bool:
     ) >= int(tg.get("usd", 0))
 
 
-def _reward_pool(success: bool, ratio: float, member_count: int) -> dict[str, int]:
+def _reward_pool(
+    success: bool, ratio: float, member_count: int, level: int
+) -> dict[str, int]:
     member_count = max(1, int(member_count or 1))
+    level = max(1, int(level or 1))
     size_scale = min(1.0, 0.12 + 0.18 * member_count)
+    level_scale = min(1.8, 1.0 + 0.15 * max(0, level - 1))
     full = {
-        "common": max(2, int(math.floor(12 * size_scale))),
-        "rare": max(1, int(math.floor(5 * size_scale))),
-        "epic": max(0, int(math.floor(2 * size_scale))),
+        "common": max(2, int(math.floor(12 * size_scale * level_scale))),
+        "rare": max(1, int(math.floor(5 * size_scale * level_scale))),
+        "epic": max(0, int(math.floor(2 * size_scale * level_scale))),
     }
     if success:
         return full
@@ -183,14 +187,22 @@ def _reward_pool(success: bool, ratio: float, member_count: int) -> dict[str, in
 
 def get_project_reward_preview(project: dict[str, Any]) -> dict[str, Any]:
     member_count = max(1, int(project.get("member_count", 1) or 1))
+    level = max(1, int(project.get("level", 1) or 1))
     ratio = _calc_ratio(project)
     return {
         "member_count": member_count,
-        "success": _reward_pool(success=True, ratio=1.0, member_count=member_count),
+        "level": level,
+        "success": _reward_pool(
+            success=True,
+            ratio=1.0,
+            member_count=member_count,
+            level=level,
+        ),
         "current": _reward_pool(
             success=False,
             ratio=ratio,
             member_count=member_count,
+            level=level,
         ),
         "mvp_epic_bonus": 1,
     }
@@ -240,6 +252,7 @@ async def settle_project_if_due(
             success=completed,
             ratio=ratio,
             member_count=int(project.get("member_count", 1) or 1),
+            level=int(project.get("level", 1) or 1),
         )
         for chest_kind, chest_count in pool.items():
             if chest_count <= 0:
@@ -396,8 +409,6 @@ def format_project_text(
     member_count = int(project.get("member_count", 1) or 1)
     if member_count < 1:
         member_count = 1
-    difficulty_factor = float(project.get("difficulty_factor", 1.0) or 1.0)
-
     bar_length = 10
     filled_length = int(bar_length * ratio)
     bar = "█" * filled_length + "░" * (bar_length - filled_length)
@@ -428,17 +439,11 @@ def format_project_text(
 
     board_text = ""
     if top_3:
-        board_text = "\n\n🏆 <b>Топ вкладчиков:</b>\n"
         medals = ["🥇", "🥈", "🥉"]
+        leaders = []
         for idx, entry in enumerate(top_3):
-            # Try to show how much they contributed roughly
-            contrib_str = []
-            if entry["usd"] > 0:
-                contrib_str.append(f"{entry['usd']:,}".replace(",", " ") + " USD")
-            if entry["rub"] > 0:
-                contrib_str.append(f"{entry['rub']:,}".replace(",", " ") + " RUB")
-            c_text = " + ".join(contrib_str) if contrib_str else "0"
-            board_text += f"{medals[idx]} {entry['name']} — <i>{c_text}</i>\n"
+            leaders.append(f"{medals[idx]} {entry['name']}")
+        board_text = "\n🏆 Лидеры: " + ", ".join(leaders)
 
     # Display prospective project buff
     buff_type = project.get("buff", "")
@@ -460,36 +465,28 @@ def format_project_text(
     reward_preview = get_project_reward_preview(project)
     success_pool = reward_preview["success"]
     current_fail_pool = reward_preview["current"]
+    reward_success_text = f"{success_pool['common']} обычн. / {success_pool['rare']} редк. / {success_pool['epic']} эпик"
+    reward_current_text = f"{current_fail_pool['common']} обычн. / {current_fail_pool['rare']} редк. / {current_fail_pool['epic']} эпик"
     reward_lines = [
-        "🎁 <b>Награды проекта:</b>",
-        f"Масштаб наград зависит от размера клана. Сейчас участников: {member_count}",
-        "Для полного закрытия проекта нужно выполнить обе цели: и по RUB, и по USD",
-        (
-            "За успех вкладчики делят: "
-            f"обычн {success_pool['common']}, редк {success_pool['rare']}, эпик {success_pool['epic']}"
-        ),
-        f"Бафф клана на 72 часа: {buff_desc_map.get(buff_type, buff_type)}",
-        "MVP получает +1 эпический сундук",
+        "🎁 <b>Награда:</b>",
+        f"За успех: {reward_success_text}",
+        f"Бафф клана: {buff_desc_map.get(buff_type, buff_type)}",
+        "MVP: +1 эпич. сундук",
     ]
     if raw_status == "active":
-        reward_lines.append(
-            "Если проект закончится сейчас, вкладчики получат: "
-            f"обычн {current_fail_pool['common']}, редк {current_fail_pool['rare']}, эпик {current_fail_pool['epic']}"
-        )
+        reward_lines.append(f"Если время выйдет сейчас: {reward_current_text}")
     reward_text = "\n".join(reward_lines)
 
     return (
         f"🏗 Клан-проект: {project.get('name', 'Заповедник')} L{int(project.get('level', 1))}\n"
-        f"Статус: {status}\n"
-        f"Участников в клане: {member_count} | Сложность цели: x{difficulty_factor:.2f}\n"
-        f"Дедлайн: {ends[:16].replace('T', ' ')}\n\n"
+        f"До: {ends[:16].replace('T', ' ')} | {status}\n\n"
         f"{active_buff_str}"
         f"{buff_str}"
+        f"Нужно закрыть обе цели: RUB и USD\n"
         f"RUB: {rub_pr} / {rub_tg}\n"
         f"USD: {usd_pr} / {usd_tg}\n"
         f"Прогресс: [{bar}] {ratio * 100:.1f}%{board_text}\n\n"
-        f"{reward_text}\n\n"
-        f"Если проект не закрыт за 3 дня — награды (сундуки) получают только вкладчики."
+        f"{reward_text}"
     )
 
 
