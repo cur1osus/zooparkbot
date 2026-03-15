@@ -152,9 +152,9 @@ async def save_project(
 def _calc_ratio(payload: dict[str, Any]) -> float:
     pr = payload.get("progress", {})
     tg = payload.get("target", {})
-    rub_ratio = int(pr.get("rub", 0)) / max(1, int(tg.get("rub", 1)))
-    usd_ratio = int(pr.get("usd", 0)) / max(1, int(tg.get("usd", 1)))
-    return min(1.0, (rub_ratio + usd_ratio) / 2)
+    rub_ratio = min(1.0, int(pr.get("rub", 0)) / max(1, int(tg.get("rub", 1))))
+    usd_ratio = min(1.0, int(pr.get("usd", 0)) / max(1, int(tg.get("usd", 1))))
+    return (rub_ratio + usd_ratio) / 2
 
 
 def _is_project_completed(payload: dict[str, Any]) -> bool:
@@ -341,10 +341,21 @@ async def contribute_to_project(
     if project.get("status") != "active":
         return False, "Текущий проект уже закрыт/истёк", project
 
-    rub = max(0, int(rub or 0))
-    usd = max(0, int(usd or 0))
-    if rub == 0 and usd == 0:
+    requested_rub = max(0, int(rub or 0))
+    requested_usd = max(0, int(usd or 0))
+    if requested_rub == 0 and requested_usd == 0:
         return False, "Нулевой вклад", project
+
+    pr = project.setdefault("progress", {"rub": 0, "usd": 0})
+    tg = project.get("target", {}) or {}
+    need_rub = max(0, int(tg.get("rub", 0)) - int(pr.get("rub", 0)))
+    need_usd = max(0, int(tg.get("usd", 0)) - int(pr.get("usd", 0)))
+
+    rub = min(requested_rub, need_rub)
+    usd = min(requested_usd, need_usd)
+
+    if rub == 0 and usd == 0:
+        return False, "Эта цель уже закрыта", project
     if user.rub < rub or user.usd < usd:
         return False, "Недостаточно средств", project
 
@@ -369,13 +380,14 @@ async def contribute_to_project(
 
     c_map[key] = current
 
-    pr = project.setdefault("progress", {"rub": 0, "usd": 0})
     pr["rub"] = int(pr.get("rub", 0)) + rub
     pr["usd"] = int(pr.get("usd", 0)) + usd
 
     await save_project(session=session, unity_idpk=unity.idpk, payload=project)
     await settle_project_if_due(session=session, unity=unity, project=project)
 
+    if rub < requested_rub or usd < requested_usd:
+        return True, f"Вклад принят частично: +{rub} RUB, +{usd} USD", project
     return True, "Вклад принят", project
 
 
@@ -413,10 +425,15 @@ def format_project_text(
     filled_length = int(bar_length * ratio)
     bar = "█" * filled_length + "░" * (bar_length - filled_length)
 
-    rub_pr = f"{int(pr.get('rub', 0)):,}".replace(",", " ")
-    rub_tg = f"{int(tg.get('rub', 0)):,}".replace(",", " ")
-    usd_pr = f"{int(pr.get('usd', 0)):,}".replace(",", " ")
-    usd_tg = f"{int(tg.get('usd', 0)):,}".replace(",", " ")
+    rub_current = int(pr.get('rub', 0))
+    usd_current = int(pr.get('usd', 0))
+    rub_target = int(tg.get('rub', 0))
+    usd_target = int(tg.get('usd', 0))
+
+    rub_pr = f"{min(rub_current, rub_target):,}".replace(",", " ")
+    rub_tg = f"{rub_target:,}".replace(",", " ")
+    usd_pr = f"{min(usd_current, usd_target):,}".replace(",", " ")
+    usd_tg = f"{usd_target:,}".replace(",", " ")
 
     # Calculate top contributors
     contributors = project.get("contributors", {}) or {}
