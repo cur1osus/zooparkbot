@@ -190,56 +190,33 @@ def _render_usage_plot_24h(stats: dict) -> str:
     labels = [h.strftime("%H:%M") for h in hours]
     x = list(range(len(hours)))
 
-    fig, (ax_top, ax_bottom) = plt.subplots(
-        2,
-        1,
-        figsize=(12.5, 6.5),
-        sharex=True,
-        gridspec_kw={"height_ratios": [1.1, 1.6]},
-    )
-    fig.patch.set_facecolor("#111827")
+    fig, ax = plt.subplots(figsize=(12.5, 6.2))
+    fig.patch.set_facecolor("#1f1f1f")
+    ax.set_facecolor("#e9e9e9")
 
-    for ax in (ax_top, ax_bottom):
-        ax.set_facecolor("#f8fafc")
-        ax.grid(True, axis="y", linestyle="--", alpha=0.25)
-
-    # Top: total line with area
-    ax_top.fill_between(x, total_vals, color="#93c5fd", alpha=0.35)
-    ax_top.plot(x, total_vals, color="#2563eb", linewidth=2.2, label="total")
-    ax_top.set_ylabel("total")
-    ax_top.legend(loc="upper left")
-
-    # Bottom: stacked bars prompt/completion
-    ax_bottom.bar(x, prompt_vals, color="#3b82f6", alpha=0.92, label="prompt")
-    ax_bottom.bar(
+    bar_prompt = ax.bar(x, prompt_vals, color="#4b74c8", alpha=0.82, label="prompt")
+    bar_completion = ax.bar(
         x,
         completion_vals,
         bottom=prompt_vals,
-        color="#10b981",
-        alpha=0.92,
+        color="#60d3b1",
+        alpha=0.82,
         label="completion",
     )
-    ax_bottom.set_ylabel("tokens")
-    ax_bottom.legend(loc="upper left")
+    (line_total,) = ax.plot(x, total_vals, color="#222222", linewidth=1.7, label="total")
 
-    # x-axis: avoid clutter (show every 2nd tick)
-    tick_idx = [idx for idx in x if idx % 2 == 0]
-    if len(tick_idx) < 2 and x:
-        tick_idx = x
-    ax_bottom.set_xticks(tick_idx)
-    ax_bottom.set_xticklabels([labels[i] for i in tick_idx], rotation=0)
+    ax.set_title("NPC LLM usage за последние 24ч", fontsize=14, color="black")
+    ax.set_ylabel("tokens")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.grid(True, axis="y", alpha=0.25)
 
-    fig.suptitle(
-        "NPC LLM usage · последние 24 часа",
-        fontsize=14,
-        fontweight="bold",
-        color="#f9fafb",
-    )
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    ax.legend(handles=[line_total, bar_prompt, bar_completion], loc="upper left")
 
+    fig.tight_layout()
     USAGE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     filename = USAGE_PLOT_DIR / f"usage24h_{uuid4().hex}.png"
-    plt.savefig(filename, dpi=190, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(filename, dpi=185, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     return str(filename)
 
