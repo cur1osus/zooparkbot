@@ -8,7 +8,18 @@ from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
 from config import CHAT_ID
-from db import Animal, Aviary, Game, Gamer, Item, RandomMerchant, RequestToUnity, TransferMoney, Unity, User
+from db import (
+    Animal,
+    Aviary,
+    Game,
+    Gamer,
+    Item,
+    RandomMerchant,
+    RequestToUnity,
+    TransferMoney,
+    Unity,
+    User,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools.animals import get_all_animals, get_price_animal, get_total_number_animals
@@ -35,7 +46,11 @@ from tools.unity import (
     get_unity_idpk,
 )
 from tools.value import get_value
-from tools.unity_projects import get_or_create_project, get_user_chests
+from tools.unity_projects import (
+    get_or_create_project,
+    get_project_reward_preview,
+    get_user_chests,
+)
 
 from .memory import build_npc_memory_context
 from .schedule import clamp_npc_sleep_seconds
@@ -269,7 +284,9 @@ async def build_recruit_targets(
 
     # Exclude users with already pending requests to this unity owner.
     pending_rows = await session.scalars(
-        select(RequestToUnity.idpk_user).where(RequestToUnity.idpk_unity_owner == user.idpk)
+        select(RequestToUnity.idpk_user).where(
+            RequestToUnity.idpk_unity_owner == user.idpk
+        )
     )
     pending_request_targets = {int(v) for v in pending_rows.all()}
 
@@ -307,7 +324,10 @@ async def build_recruit_targets(
         )
 
     candidates.sort(
-        key=lambda row: (float(row.get("score", 0) or 0), int(row.get("animals", 0) or 0)),
+        key=lambda row: (
+            float(row.get("score", 0) or 0),
+            int(row.get("animals", 0) or 0),
+        ),
         reverse=True,
     )
 
@@ -341,7 +361,9 @@ async def ensure_random_merchant_for_user(
     return await create_random_merchant(session=session, user=user)
 
 
-async def build_chat_games_state(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+async def build_chat_games_state(
+    session: AsyncSession, user: User
+) -> list[dict[str, Any]]:
     games = await session.scalars(
         select(Game).where(Game.activate == True, Game.end == False)  # noqa: E712
     )
@@ -354,7 +376,9 @@ async def build_chat_games_state(session: AsyncSession, user: User) -> list[dict
             continue
         current_players = int(
             await session.scalar(
-                select(func.count()).select_from(Gamer).where(Gamer.id_game == game.id_game)
+                select(func.count())
+                .select_from(Gamer)
+                .where(Gamer.id_game == game.id_game)
             )
             or 0
         )
@@ -381,9 +405,13 @@ async def build_chat_games_state(session: AsyncSession, user: User) -> list[dict
     return payload[: settings.top_candidates_limit]
 
 
-async def build_chat_transfers_state(session: AsyncSession, user: User) -> list[dict[str, Any]]:
+async def build_chat_transfers_state(
+    session: AsyncSession, user: User
+) -> list[dict[str, Any]]:
     transfers = await session.scalars(
-        select(TransferMoney).where(TransferMoney.status == True, TransferMoney.pieces > 0)  # noqa: E712
+        select(TransferMoney).where(
+            TransferMoney.status == True, TransferMoney.pieces > 0
+        )  # noqa: E712
     )
     payload: list[dict[str, Any]] = []
     for tr in transfers.all():
@@ -408,7 +436,9 @@ async def build_chat_transfers_state(session: AsyncSession, user: User) -> list[
                 "total_left": int(tr.one_piece_sum) * int(tr.pieces),
             }
         )
-    payload.sort(key=lambda row: (row["total_left"], row["one_piece_sum"]), reverse=True)
+    payload.sort(
+        key=lambda row: (row["total_left"], row["one_piece_sum"]), reverse=True
+    )
     return payload[: settings.top_candidates_limit]
 
 
@@ -659,7 +689,9 @@ def _actions_since_last(rows: list[dict[str, Any]], target_actions: set[str]) ->
     return count
 
 
-def _build_rate_history_snapshot(history_raw: str, now_ts: int | None = None) -> dict[str, Any]:
+def _build_rate_history_snapshot(
+    history_raw: str, now_ts: int | None = None
+) -> dict[str, Any]:
     try:
         rows = json.loads(history_raw) if history_raw else []
         if not isinstance(rows, list):
@@ -697,7 +729,11 @@ def _build_rate_history_snapshot(history_raw: str, now_ts: int | None = None) ->
         "min": min(rates),
         "max": max(rates),
         "delta": last_rate - first_rate,
-        "trend": "up" if last_rate > first_rate else "down" if last_rate < first_rate else "flat",
+        "trend": "up"
+        if last_rate > first_rate
+        else "down"
+        if last_rate < first_rate
+        else "flat",
     }
     return {
         "points_1h": one_hour_points[-60:],
@@ -1005,21 +1041,37 @@ async def build_allowed_actions(
                 if unity_idpk:
                     unity_obj = await session.get(Unity, unity_idpk)
                     if unity_obj is not None:
-                        project = await get_or_create_project(session=session, unity=unity_obj)
+                        project = await get_or_create_project(
+                            session=session, unity=unity_obj
+                        )
                         if str(project.get("status", "active")) == "active":
                             if rub >= 50_000:
-                                _append_unique_action(actions, "contribute_clan_project", {"rub": min(rub, 200_000), "usd": 0})
+                                _append_unique_action(
+                                    actions,
+                                    "contribute_clan_project",
+                                    {"rub": min(rub, 200_000), "usd": 0},
+                                )
                             if usd >= 5_000:
-                                _append_unique_action(actions, "contribute_clan_project", {"rub": 0, "usd": min(usd, 20_000)})
+                                _append_unique_action(
+                                    actions,
+                                    "contribute_clan_project",
+                                    {"rub": 0, "usd": min(usd, 20_000)},
+                                )
 
             with contextlib.suppress(Exception):
                 ch = await get_user_chests(session=session, user_idpk=user.idpk)
                 if int(ch.get("epic", 0) or 0) > 0:
-                    _append_unique_action(actions, "open_clan_chest", {"chest_type": "epic"})
+                    _append_unique_action(
+                        actions, "open_clan_chest", {"chest_type": "epic"}
+                    )
                 if int(ch.get("rare", 0) or 0) > 0:
-                    _append_unique_action(actions, "open_clan_chest", {"chest_type": "rare"})
+                    _append_unique_action(
+                        actions, "open_clan_chest", {"chest_type": "rare"}
+                    )
                 if int(ch.get("common", 0) or 0) > 0:
-                    _append_unique_action(actions, "open_clan_chest", {"chest_type": "common"})
+                    _append_unique_action(
+                        actions, "open_clan_chest", {"chest_type": "common"}
+                    )
             for row in pending_requests[:2]:
                 applicant_id = int(row.get("idpk_user", 0) or 0)
                 _append_unique_action(
@@ -1035,7 +1087,8 @@ async def build_allowed_actions(
 
     # Chat-only transfer/game actions: allowed only with strong surplus and no recent spam.
     recent_actions = [
-        str(item).strip() for item in (observation.get("momentum", {}).get("last_3_actions") or [])
+        str(item).strip()
+        for item in (observation.get("momentum", {}).get("last_3_actions") or [])
     ]
     recent_chat_action = any(
         action_name in {"send_chat_transfer", "create_chat_game", "join_chat_game"}
@@ -1060,7 +1113,12 @@ async def build_allowed_actions(
             {"idpk_tr": int(tr.get("idpk", 0) or 0)},
         )
 
-    if has_strong_surplus and usd >= 1800 and economy_not_blocked and not recent_chat_action:
+    if (
+        has_strong_surplus
+        and usd >= 1800
+        and economy_not_blocked
+        and not recent_chat_action
+    ):
         _append_unique_action(
             actions,
             "create_chat_game",
@@ -1216,24 +1274,54 @@ def _score_allowed_action(
             f"current unity can level up from {int(current_unity.get('level', 0) or 0)}",
         )
     if action_name == "contribute_clan_project":
-        return 75, "supports clan project progress and contributor rewards"
+        clan_project = observation.get("clan_project", {}) or {}
+        success_rewards = clan_project.get("reward_success", {}) or {}
+        current_rewards = clan_project.get("reward_current", {}) or {}
+        return (
+            75,
+            "helps close both RUB and USD goals; "
+            f"full rewards c:{int(success_rewards.get('common', 0) or 0)} "
+            f"r:{int(success_rewards.get('rare', 0) or 0)} "
+            f"e:{int(success_rewards.get('epic', 0) or 0)}, "
+            f"current fallback c:{int(current_rewards.get('common', 0) or 0)} "
+            f"r:{int(current_rewards.get('rare', 0) or 0)} "
+            f"e:{int(current_rewards.get('epic', 0) or 0)}",
+        )
     if action_name == "open_clan_chest":
         return 73, "converts stored chest rewards into immediate RUB/USD"
     if action_name == "exit_from_unity":
         return 45, "leaves current unity to switch social strategy"
     if action_name == "send_chat_transfer":
-        if bool((observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")):
+        if bool(
+            (observation.get("strategy_signals", {}).get("summary", {}) or {}).get(
+                "need_seats"
+            )
+        ):
             return 64, "capacity-locked: chat transfer can create short-term upside"
         return 26, "optional social spend; valid only when economy has surplus"
     if action_name == "claim_chat_transfer":
         return 72, "free immediate upside by claiming an available chat transfer"
     if action_name == "create_chat_game":
-        if bool((observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")):
-            return 62, "capacity-locked: game creation can unlock upside while waiting for seats"
+        if bool(
+            (observation.get("strategy_signals", {}).get("summary", {}) or {}).get(
+                "need_seats"
+            )
+        ):
+            return (
+                62,
+                "capacity-locked: game creation can unlock upside while waiting for seats",
+            )
         return 28, "optional social spend; valid only with stable surplus"
     if action_name == "join_chat_game":
-        if bool((observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")):
-            return 68, "free upside while capacity-locked; can improve cash without spending"
+        if bool(
+            (observation.get("strategy_signals", {}).get("summary", {}) or {}).get(
+                "need_seats"
+            )
+        ):
+            return (
+                68,
+                "free upside while capacity-locked; can improve cash without spending",
+            )
         return 24, "optional social action after core economy is stable"
     if action_name == "review_unity_request":
         decision = str(params.get("decision", "accept"))
@@ -1248,7 +1336,10 @@ def _score_allowed_action(
     if action_name == "wait":
         need_seats = bool((summary or {}).get("need_seats"))
         if need_seats:
-            return 20, "idle fallback only when no productive seat-lock action is available"
+            return (
+                20,
+                "idle fallback only when no productive seat-lock action is available",
+            )
         return 32, "idle fallback when no better move is available"
     return 0, ""
 
@@ -1370,15 +1461,27 @@ def build_decision_brief(observation: dict[str, Any]) -> dict[str, Any]:
     clan_context = None
     if clan_project:
         status = str(clan_project.get("status", "active"))
+        member_count = int(clan_project.get("member_count", 1) or 1)
         pr_rub = int(clan_project.get("progress_rub", 0) or 0)
         tg_rub = int(clan_project.get("target_rub", 0) or 0)
         pr_usd = int(clan_project.get("progress_usd", 0) or 0)
         tg_usd = int(clan_project.get("target_usd", 0) or 0)
+        success_rewards = clan_project.get("reward_success", {}) or {}
+        current_rewards = clan_project.get("reward_current", {}) or {}
         clan_context = (
             "Clan project context: project has a 3-day deadline. "
+            f"Rewards scale with clan size ({member_count} members). "
+            "Project closes only when both RUB and USD goals are reached. "
             "Contributors receive chest rewards; if deadline is missed, rewards are still split only among contributors. "
             f"Current project {clan_project.get('name', 'Заповедник')} L{int(clan_project.get('level', 1) or 1)} "
-            f"status={status}, progress RUB {pr_rub}/{tg_rub}, USD {pr_usd}/{tg_usd}."
+            f"status={status}, progress RUB {pr_rub}/{tg_rub}, USD {pr_usd}/{tg_usd}. "
+            f"Full rewards: c:{int(success_rewards.get('common', 0) or 0)} "
+            f"r:{int(success_rewards.get('rare', 0) or 0)} "
+            f"e:{int(success_rewards.get('epic', 0) or 0)}. "
+            f"If deadline hit now: c:{int(current_rewards.get('common', 0) or 0)} "
+            f"r:{int(current_rewards.get('rare', 0) or 0)} "
+            f"e:{int(current_rewards.get('epic', 0) or 0)}. "
+            "MVP gets +1 epic chest."
         )
 
     return {
@@ -1493,9 +1596,17 @@ def build_strategy_signals(observation: dict[str, Any]) -> dict[str, Any]:
     unity_current = observation.get("unity", {}).get("current") or {}
     pending_requests = unity_current.get("pending_requests", []) or []
     memory_relationships = observation.get("memory", {}).get("relationships", []) or []
-    
-    nemesis_ids = {int(r.get("subject_idpk", 0)) for r in memory_relationships if int(r.get("trust", 500)) < 300}
-    favorite_ids = {int(r.get("subject_idpk", 0)) for r in memory_relationships if int(r.get("trust", 500)) > 700}
+
+    nemesis_ids = {
+        int(r.get("subject_idpk", 0))
+        for r in memory_relationships
+        if int(r.get("trust", 500)) < 300
+    }
+    favorite_ids = {
+        int(r.get("subject_idpk", 0))
+        for r in memory_relationships
+        if int(r.get("trust", 500)) > 700
+    }
 
     social_target = None
     if pending_requests:
@@ -1537,7 +1648,7 @@ def build_strategy_signals(observation: dict[str, Any]) -> dict[str, Any]:
                 }
                 break
         if not social_target:
-             social_target = {
+            social_target = {
                 "mode": "join",
                 "target": observation["unity"]["candidates"][0],
                 "is_nemesis": True,
@@ -1631,7 +1742,9 @@ def _goal_weight_for_action(action_name: str, cycle_goal: str) -> float:
     return 0.82
 
 
-def _estimate_action_ev(action_entry: dict[str, Any], observation: dict[str, Any]) -> dict[str, Any]:
+def _estimate_action_ev(
+    action_entry: dict[str, Any], observation: dict[str, Any]
+) -> dict[str, Any]:
     action_name = str(action_entry.get("action", "wait"))
     params = action_entry.get("params", {}) or {}
     summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
@@ -1653,14 +1766,20 @@ def _estimate_action_ev(action_entry: dict[str, Any], observation: dict[str, Any
             income = float(int(variant.get("income_rub", 0) or 0))
             price = float(max(1, int(variant.get("price_usd", 0) or 1)))
             ev_score = (income / price) * 100.0
-            fail_risk = 0.05 if int(variant.get("affordable_quantity", 0) or 0) > 0 else 0.85
+            fail_risk = (
+                0.05 if int(variant.get("affordable_quantity", 0) or 0) > 0 else 0.85
+            )
     elif action_name == "buy_aviary":
-        option = _find_aviary_option(observation, str(params.get("code_name_aviary", "")))
+        option = _find_aviary_option(
+            observation, str(params.get("code_name_aviary", ""))
+        )
         if option:
             seats = float(max(1, int(option.get("size", 1) or 1)))
             price = float(max(1, int(option.get("price_usd", 0) or 1)))
             ev_score = (seats / price) * 160.0
-            fail_risk = 0.1 if int(option.get("affordable_quantity", 0) or 0) > 0 else 0.8
+            fail_risk = (
+                0.1 if int(option.get("affordable_quantity", 0) or 0) > 0 else 0.8
+            )
     elif action_name == "exchange_bank":
         bank = observation.get("bank", {}) or {}
         rate = float(int(bank.get("rate_rub_usd", 0) or 0))
@@ -1676,10 +1795,18 @@ def _estimate_action_ev(action_entry: dict[str, Any], observation: dict[str, Any
         if bool(summary.get("next_unlock")):
             ev_score += 6.0
         fail_risk = 0.15
-    elif action_name in {"claim_daily_bonus", "claim_chat_transfer", "review_unity_request"}:
+    elif action_name in {
+        "claim_daily_bonus",
+        "claim_chat_transfer",
+        "review_unity_request",
+    }:
         ev_score = 72.0
         fail_risk = 0.03
-    elif action_name in {"recruit_top_player", "join_best_unity", "upgrade_unity_level"}:
+    elif action_name in {
+        "recruit_top_player",
+        "join_best_unity",
+        "upgrade_unity_level",
+    }:
         ev_score = 52.0
         fail_risk = 0.3
     elif action_name == "invest_for_income":
@@ -1694,12 +1821,16 @@ def _estimate_action_ev(action_entry: dict[str, Any], observation: dict[str, Any
 
     return {
         "ev_score": round(float(ev_score), 2),
-        "payback_minutes": None if payback_minutes is None else round(payback_minutes, 2),
+        "payback_minutes": None
+        if payback_minutes is None
+        else round(payback_minutes, 2),
         "fail_risk": round(float(fail_risk), 2),
     }
 
 
-def _build_phase_a_candidates(observation: dict[str, Any], cycle_goal: str) -> list[dict[str, Any]]:
+def _build_phase_a_candidates(
+    observation: dict[str, Any], cycle_goal: str
+) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for entry in observation.get("allowed_actions", []) or []:
         if not isinstance(entry, dict):
@@ -1708,7 +1839,11 @@ def _build_phase_a_candidates(observation: dict[str, Any], cycle_goal: str) -> l
         base_score, note = _score_allowed_action(entry, observation)
         ev = _estimate_action_ev(entry, observation)
         goal_weight = _goal_weight_for_action(action_name, cycle_goal)
-        combined = float(base_score) * goal_weight + float(ev.get("ev_score", 0.0)) * 0.35 - float(ev.get("fail_risk", 0.0)) * 18.0
+        combined = (
+            float(base_score) * goal_weight
+            + float(ev.get("ev_score", 0.0)) * 0.35
+            - float(ev.get("fail_risk", 0.0)) * 18.0
+        )
         if action_name != "wait" and combined < 42.0:
             continue
         candidates.append(
@@ -1831,7 +1966,10 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
             params={"code_name_aviary": aviary["code_name"], "quantity": 1},
             eta_seconds=aviary.get("eta_seconds"),
         )
-    if summary.get("best_income_option") and int(observation.get("zoo", {}).get("remain_seats", 0) or 0) > 0:
+    if (
+        summary.get("best_income_option")
+        and int(observation.get("zoo", {}).get("remain_seats", 0) or 0) > 0
+    ):
         option = summary["best_income_option"]
         add_step(
             "buy_rarity_animal",
@@ -2084,15 +2222,20 @@ async def build_observation(
                 project = await get_or_create_project(session=session, unity=unity_obj)
                 pr = project.get("progress", {}) or {}
                 tg = project.get("target", {}) or {}
+                reward_preview = get_project_reward_preview(project)
                 clan_project_summary = {
                     "name": str(project.get("name", "Заповедник")),
                     "status": str(project.get("status", "active")),
                     "level": int(project.get("level", 1) or 1),
+                    "member_count": int(project.get("member_count", 1) or 1),
                     "ends_at": str(project.get("ends_at", "")),
                     "progress_rub": int(pr.get("rub", 0) or 0),
                     "target_rub": int(tg.get("rub", 0) or 0),
                     "progress_usd": int(pr.get("usd", 0) or 0),
                     "target_usd": int(tg.get("usd", 0) or 0),
+                    "reward_success": reward_preview.get("success", {}),
+                    "reward_current": reward_preview.get("current", {}),
+                    "mvp_epic_bonus": int(reward_preview.get("mvp_epic_bonus", 1) or 1),
                 }
 
     observation = {
@@ -2183,8 +2326,12 @@ async def build_observation(
     observation["strategy_signals"]["goal_focus"] = [
         goal.get("topic") for goal in observation["memory"].get("active_goals", [])
     ][: settings.memory_goal_limit]
-    observation["player"]["current_mood"] = observation["memory"].get("profile", {}).get("current_mood", "neutral")
-    observation["player"]["affinity_score"] = observation["memory"].get("profile", {}).get("affinity_score", 50)
+    observation["player"]["current_mood"] = (
+        observation["memory"].get("profile", {}).get("current_mood", "neutral")
+    )
+    observation["player"]["affinity_score"] = (
+        observation["memory"].get("profile", {}).get("affinity_score", 50)
+    )
     return observation
 
 
@@ -2370,7 +2517,7 @@ def _matches_allowed_params(
 
 
 def build_action_contract(observation: dict[str, Any]) -> dict[str, Any]:
-    summary = (observation.get("strategy_signals", {}).get("summary", {}) or {})
+    summary = observation.get("strategy_signals", {}).get("summary", {}) or {}
     remain_seats = int(observation.get("zoo", {}).get("remain_seats", 0) or 0)
     must_do: list[str] = []
     must_not_do: list[str] = []
@@ -2379,17 +2526,20 @@ def build_action_contract(observation: dict[str, Any]) -> dict[str, Any]:
         aviary_allowed = [
             row
             for row in (observation.get("allowed_actions", []) or [])
-            if isinstance(row, dict) and str(row.get("action", "")).strip() == "buy_aviary"
+            if isinstance(row, dict)
+            and str(row.get("action", "")).strip() == "buy_aviary"
         ]
         if aviary_allowed:
             must_do.append("buy_aviary")
-        must_not_do.extend([
-            "buy_rarity_animal",
-            "invest_for_top_animals",
-            "buy_merchant_discount_offer",
-            "buy_merchant_random_offer",
-            "buy_merchant_targeted_offer",
-        ])
+        must_not_do.extend(
+            [
+                "buy_rarity_animal",
+                "invest_for_top_animals",
+                "buy_merchant_discount_offer",
+                "buy_merchant_random_offer",
+                "buy_merchant_targeted_offer",
+            ]
+        )
 
     return {
         "must_do": list(dict.fromkeys(must_do)),
@@ -2442,9 +2592,14 @@ def compute_smart_sleep_seconds(
     smart_sleep = int(default_sleep)
     status = str((result or {}).get("status", "")).strip().lower()
     if status == "error":
-        return min(settings.max_sleep_seconds, max(settings.step_seconds, settings.min_sleep_seconds * 3))
+        return min(
+            settings.max_sleep_seconds,
+            max(settings.step_seconds, settings.min_sleep_seconds * 3),
+        )
     if status in {"failed", "skipped"}:
-        smart_sleep = min(settings.max_sleep_seconds, max(settings.step_seconds, smart_sleep * 2))
+        smart_sleep = min(
+            settings.max_sleep_seconds, max(settings.step_seconds, smart_sleep * 2)
+        )
     if wake_trigger.get("source") == "event":
         smart_sleep = min(smart_sleep, settings.step_seconds)
     if not observation:
@@ -2481,7 +2636,9 @@ def compute_smart_sleep_seconds(
                 smart_sleep, max(settings.min_sleep_seconds, int(best_eta))
             )
 
-    phase_a = (planner.get("phase_a_candidates") or []) if isinstance(planner, dict) else []
+    phase_a = (
+        (planner.get("phase_a_candidates") or []) if isinstance(planner, dict) else []
+    )
     if phase_a:
         top = phase_a[0] if isinstance(phase_a[0], dict) else {}
         top_score = float(top.get("combined_score", 0.0) or 0.0)

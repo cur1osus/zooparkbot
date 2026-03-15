@@ -157,13 +157,42 @@ def _calc_ratio(payload: dict[str, Any]) -> float:
     return min(1.0, (rub_ratio + usd_ratio) / 2)
 
 
-def _reward_pool(success: bool, ratio: float) -> dict[str, int]:
-    full = {"common": 12, "rare": 5, "epic": 2}
+def _is_project_completed(payload: dict[str, Any]) -> bool:
+    pr = payload.get("progress", {})
+    tg = payload.get("target", {})
+    return int(pr.get("rub", 0)) >= int(tg.get("rub", 0)) and int(
+        pr.get("usd", 0)
+    ) >= int(tg.get("usd", 0))
+
+
+def _reward_pool(success: bool, ratio: float, member_count: int) -> dict[str, int]:
+    member_count = max(1, int(member_count or 1))
+    size_scale = min(1.0, 0.12 + 0.18 * member_count)
+    full = {
+        "common": max(2, int(math.floor(12 * size_scale))),
+        "rare": max(1, int(math.floor(5 * size_scale))),
+        "epic": max(0, int(math.floor(2 * size_scale))),
+    }
     if success:
         return full
     scale = max(0.2, min(1.0, ratio))
     return {
         k: max(1 if v > 0 else 0, int(math.floor(v * scale))) for k, v in full.items()
+    }
+
+
+def get_project_reward_preview(project: dict[str, Any]) -> dict[str, Any]:
+    member_count = max(1, int(project.get("member_count", 1) or 1))
+    ratio = _calc_ratio(project)
+    return {
+        "member_count": member_count,
+        "success": _reward_pool(success=True, ratio=1.0, member_count=member_count),
+        "current": _reward_pool(
+            success=False,
+            ratio=ratio,
+            member_count=member_count,
+        ),
+        "mvp_epic_bonus": 1,
     }
 
 
@@ -190,7 +219,7 @@ async def settle_project_if_due(
     now = _now()
     end = datetime.fromisoformat(str(project.get("ends_at")))
     ratio = _calc_ratio(project)
-    completed = ratio >= 1.0
+    completed = _is_project_completed(project)
     if not force and not completed and now < end:
         return None
 
@@ -207,7 +236,11 @@ async def settle_project_if_due(
     project["completed_at"] = now.isoformat()
 
     if total_weight > 0 and not project.get("rewarded"):
-        pool = _reward_pool(success=completed, ratio=ratio)
+        pool = _reward_pool(
+            success=completed,
+            ratio=ratio,
+            member_count=int(project.get("member_count", 1) or 1),
+        )
         for chest_kind, chest_count in pool.items():
             if chest_count <= 0:
                 continue
@@ -424,10 +457,13 @@ def format_project_text(
         ends_raw = active_buff.get("ends_at", "")
         active_buff_str = f"✨ <b>Действующий бафф клана:</b> {buff_desc_map.get(btype, btype)} (от '{bname}') до {ends_raw[:16].replace('T', ' ')}\n\n"
 
-    success_pool = _reward_pool(success=True, ratio=1.0)
-    current_fail_pool = _reward_pool(success=False, ratio=ratio)
+    reward_preview = get_project_reward_preview(project)
+    success_pool = reward_preview["success"]
+    current_fail_pool = reward_preview["current"]
     reward_lines = [
         "🎁 <b>Награды проекта:</b>",
+        f"Масштаб наград зависит от размера клана. Сейчас участников: {member_count}",
+        "Для полного закрытия проекта нужно выполнить обе цели: и по RUB, и по USD",
         (
             "За успех вкладчики делят: "
             f"обычн {success_pool['common']}, редк {success_pool['rare']}, эпик {success_pool['epic']}"
