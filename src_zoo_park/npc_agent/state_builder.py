@@ -2749,5 +2749,14 @@ async def register_npc_move(
     while len(history) > int(limit_on_write_moves):
         first_key = next(iter(history))
         del history[first_key]
-    user.history_moves = json.dumps(history, ensure_ascii=False)
+
+    # Hard cap for DB row size / lock pressure protection.
+    max_history_chars = 20_000
+    encoded = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
+    while len(encoded) > max_history_chars and history:
+        first_key = next(iter(history))
+        del history[first_key]
+        encoded = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
+
+    user.history_moves = encoded
     user.moves += 1

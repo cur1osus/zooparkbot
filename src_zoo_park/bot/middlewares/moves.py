@@ -34,7 +34,14 @@ class RegMove(BaseMiddleware):
                 items.pop(0)
                 # Преобразуем список кортежей обратно в словарь
                 decoded_dict = dict(items)
-            user.history_moves = json.dumps(decoded_dict, ensure_ascii=False)
+            encoded = json.dumps(decoded_dict, ensure_ascii=False, separators=(",", ":"))
+            max_history_chars = 20_000
+            while len(encoded) > max_history_chars and decoded_dict:
+                first_key = next(iter(decoded_dict))
+                del decoded_dict[first_key]
+                encoded = json.dumps(decoded_dict, ensure_ascii=False, separators=(",", ":"))
+
+            user.history_moves = encoded
             user.moves += 1
             await session.commit()
         return await handler(event, data)
