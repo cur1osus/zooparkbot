@@ -21,7 +21,7 @@ from bot.keyboards import (
     ik_yes_or_not_sell_item,
 )
 from bot.states import UserState
-from db import Item, User
+from db import Animal, Item, User
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
@@ -504,7 +504,20 @@ async def open_chest_do(query: CallbackQuery, session: AsyncSession, state: FSMC
     animals = rewards.get("animals", []) or []
     animal_line = ""
     if animals:
-        an_text = ", ".join([f"{d.get('code_name')} x{int(d.get('quantity',0) or 0)}" for d in animals])
+        code_names = [str(d.get("code_name") or "") for d in animals if d.get("code_name")]
+        animal_names_by_code: dict[str, str] = {}
+        if code_names:
+            result = await session.execute(
+                select(Animal.code_name, Animal.name).where(Animal.code_name.in_(code_names))
+            )
+            animal_names_by_code = {str(code): str(name) for code, name in result.all()}
+
+        an_text = ", ".join(
+            [
+                f"{animal_names_by_code.get(str(d.get('code_name')), str(d.get('code_name')))} x{int(d.get('quantity',0) or 0)}"
+                for d in animals
+            ]
+        )
         animal_line = f"\n🐾 Животные: {an_text}"
 
     result_text = (
