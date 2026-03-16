@@ -1,6 +1,7 @@
 import json
+from datetime import datetime
 
-from db import Animal, Unity, User
+from db import Animal, Unity, User, Value
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +27,11 @@ async def income_(session: AsyncSession, user: User):
         )
         if unity_data["lvl"] in [1, 2, 3]:
             income *= 1 + (unity_data["bonus"] / 100)
+
+        # Global clan project buff (e.g. +10% income from "Ветеринарная станция")
+        if await _has_active_income_buff(session=session, unity_idpk=unity_idpk):
+            income *= 1.10
+
     return int(income)
 
 
@@ -67,3 +73,26 @@ async def get_unity_data_for_income(session: AsyncSession, idpk_unity: int):
             session=session, value_name="BONUS_ADD_TO_INCOME_3RD_LVL"
         )
     return data
+
+
+async def _has_active_income_buff(session: AsyncSession, unity_idpk: int) -> bool:
+    row = await session.scalar(
+        select(Value).where(Value.name == f"CLAN_BUFF_{int(unity_idpk)}")
+    )
+    if not row or not row.value_str:
+        return False
+
+    try:
+        payload = json.loads(row.value_str)
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("type") != "income_boost":
+            return False
+
+        ends_at_raw = payload.get("ends_at")
+        if not ends_at_raw:
+            return False
+
+        return datetime.now() <= datetime.fromisoformat(str(ends_at_raw))
+    except Exception:
+        return False
