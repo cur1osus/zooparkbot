@@ -361,6 +361,20 @@ async def contribute_to_project(
 
     user.rub -= rub
     user.usd -= usd
+
+    # If clan has active income buff, apply +10% bonus to project progress.
+    # Bonus affects project bar only (not user spend, not contributor MVP weights).
+    rub_progress_add = rub
+    usd_progress_add = usd
+    active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
+    if active_buff and str(active_buff.get("type", "")) == "income_boost":
+        rub_progress_add += int(rub * 0.10)
+        usd_progress_add += int(usd * 0.10)
+
+        # Never overflow project targets because of the bonus.
+        rub_progress_add = min(rub_progress_add, need_rub)
+        usd_progress_add = min(usd_progress_add, need_usd)
+
     c_map = project.setdefault("contributors", {})
     key = str(user.idpk)
     current = c_map.get(key) or {"rub": 0, "usd": 0, "name": ""}
@@ -380,15 +394,23 @@ async def contribute_to_project(
 
     c_map[key] = current
 
-    pr["rub"] = int(pr.get("rub", 0)) + rub
-    pr["usd"] = int(pr.get("usd", 0)) + usd
+    pr["rub"] = int(pr.get("rub", 0)) + rub_progress_add
+    pr["usd"] = int(pr.get("usd", 0)) + usd_progress_add
 
     await save_project(session=session, unity_idpk=unity.idpk, payload=project)
     await settle_project_if_due(session=session, unity=unity, project=project)
 
+    bonus_rub = rub_progress_add - rub
+    bonus_usd = usd_progress_add - usd
+    bonus_suffix = (
+        f" (бафф: +{bonus_rub} RUB, +{bonus_usd} USD)"
+        if (bonus_rub > 0 or bonus_usd > 0)
+        else ""
+    )
+
     if rub < requested_rub or usd < requested_usd:
-        return True, f"Вклад принят частично: +{rub} RUB, +{usd} USD", project
-    return True, "Вклад принят", project
+        return True, f"Вклад принят частично: +{rub} RUB, +{usd} USD{bonus_suffix}", project
+    return True, f"Вклад принят{bonus_suffix}", project
 
 
 async def settle_all_due_projects(session: AsyncSession) -> int:
