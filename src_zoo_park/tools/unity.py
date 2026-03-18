@@ -3,6 +3,10 @@ import re
 from collections import defaultdict
 
 from db import Unity, User
+from db.structured_state import (
+    count_unity_members,
+    list_unity_member_ids,
+)
 from init_db import _sessionmaker_for_func
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +62,10 @@ async def check_condition_1st_lvl(session: AsyncSession, unity: Unity) -> bool:
     AMOUNT_MEMBERS_1ST_LVL = await tools.get_value(
         session=session, value_name="AMOUNT_MEMBERS_1ST_LVL"
     )
-    return unity.get_number_members() >= AMOUNT_MEMBERS_1ST_LVL
+    return (
+        await count_unity_members(session=session, unity=unity)
+        >= AMOUNT_MEMBERS_1ST_LVL
+    )
 
 
 async def get_data_by_lvl_unity(session: AsyncSession, lvl: int, unity: Unity) -> dict:
@@ -109,7 +116,7 @@ async def get_data_by_lvl_unity(session: AsyncSession, lvl: int, unity: Unity) -
             if key == "f_current_income":
                 data[key] = await tools.count_income_unity(session=session, unity=unity)
             elif key == "f_amount_members":
-                data[key] = unity.get_number_members()
+                data[key] = await count_unity_members(session=session, unity=unity)
             elif key == "f_members_not_have_amount_animals":
                 data[key] = await get_members_not_have_amount_animals(
                     session=session,
@@ -125,7 +132,7 @@ async def get_members_not_have_amount_animals(
     session: AsyncSession, idpk_unity: int, condition: int
 ) -> str:
     unity = await session.get(Unity, idpk_unity)
-    members_idpk = unity.get_members_idpk()
+    members_idpk = await list_unity_member_ids(session=session, unity=unity)
     members_not_have_amount_animals = []
     for idpk in members_idpk:
         user = await session.get(User, idpk)
@@ -156,7 +163,7 @@ async def get_size_unity_members(session: AsyncSession):
 async def count_page_unity_members(session: AsyncSession, idpk_unity: int) -> int:
     size = await get_size_unity_members(session=session)
     unity = await session.get(Unity, idpk_unity)
-    len_unity = unity.get_number_members()
+    len_unity = await count_unity_members(session=session, unity=unity)
     remains = len_unity % size
     return len_unity // size + (1 if remains else 0)
 
@@ -165,7 +172,7 @@ async def get_members_name_and_idpk(
     session: AsyncSession, idpk_unity: int
 ) -> list[tuple[str, int]]:
     unity = await session.get(Unity, idpk_unity)
-    members_idpk = unity.get_members_idpk()
+    members_idpk = await list_unity_member_ids(session=session, unity=unity)
     members = [await session.get(User, idpk) for idpk in members_idpk]
     members_name = [member.nickname for member in members]
     data = list(zip(members_name, members_idpk))
@@ -180,7 +187,9 @@ async def get_top_unity_by_animal(session: AsyncSession) -> tuple[int, dict]:
     if not unites:
         return 0, {}
 
-    user_ids = [int(idpk) for unity in unites for idpk in unity.get_members_idpk()]
+    user_ids = []
+    for unity in unites:
+        user_ids.extend(await list_unity_member_ids(session=session, unity=unity))
     if not user_ids:
         return 0, {}
 
@@ -188,7 +197,7 @@ async def get_top_unity_by_animal(session: AsyncSession) -> tuple[int, dict]:
     users = {user.idpk: user for user in users.scalars().all()}
 
     for unity in unites:
-        member_ids = unity.get_members_idpk()
+        member_ids = await list_unity_member_ids(session=session, unity=unity)
         animals = defaultdict(int)
         for idpk in member_ids:
             user = users[int(idpk)]
@@ -218,7 +227,8 @@ async def check_condition_2nd_lvl(session: AsyncSession, unity: Unity) -> bool:
         )
         total_income = 0
         users = [
-            await session.get(User, int(idpk)) for idpk in unity.get_members_idpk()
+            await session.get(User, int(idpk))
+            for idpk in await list_unity_member_ids(session=session, unity=unity)
         ]
         total_income = sum(
             [await tools.income_(session=session, user=user) for user in users]
@@ -243,11 +253,15 @@ async def check_condition_3rd_lvl(session: AsyncSession, unity: Unity) -> bool:
         AMOUNT_MEMBERS_3RD_LVL = await tools.get_value(
             session=session, value_name="AMOUNT_MEMBERS_3RD_LVL"
         )
-        if unity.get_number_members() < AMOUNT_MEMBERS_3RD_LVL:
+        if (
+            await count_unity_members(session=session, unity=unity)
+            < AMOUNT_MEMBERS_3RD_LVL
+        ):
             return False
         total_income = 0
         users = [
-            await session.get(User, int(idpk)) for idpk in unity.get_members_idpk()
+            await session.get(User, int(idpk))
+            for idpk in await list_unity_member_ids(session=session, unity=unity)
         ]
         total_income = sum(
             [await tools.income_(session=session, user=user) for user in users]
@@ -263,7 +277,10 @@ async def check_condition_3rd_lvl(session: AsyncSession, unity: Unity) -> bool:
 
 async def count_income_unity(session: AsyncSession, unity: Unity) -> int:
     total_income = 0
-    users = [await session.get(User, int(idpk)) for idpk in unity.get_members_idpk()]
+    users = [
+        await session.get(User, int(idpk))
+        for idpk in await list_unity_member_ids(session=session, unity=unity)
+    ]
     total_income = sum(
         [await tools.income_(session=session, user=user) for user in users]
     )

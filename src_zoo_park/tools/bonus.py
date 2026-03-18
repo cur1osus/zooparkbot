@@ -153,6 +153,7 @@ async def apply_bonus(session: AsyncSession, user: User, data_bonus: DataBonus):
                 self=user,
                 code_name_animal=data_bonus.result_func[0]["code_name"],
                 quantity=data_bonus.result_func[1],
+                session=session,
             )
         # case "item":
         #     await tools.add_item(

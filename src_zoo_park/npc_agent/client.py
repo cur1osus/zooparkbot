@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Any
 
 import aiohttp
+from fastjson import loads as fast_loads
+from text_utils import normalize_choice, preview_error, semantic_preview
 
 from .logs import log_npc_usage
 from .settings import NpcAgentSettings
@@ -68,7 +70,6 @@ SYSTEM_PROMPT = (
     + "Specific policy:\n"
     + "- Use decision_brief and planner.phase_a_candidates as primary shortlist.\n"
     + "- Prefer planner.recommended_actions unless invalid now.\n"
-    + "- Respect anti_loop_guard and momentum to avoid stale loops.\n"
     + "- If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.\n"
     + "- Keep reason short and concrete."
 )
@@ -388,11 +389,27 @@ class NpcDecisionClient:
         params = normalize_tool_call(tool_name, tool_decision.get("input", {}) or {})
 
         return {
-            "thought_process": str(tool_decision.get("thought_process", ""))[:1000],
-            "user_sentiment": str(tool_decision.get("user_sentiment", "neutral"))[:32],
+            "thought_process": semantic_preview(
+                tool_decision.get("thought_process", ""),
+                max_segments=8,
+                max_words=160,
+                max_chars=1000,
+                placeholder="...",
+            ),
+            "user_sentiment": normalize_choice(
+                tool_decision.get("user_sentiment", "neutral"),
+                allowed={"neutral", "positive", "negative", "annoyed"},
+                default="neutral",
+            ),
             "action": tool_name,
             "params": params,
-            "reason": str(tool_decision.get("reason", "v2_tool_selection"))[:220],
+            "reason": semantic_preview(
+                tool_decision.get("reason", "v2_tool_selection"),
+                max_segments=2,
+                max_words=30,
+                max_chars=220,
+                placeholder="...",
+            ),
             "sleep_seconds": int(tool_decision.get("sleep_seconds", 300) or 300),
         }
 
@@ -632,7 +649,9 @@ class NpcDecisionClient:
             ) as response:
                 if response.status >= 400:
                     error_body = await response.text()
-                    raise NpcLlmError(f"http_{response.status}:{error_body[:500]}")
+                    raise NpcLlmError(
+                        f"http_{response.status}:{preview_error(error_body, max_chars=500)}"
+                    )
                 data = await response.json()
         await self._log_usage(
             request_kind=request_kind,
@@ -752,7 +771,7 @@ class NpcDecisionClient:
                 error_text=stderr_text or stdout_text,
             )
             raise NpcLlmError(
-                f"cli_exit_{process.returncode}:{stderr_text[:500] or stdout_text[:500]}"
+                f"cli_exit_{process.returncode}:{preview_error(stderr_text or stdout_text, max_chars=500)}"
             )
         if not stdout_text:
             await self._log_usage(
@@ -763,7 +782,9 @@ class NpcDecisionClient:
                 status="empty_output",
                 error_text=stderr_text,
             )
-            raise NpcLlmError(f"cli_empty_output:{stderr_text[:500]}")
+            raise NpcLlmError(
+                f"cli_empty_output:{preview_error(stderr_text, max_chars=500)}"
+            )
         await self._log_usage(
             request_kind=request_kind,
             transport="cli",
@@ -811,7 +832,7 @@ class NpcDecisionClient:
         if usage:
             payload["usage"] = usage
         if error_text:
-            payload["error_preview"] = error_text[:240]
+            payload["error_preview"] = preview_error(error_text, max_chars=240)
         await log_npc_usage(log_path=self.settings.log_path, payload=payload)
 
     def _extract_content(self, data: dict[str, Any]) -> str:
@@ -833,13 +854,13 @@ class NpcDecisionClient:
         if clean_content.startswith("```"):
             clean_content = clean_content.strip("`")
             if clean_content.startswith("json"):
-                clean_content = clean_content[4:].strip()
+                clean_content = clean_content.removeprefix("json").strip()
         start = clean_content.find("{")
         end = clean_content.rfind("}")
         if start == -1 or end == -1:
             raise ValueError("LLM response does not contain JSON object")
 
-        data = json.loads(clean_content[start : end + 1])
+        data = fast_loads(clean_content[start : end + 1])
         if model_class:
             try:
                 validated = model_class(**data)

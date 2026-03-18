@@ -4,6 +4,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List
 
+from text_utils import extract_iso_day
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Summarize NPC LLM usage logs")
@@ -63,7 +65,7 @@ def main() -> None:
         total = int(row.get("total_tokens_est", prompt + response) or 0)
         status = str(row.get("status", "unknown"))
         kind = str(row.get("request_kind", "unknown"))
-        day = str(row.get("time", "unknown"))[:10]
+        day = extract_iso_day(row.get("time", "unknown"), default="unknown")
 
         total_prompt += prompt
         total_response += response

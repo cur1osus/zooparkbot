@@ -10,12 +10,19 @@ from typing import Any
 
 from config import CHAT_ID
 from db import User
+from fastjson import dumps as fast_dumps, loads_or_default
 from init_bot import bot
 from init_db import _sessionmaker_for_func
 from init_db_redis import redis
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools.value import get_value
+from text_utils import (
+    fit_db_field,
+    preview_error,
+    preview_with_prefix,
+    semantic_preview,
+)
 
 from .client import NpcDecisionClient
 from .logs import log_npc_decision
@@ -32,7 +39,6 @@ from .settings import settings
 from .state_builder import (
     build_observation,
     validate_action,
-    apply_action_guardrails,
     should_stop_npc_cycle,
     safe_int,
     compute_smart_sleep_seconds,
@@ -72,7 +78,7 @@ async def load_npc_v2_memory(user_idpk: int) -> dict[str, Any]:
     if not raw:
         return {"recent_outcomes": [], "tool_scores": {}}
     try:
-        payload = json.loads(raw)
+        payload = loads_or_default(raw, {})
     except Exception:
         return {"recent_outcomes": [], "tool_scores": {}}
 
@@ -116,7 +122,7 @@ async def update_npc_v2_memory(
 
     raw = await redis.get(npc_v2_memory_key(user_idpk))
     try:
-        payload = json.loads(raw) if raw else {}
+        payload = loads_or_default(raw, {}) if raw else {}
     except Exception:
         payload = {}
 
@@ -158,7 +164,7 @@ async def update_npc_v2_memory(
         "recent": recent,
         "tool_scores": tool_scores,
     }
-    await redis.set(npc_v2_memory_key(user_idpk), json.dumps(payload), ex=ttl_seconds)
+    await redis.set(npc_v2_memory_key(user_idpk), fast_dumps(payload), ex=ttl_seconds)
 
 
 def estimate_usd_eta_seconds(
@@ -404,9 +410,11 @@ async def run_npc_players_turn() -> None:
                                 base_url_override=settings.fallback_base_url,
                                 api_key_override=settings.fallback_api_key,
                             )
-                            decision["reason"] = (
-                                f"fallback_model:{settings.fallback_model} | {decision.get('reason', '')}"
-                            )[:280]
+                            decision["reason"] = preview_with_prefix(
+                                f"fallback_model:{settings.fallback_model}",
+                                decision.get("reason", ""),
+                                max_chars=280,
+                            )
                             llm_error_count = 0
                             fallback_model_ok = True
                             await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
@@ -426,9 +434,11 @@ async def run_npc_players_turn() -> None:
                                         base_url_override=settings.fallback_base_url,
                                         api_key_override=settings.fallback_api_key,
                                     )
-                                    decision["reason"] = (
-                                        f"fallback_retry:{settings.fallback_model} | {decision.get('reason', '')}"
-                                    )[:280]
+                                    decision["reason"] = preview_with_prefix(
+                                        f"fallback_retry:{settings.fallback_model}",
+                                        decision.get("reason", ""),
+                                        max_chars=280,
+                                    )
                                     llm_error_count = 0
                                     fallback_model_ok = True
                                     await redis.delete(
@@ -474,8 +484,10 @@ async def run_npc_players_turn() -> None:
                             observation=observation,
                             retry_delay=retry_delay,
                         )
-                        decision["reason"] = (
-                            f"llm_error:{err_text[:180]} | {decision['reason']}"
+                        decision["reason"] = preview_with_prefix(
+                            f"llm_error:{preview_error(err_text, max_chars=180)}",
+                            decision["reason"],
+                            max_chars=280,
                         )
 
                 if decision.get("action") not in {"wait"} and "llm_error" not in str(
@@ -505,10 +517,7 @@ async def run_npc_players_turn() -> None:
                             )
                             decision.update(corrected)
 
-                action = apply_action_guardrails(
-                    action=validate_action(decision=decision),
-                    observation=observation,
-                )
+                action = validate_action(decision=decision)
 
                 # Phase 3: Execute in DB and Commit
                 async with _sessionmaker_for_func() as session:
@@ -599,15 +608,12 @@ async def run_npc_players_turn() -> None:
                                 "phase_1_observation": {
                                     "wake_context": observation.get("wake_context"),
                                     "planner": observation.get("planner"),
-                                    "anti_loop_guard": observation.get(
-                                        "anti_loop_guard"
-                                    ),
                                     "action_contract": observation.get(
                                         "action_contract"
                                     ),
                                 },
                                 "phase_2_decision": decision,
-                                "phase_2_guardrailed": action,
+                                "phase_2_action": action,
                                 "phase_3_execution": result,
                                 "phase_3_delta": {
                                     "usd": int(after_snapshot.get("usd", 0) or 0)
@@ -664,7 +670,6 @@ async def run_npc_players_turn() -> None:
                             or "action unavailable"
                         ),
                         "allowed_actions": list(result.get("allowed_actions") or []),
-                        "blocked_actions": list(result.get("blocked_actions") or []),
                         "retryable": bool(result.get("retryable", False)),
                         "cooldown_sec": int(result.get("cooldown_sec", 0) or 0),
                         "suggested_alternatives": list(
@@ -767,10 +772,20 @@ def build_npc_wake_reason(
     action_name = str(action.get("action", "wait"))
     result_summary = ""
     if result:
-        result_summary = str(result.get("summary", ""))[:180]
+        result_summary = semantic_preview(
+            result.get("summary", ""),
+            max_segments=2,
+            max_words=24,
+            max_chars=180,
+            placeholder="...",
+        )
     if result_summary:
-        return f"{action_name}:{result_summary}"[:255]
-    return action_name[:255]
+        return fit_db_field(
+            f"{action_name}:{result_summary}",
+            max_len=255,
+            default="cycle_complete",
+        )
+    return fit_db_field(action_name, max_len=255, default="cycle_complete")
 
 
 async def maybe_send_npc_chat_comment(
@@ -853,12 +868,24 @@ async def maybe_send_npc_chat_comment(
         },
         "action": {
             "name": action.get("action", "wait"),
-            "reason": str(action.get("reason", ""))[:220],
+            "reason": semantic_preview(
+                action.get("reason", ""),
+                max_segments=2,
+                max_words=30,
+                max_chars=220,
+                placeholder="...",
+            ),
             "sleep_seconds": int(action.get("sleep_seconds") or planned_sleep_seconds),
         },
         "result": {
             "status": result.get("status", "unknown"),
-            "summary": str(result.get("summary", ""))[:220],
+            "summary": semantic_preview(
+                result.get("summary", ""),
+                max_segments=2,
+                max_words=30,
+                max_chars=220,
+                placeholder="...",
+            ),
         },
         "progress": {
             "income_rank": self_standings.get("income_rank"),
@@ -929,7 +956,7 @@ async def maybe_send_npc_chat_comment(
             recent = []
         recent.insert(0, message)
         profile_data["recent_sent_chats"] = recent[:3]
-        profile_row.payload = json.dumps(profile_data)
+        profile_row.payload = fast_dumps(profile_data)
         await session.commit()
 
 

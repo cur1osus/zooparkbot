@@ -1,10 +1,10 @@
 import hashlib
-import json
-import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from db import Item, NpcMemory, RequestToUnity, Unity, User
+from db.structured_state import count_unity_members, get_user_aviaries_map
+from fastjson import dumps as fast_dumps, loads as fast_loads
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools.animals import get_total_number_animals
@@ -12,6 +12,7 @@ from tools.aviaries import get_remain_seats, get_total_number_seats
 from tools.income import income_
 from tools.unity import get_unity_idpk
 from tools.value import get_value
+from text_utils import fit_db_field, semantic_preview
 
 from .settings import settings
 
@@ -66,14 +67,14 @@ def _now() -> datetime:
 
 
 def _json_dumps(payload: dict[str, Any] | list[Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False)
+    return fast_dumps(payload)
 
 
 def _json_loads(payload: str | None) -> dict[str, Any]:
     if not payload:
         return {}
     try:
-        value = json.loads(payload)
+        value = fast_loads(payload)
     except Exception:
         return {}
     if isinstance(value, dict):
@@ -97,7 +98,9 @@ def _pick_strings(value: Any, limit: int) -> list[str]:
         text = str(item).strip()
         if not text:
             continue
-        result.append(text[:200])
+        result.append(
+            semantic_preview(text, max_segments=2, max_words=24, max_chars=200)
+        )
         if len(result) >= limit:
             break
     return result
@@ -149,8 +152,8 @@ def _tactic_shift_entry(
     return {
         "tactic": tactic,
         "delta": int(delta),
-        "reason": str(reason)[:180],
-        "source": source[:32],
+        "reason": semantic_preview(reason, max_segments=1, max_words=18, max_chars=180),
+        "source": fit_db_field(source, max_len=32, default="event"),
         "time": _now().isoformat(),
     }
 
@@ -168,41 +171,12 @@ def _semantic_text_window(
     max_words: int = 24,
     max_chars: int = 180,
 ) -> str:
-    text = " ".join(str(value or "").split())
-    if not text:
-        return ""
-
-    segments = [
-        segment.strip(" ,;:-")
-        for segment in re.split(r"(?<=[.!?])\s+|\s+\|\s+|\s+->\s+|;\s+", text)
-        if segment.strip()
-    ]
-    if not segments:
-        segments = [text]
-
-    selected: list[str] = []
-    words_used = 0
-    chars_used = 0
-    for segment in segments:
-        segment_words = len(segment.split())
-        projected_chars = chars_used + len(segment) + (2 if selected else 0)
-        if selected and (
-            len(selected) >= max_segments
-            or words_used + segment_words > max_words
-            or projected_chars > max_chars
-        ):
-            break
-        if not selected and (segment_words > max_words or len(segment) > max_chars):
-            return " ".join(segment.split()[:max_words])
-        selected.append(segment)
-        words_used += segment_words
-        chars_used = projected_chars
-        if len(selected) >= max_segments:
-            break
-
-    if selected:
-        return "; ".join(selected)
-    return " ".join(text.split()[:max_words])
+    return semantic_preview(
+        value,
+        max_segments=max_segments,
+        max_words=max_words,
+        max_chars=max_chars,
+    )
 
 
 def _build_initial_tactic_scores() -> dict[str, int]:
@@ -272,9 +246,12 @@ def _rehydrate_profile_payload(
             ],
             16,
         ),
-        "last_reflection_summary": str(
-            adaptation_signals.get("last_reflection_summary", "")
-        )[:240],
+        "last_reflection_summary": semantic_preview(
+            adaptation_signals.get("last_reflection_summary", ""),
+            max_segments=2,
+            max_words=30,
+            max_chars=240,
+        ),
     }
     action_stats = source.get("action_stats")
     if not isinstance(action_stats, dict):
@@ -294,7 +271,11 @@ def _rehydrate_profile_payload(
             "npc_id_user": int(user.id_user),
             "nickname": user.nickname,
         },
-        "current_mood": str(source.get("current_mood", "neutral"))[:32],
+        "current_mood": fit_db_field(
+            source.get("current_mood", "neutral"),
+            max_len=32,
+            default="neutral",
+        ),
         "affinity_score": _clamp(int(source.get("affinity_score", 50) or 50), 1, 100),
         "recent_sent_chats": source.get("recent_sent_chats", [])[:3],
         "tactic_scores_raw": tactic_scores_raw,
@@ -341,17 +322,17 @@ async def _upsert_memory_row(
         row.payload = _json_dumps(payload)
         row.importance = _clamp(importance, 0, 1000)
         row.confidence = _clamp(confidence, 0, 1000)
-        row.status = status[:32]
+        row.status = fit_db_field(status, max_len=32, default="active")
         row.updated_at = now
         return row
     row = NpcMemory(
         idpk_user=user_idpk,
-        kind=kind[:32],
-        topic=topic[:128],
+        kind=fit_db_field(kind, max_len=32, default=PROFILE_KIND),
+        topic=fit_db_field(topic, max_len=128, default="topic"),
         payload=_json_dumps(payload),
         importance=_clamp(importance, 0, 1000),
         confidence=_clamp(confidence, 0, 1000),
-        status=status[:32],
+        status=fit_db_field(status, max_len=32, default="active"),
         created_at=now,
         updated_at=now,
     )
@@ -373,12 +354,12 @@ async def _append_memory_row(
     now = _now()
     row = NpcMemory(
         idpk_user=user_idpk,
-        kind=kind[:32],
-        topic=topic[:128],
+        kind=fit_db_field(kind, max_len=32, default=EVENT_KIND),
+        topic=fit_db_field(topic, max_len=128, default="topic"),
         payload=_json_dumps(payload),
         importance=_clamp(importance, 0, 1000),
         confidence=_clamp(confidence, 0, 1000),
-        status=status[:32],
+        status=fit_db_field(status, max_len=32, default="active"),
         created_at=now,
         updated_at=now,
     )
@@ -433,9 +414,10 @@ async def ensure_npc_profile_memory(session: AsyncSession, user: User) -> NpcMem
 
 async def build_npc_snapshot(session: AsyncSession, user: User) -> dict[str, Any]:
     income_value = await income_(session=session, user=user)
-    total_seats = await get_total_number_seats(session=session, aviaries=user.aviaries)
+    aviary_map = await get_user_aviaries_map(session=session, user=user)
+    total_seats = await get_total_number_seats(session=session, aviaries=aviary_map)
     remain_seats = await get_remain_seats(session=session, user=user)
-    total_animals = await get_total_number_animals(self=user)
+    total_animals = await get_total_number_animals(self=user, session=session)
     items_count = int(
         await session.scalar(
             select(func.count()).select_from(Item).where(Item.id_user == user.id_user)
@@ -478,7 +460,11 @@ async def build_npc_snapshot(session: AsyncSession, user: User) -> dict[str, Any
         "current_unity": user.current_unity,
         "current_unity_idpk": current_unity_idpk,
         "unity_level": int(current_unity.level) if current_unity else 0,
-        "unity_members": current_unity.get_number_members() if current_unity else 0,
+        "unity_members": (
+            await count_unity_members(session=session, unity=current_unity)
+            if current_unity
+            else 0
+        ),
         "pending_unity_requests": pending_requests_count,
         "moves_logged": int(user.moves),
     }
@@ -1277,9 +1263,12 @@ async def evolve_npc_profile(
     adaptation_signals["recent_trait_shifts"] = []
     adaptation_signals["recent_tactic_shifts"] = _limit_entries(tactic_shift_log, 16)
     if reflection_payload:
-        adaptation_signals["last_reflection_summary"] = str(
-            reflection_payload.get("summary", "")
-        )[:240]
+        adaptation_signals["last_reflection_summary"] = semantic_preview(
+            reflection_payload.get("summary", ""),
+            max_segments=2,
+            max_words=30,
+            max_chars=240,
+        )
     profile["adaptation_signals"] = adaptation_signals
 
     row.payload = _json_dumps(profile)
@@ -1360,7 +1349,6 @@ def _build_event_payload(
         ][: settings.memory_goal_limit],
         "strategy_summary": observation.get("strategy_signals", {}).get("summary", {}),
         "planner": observation.get("planner", {}),
-        "anti_loop_guard": observation.get("anti_loop_guard", {}),
         "behavior_guidance": observation.get("memory", {}).get("behavior_guidance", {}),
         "importance": importance,
     }
@@ -1418,10 +1406,6 @@ def _deterministic_reflection(
         lessons.append(
             f"Lean more on {best_action} when the board state matches its setup."
         )
-    if worst_action:
-        lessons.append(
-            f"Avoid looping on {worst_action} without a stronger trigger or better resources."
-        )
     if int(snapshot.get("remain_seats", 0)) <= 0:
         lessons.append(
             "Seat pressure is blocking growth; aviary expansion should stay near the front of the queue."
@@ -1465,7 +1449,12 @@ def _deterministic_reflection(
 
     priorities = [goal.get("topic") for goal in active_goals[:3] if goal.get("topic")]
     return {
-        "summary": "; ".join(summary_parts)[:500],
+        "summary": semantic_preview(
+            "; ".join(summary_parts),
+            max_segments=4,
+            max_words=80,
+            max_chars=500,
+        ),
         "lessons": lessons[:4],
         "opportunities": opportunities[:4],
         "risks": risks[:4],
@@ -1557,9 +1546,12 @@ async def _maybe_create_reflection(
         except Exception:
             llm_reflection = {}
     if llm_reflection:
-        reflection_payload["summary"] = str(
-            llm_reflection.get("summary") or reflection_payload["summary"]
-        )[:500]
+        reflection_payload["summary"] = semantic_preview(
+            llm_reflection.get("summary") or reflection_payload["summary"],
+            max_segments=4,
+            max_words=80,
+            max_chars=500,
+        )
         reflection_payload["lessons"] = (
             _pick_strings(
                 llm_reflection.get("lessons"),
@@ -1602,7 +1594,12 @@ async def _maybe_create_reflection(
                     topic=f"fact:{hashlib.md5(fact.encode('utf-8')).hexdigest()[:8]}",
                     payload={
                         "fact": fact,
-                        "source_reflection": reflection_payload.get("summary", "")[:50],
+                        "source_reflection": semantic_preview(
+                            reflection_payload.get("summary", ""),
+                            max_segments=1,
+                            max_words=8,
+                            max_chars=50,
+                        ),
                     },
                     importance=500,
                     confidence=800,
@@ -1891,79 +1888,20 @@ def _relationship_summary_for_context(payload: dict[str, Any]) -> dict[str, Any]
 
 def _profile_summary_for_context(payload: dict[str, Any]) -> dict[str, Any]:
     return {
-        "current_mood": str(payload.get("current_mood", "neutral"))[:32],
+        "current_mood": fit_db_field(
+            payload.get("current_mood", "neutral"),
+            max_len=32,
+            default="neutral",
+        ),
         "affinity_score": _clamp(int(payload.get("affinity_score", 50) or 50), 1, 100),
     }
 
 
 def _build_behavior_guidance(
-    profile: dict[str, Any],
     active_goals: list[dict[str, Any]],
-    recent_events: list[dict[str, Any]],
     progress_summary: dict[str, Any],
     snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    recent_action_names = [
-        str(event.get("action", {}).get("name", "wait")) for event in recent_events[:6]
-    ]
-    idle_streak = 0
-    for action_name in recent_action_names:
-        if action_name != "wait":
-            break
-        idle_streak += 1
-
-    blocked_actions: list[str] = []
-    repeated_action = recent_action_names[0] if recent_action_names else None
-    if repeated_action and recent_action_names[:3].count(repeated_action) >= 3:
-        blocked_actions.append(repeated_action)
-
-    last_event = recent_events[0] if recent_events else {}
-    last_action_name = str(last_event.get("action", {}).get("name", "")).strip()
-    last_result_status = str(last_event.get("result", {}).get("status", "")).strip()
-    remain_seats = int((snapshot or {}).get("remain_seats", 0) or 0)
-
-    # Cooldown: right after successful aviary buy, do not immediately repeat it.
-    if last_action_name == "buy_aviary" and last_result_status == "ok":
-        if "buy_aviary" not in blocked_actions:
-            blocked_actions.append("buy_aviary")
-
-    # Cleanup: if seat pressure is already resolved, don't keep stale aviary block,
-    # but keep a short cooldown window right after a successful buy.
-    recent_aviary_actions = recent_action_names[:3].count("buy_aviary")
-    if (
-        remain_seats > 0
-        and "buy_aviary" in blocked_actions
-        and recent_aviary_actions == 0
-    ):
-        blocked_actions = [a for a in blocked_actions if a != "buy_aviary"]
-
-    action_stats = profile.get("action_stats", {})
-    if isinstance(action_stats, dict):
-        for action_name, payload in action_stats.items():
-            if not isinstance(payload, dict):
-                continue
-            attempts = int(payload.get("attempts", 0) or 0)
-            failures = int(payload.get("failures", 0) or 0)
-            net_income_delta = int(payload.get("net_income_delta", 0) or 0)
-            if action_name == "recruit_top_player":
-                # Social recruiting has delayed payoff; do not hard-block it
-                # based on short-term tactical stats.
-                continue
-
-            if (
-                attempts >= 3
-                and failures >= max(2, attempts - 1)
-                and action_name not in blocked_actions
-            ):
-                blocked_actions.append(action_name)
-            elif (
-                attempts >= 3
-                and net_income_delta <= 0
-                and failures > 0
-                and action_name not in blocked_actions
-            ):
-                blocked_actions.append(action_name)
-
     suggested_actions: list[str] = []
     for goal in active_goals:
         for action_name in goal.get("recommended_actions", []) or []:
@@ -1977,23 +1915,16 @@ def _build_behavior_guidance(
             break
 
     playbook = []
-    if idle_streak >= 2:
-        playbook.append("Break long idle streaks as soon as a meaningful edge appears.")
-    if blocked_actions:
-        playbook.append(
-            "Avoid looping on low-EV actions: " + ", ".join(blocked_actions[:4]) + "."
-        )
     if progress_summary.get("income_delta_total", 0) > 0:
         playbook.append("Recent income growth validates compounding plays.")
-    if progress_summary.get("most_failed_action"):
+    if int((snapshot or {}).get("remain_seats", 0) or 0) <= 0:
         playbook.append(
-            f"Do not spam {progress_summary['most_failed_action']} without a clear state change."
+            "Seat pressure is active; capacity unlocks deserve immediate attention."
         )
+    if int((snapshot or {}).get("usd", 0) or 0) < 250:
+        playbook.append("Keep enough USD liquid to avoid stalling the next unlock.")
 
     return {
-        "idle_streak": idle_streak,
-        "repeated_action": repeated_action,
-        "avoid_actions": blocked_actions[:6],
         "suggested_actions": suggested_actions[:6],
         "playbook": playbook[:5],
     }
@@ -2147,9 +2078,7 @@ async def build_npc_memory_context(
     profile_for_context = _profile_summary_for_context(profile)
     progress_summary = _build_progress_summary(recent_events)
     behavior_guidance = _build_behavior_guidance(
-        profile=profile,
         active_goals=active_goals,
-        recent_events=recent_events_for_context,
         progress_summary=progress_summary,
         snapshot=snapshot,
     )

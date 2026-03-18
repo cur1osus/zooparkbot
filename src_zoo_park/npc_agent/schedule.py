@@ -5,6 +5,7 @@ from db import NpcState, User
 from init_db_redis import redis
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from text_utils import fit_db_field, normalize_choice
 
 from .settings import settings
 
@@ -54,8 +55,12 @@ async def get_npc_event_wake_reason(user_idpk: int) -> str | None:
     if raw_value is None:
         return None
     if isinstance(raw_value, bytes):
-        return raw_value.decode("utf-8", errors="ignore")[:255] or "event"
-    return str(raw_value)[:255] or "event"
+        return fit_db_field(
+            raw_value.decode("utf-8", errors="ignore"),
+            max_len=255,
+            default="event",
+        )
+    return fit_db_field(raw_value, max_len=255, default="event")
 
 
 async def clear_npc_event_wake(user_idpk: int) -> None:
@@ -77,7 +82,7 @@ async def wake_npc_now(
     await session.flush()
     await redis.set(
         npc_event_wake_key(user_idpk),
-        (reason or "event")[:255],
+        fit_db_field(reason or "event", max_len=255, default="event"),
         ex=settings.event_wake_ttl_seconds,
     )
 
@@ -111,8 +116,16 @@ async def schedule_next_npc_wake(
     now = datetime.now()
     state.last_wake_at = now
     state.last_sleep_seconds = int(sleep_seconds)
-    state.last_wake_source = (source or "scheduled")[:32]
-    state.last_wake_reason = (reason or "cycle_complete")[:255]
+    state.last_wake_source = normalize_choice(
+        source or "scheduled",
+        allowed={"scheduled", "event"},
+        default="scheduled",
+    )
+    state.last_wake_reason = fit_db_field(
+        reason or "cycle_complete",
+        max_len=255,
+        default="cycle_complete",
+    )
     state.next_wake_at = now + timedelta(seconds=int(sleep_seconds))
 
 

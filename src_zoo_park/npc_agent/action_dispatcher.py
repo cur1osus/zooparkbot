@@ -8,6 +8,12 @@ from typing import Any
 from aiogram.utils.deep_linking import create_start_link
 from config import CHAT_ID
 from db import Animal, Game, Gamer, Item, RequestToUnity, TransferMoney, Unity, User
+from db.structured_state import (
+    add_unity_member,
+    get_user_aviaries_map,
+    pop_next_unity_owner,
+    remove_unity_member,
+)
 from game_variables import games
 from init_bot import bot
 from init_db_redis import redis
@@ -41,6 +47,7 @@ from tools.unity_projects import (
     get_user_chests,
     open_user_chests,
 )
+from text_utils import fit_db_field, normalize_choice, preview_text
 
 from .client import NpcDecisionClient
 from .settings import settings
@@ -147,17 +154,6 @@ async def execute_action(
             if name and name not in allowed_actions:
                 allowed_actions.append(name)
 
-        blocked_actions = [
-            {
-                "action": str(name),
-                "reason": "blocked_by_guard",
-            }
-            for name in (
-                observation.get("anti_loop_guard", {}).get("blocked_actions", []) or []
-            )
-            if str(name).strip()
-        ]
-
         retryable_codes = {
             "not_enough_usd",
             "not_enough_rub",
@@ -183,8 +179,6 @@ async def execute_action(
         result["cooldown_sec"] = 120 if retryable else 300
         result["suggested_alternatives"] = suggested_alternatives
         result["resource_deficit"] = _infer_resource_deficit(error_code)
-        if blocked_actions:
-            result["blocked_actions"] = blocked_actions
 
     return result
 
@@ -214,7 +208,7 @@ async def execute_change_own_mood(
     profile = _rehydrate_profile_payload(
         user=user, payload=_json_loads(profile_row.payload)
     )
-    mood = str(params.get("mood", "neutral")).strip()[:32]
+    mood = fit_db_field(params.get("mood", "neutral"), max_len=32, default="neutral")
     profile["current_mood"] = mood
     profile_row.payload = json.dumps(profile)
     await session.flush()
@@ -237,7 +231,7 @@ async def execute_set_tactical_focus(
     profile = _rehydrate_profile_payload(
         user=user, payload=_json_loads(profile_row.payload)
     )
-    focus = str(params.get("focus", "economy")).strip()[:32]
+    focus = fit_db_field(params.get("focus", "economy"), max_len=32, default="economy")
     tactics = profile.get("active_tactics", [])
     if isinstance(tactics, list):
         if focus not in tactics:
@@ -266,8 +260,12 @@ async def execute_send_npc_signal(
     if not (target_user.id_user < 0 or target_user.username.startswith("npc_")):
         return {"status": "error", "summary": "target_not_npc"}
 
-    signal_type = str(params.get("signal_type", "info")).strip()[:32]
-    message = str(params.get("message", "")).strip()[:100]
+    signal_type = normalize_choice(
+        params.get("signal_type", "info"),
+        allowed={"request_funds", "propose_alliance", "taunt", "info"},
+        default="info",
+    )
+    message = preview_text(params.get("message", ""), max_chars=100, placeholder="...")
 
     from .memory import NpcMemory, FACT_KIND
 
@@ -471,9 +469,10 @@ async def execute_buy_aviary(
     if not code_name_aviary:
         return {"status": "skipped", "summary": "aviary_missing"}
 
+    aviaries_state = await get_user_aviaries_map(session=session, user=user)
     aviary_price = await get_price_aviaries(
         session=session,
-        aviaries=user.aviaries,
+        aviaries=aviaries_state,
         code_name_aviary=code_name_aviary,
         info_about_items=user.info_about_items,
     )
@@ -528,7 +527,12 @@ async def execute_buy_rarity_animal(
 
     user.usd -= finite_price
     user.amount_expenses_usd += finite_price
-    await add_animal(self=user, code_name_animal=code_name, quantity=quantity)
+    await add_animal(
+        self=user,
+        code_name_animal=code_name,
+        quantity=quantity,
+        session=session,
+    )
     return {"status": "ok", "summary": f"buy_animal:{code_name}x{quantity}"}
 
 
@@ -553,6 +557,7 @@ async def execute_buy_merchant_discount_offer(
         self=user,
         code_name_animal=merchant.code_name_animal,
         quantity=merchant.quantity_animals,
+        session=session,
     )
     merchant.first_offer_bought = True
     return {
@@ -591,9 +596,10 @@ async def execute_buy_merchant_random_offer(
             self=user,
             code_name_animal=animal_obj.code_name,
             quantity=part_animals,
+            session=session,
         )
         rewards.append(f"{animal_obj.code_name}x{part_animals}")
-    merchant.price = await gen_price(session=session, animals=user.animals)
+    merchant.price = await gen_price(session=session, animals=user.animals, user=user)
     return {"status": "ok", "summary": f"merchant_random:{','.join(rewards)}"}
 
 
@@ -632,6 +638,7 @@ async def execute_buy_merchant_targeted_offer(
             self=user,
             code_name_animal=animal_obj.code_name,
             quantity=part_animals,
+            session=session,
         )
         rewards.append(f"{animal_obj.code_name}x{part_animals}")
     return {"status": "ok", "summary": f"merchant_targeted:{','.join(rewards)}"}
@@ -894,7 +901,7 @@ async def execute_join_best_unity(
 
     owner = await session.get(User, chosen["owner_idpk"])
     if owner and owner.id_user < 0:
-        unity.add_member(idpk_member=user.idpk)
+        await add_unity_member(session=session, unity=unity, member_idpk=user.idpk)
         user.current_unity = f"member:{unity.idpk}"
         return {"status": "ok", "summary": f"join_npc_unity:{unity.name}"}
 
@@ -1021,7 +1028,7 @@ async def execute_review_unity_request(
         await session.delete(request)
         return {"status": "ok", "summary": f"reject_unity_request:{applicant.nickname}"}
 
-    unity.add_member(idpk_member=applicant.idpk)
+    await add_unity_member(session=session, unity=unity, member_idpk=applicant.idpk)
     applicant.current_unity = f"member:{unity.idpk}"
     await session.delete(request)
     return {"status": "ok", "summary": f"accept_unity_request:{applicant.nickname}"}
@@ -1116,13 +1123,13 @@ async def execute_exit_from_unity(
 
     # Member exit
     if unity.idpk_user != user.idpk:
-        unity.remove_member(idpk_member=str(user.idpk))
+        await remove_unity_member(session=session, unity=unity, member_idpk=user.idpk)
         user.current_unity = None
         return {"status": "ok", "summary": "exit_unity:member"}
 
     # Owner exit: promote first member or delete unity
     user.current_unity = None
-    idpk_next_owner = unity.remove_first_member()
+    idpk_next_owner = await pop_next_unity_owner(session=session, unity=unity)
     if idpk_next_owner:
         next_owner: User = await session.get(User, idpk_next_owner)
         if next_owner:

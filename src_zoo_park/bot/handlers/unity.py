@@ -29,6 +29,11 @@ from init_db_redis import redis
 from npc_agent.schedule import wake_npc_now
 from bot.states import UserState
 from db import RequestToUnity, Unity, User
+from db.structured_state import (
+    add_unity_member,
+    pop_next_unity_owner,
+    remove_unity_member,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
@@ -314,7 +319,7 @@ async def process_send_request(
             nickname=mention_html(id_user=user.id_user, name=user.nickname),
             usd=user.usd,
             rub=user.rub,
-            animals=await get_total_number_animals(self=user),
+            animals=await get_total_number_animals(self=user, session=session),
             income=await income_(session=session, user=user),
         ),
         reply_markup=await ik_unity_invitation(user.idpk),
@@ -343,7 +348,7 @@ async def process_accept_to_unity(
     )
     if r:
         await session.delete(r)
-    unity.add_member(idpk_member=member.idpk)
+    await add_unity_member(session=session, unity=unity, member_idpk=member.idpk)
     await session.commit()
     await query.message.edit_text(
         text=await get_text_message("request_accepted"),
@@ -411,7 +416,7 @@ async def accept_npc_unity_invite(
         )
         return
 
-    unity.add_member(idpk_member=user.idpk)
+    await add_unity_member(session=session, unity=unity, member_idpk=user.idpk)
     user.current_unity = f"member:{unity.idpk}"
     await redis.delete(invite_key)
     await wake_npc_now(
@@ -458,7 +463,7 @@ async def exit_from_unity(
     unity = await session.get(Unity, data["idpk_unity"])
     # если не владелец объединения
     if unity.idpk_user != user.idpk:
-        unity.remove_member(idpk_member=str(user.idpk))
+        await remove_unity_member(session=session, unity=unity, member_idpk=user.idpk)
         user.current_unity = None
         owner = await session.get(User, unity.idpk_user)
         if owner and owner.id_user < 0:
@@ -479,7 +484,7 @@ async def exit_from_unity(
         return
     # если владелец объединения
     user.current_unity = None
-    idpk_next_owner = unity.remove_first_member()
+    idpk_next_owner = await pop_next_unity_owner(session=session, unity=unity)
     if idpk_next_owner:
         next_owner: User = await session.get(User, idpk_next_owner)
         next_owner.current_unity = f"owner:{unity.idpk}"

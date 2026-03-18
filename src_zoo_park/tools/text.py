@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import tools
+from fastjson import loads_or_default
 
 
 async def get_text_message(name: str, **kw) -> str:
@@ -308,7 +309,8 @@ async def factory_text_main_top_by_animals(
     emojis_by_user = await _get_top_emojis_by_user(session=session, users=users)
     unity_names = await _get_top_unity_names(session=session, users=users)
     users_animals = [
-        (user, await tools.get_total_number_animals(self=user)) for user in users
+        (user, await tools.get_total_number_animals(self=user, session=session))
+        for user in users
     ]
     users_animals.sort(key=lambda x: x[1], reverse=True)
 
@@ -440,7 +442,7 @@ async def factory_text_account_animals(
 ) -> str:
     text = ""
     if isinstance(animals, str):
-        animals = json.loads(animals)
+        animals = loads_or_default(animals, {})
     sorted_keys = sorted(animals, key=lambda x: animals[x], reverse=True)
     for animal in sorted_keys:
         name = await session.scalar(
@@ -456,7 +458,7 @@ async def factory_text_account_animals(
 
 async def factory_text_account_aviaries(session: AsyncSession, aviaries: str) -> str:
     text = ""
-    aviaries = json.loads(aviaries)
+    aviaries = loads_or_default(aviaries, {})
     sorted_keys = sorted(aviaries, key=lambda x: aviaries[x]["quantity"], reverse=True)
     for aviary in sorted_keys:
         name = await session.scalar(
@@ -541,7 +543,7 @@ async def ft_bonus_info(
 
 async def ft_item_props(item_props: dict | str):
     if isinstance(item_props, str):
-        item_props = json.loads(item_props)
+        item_props = loads_or_default(item_props, {})
     t = []
     item_props = sorted(item_props.items(), key=lambda x: x[1], reverse=True)
     for k, v in item_props:
@@ -558,7 +560,7 @@ async def ft_item_props_for_update(
     item_props: dict | str, updated_prop: str, parameter: int
 ):
     if isinstance(item_props, str):
-        item_props = json.loads(item_props)
+        item_props = loads_or_default(item_props, {})
     t = []
     for k, v in item_props.items():
         name_prop = await get_text_message(name=k)

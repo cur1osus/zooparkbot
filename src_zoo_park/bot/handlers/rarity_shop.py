@@ -340,6 +340,7 @@ async def get_quantity_rshop(
         self=user,
         code_name_animal=data["animal"] + data["rarity"],
         quantity=quantity_animal,
+        session=session,
     )
     await query.answer(
         await get_text_message("offer_bought_successfully"), show_alert=True
@@ -448,6 +449,7 @@ async def get_custom_quantity_animals_rshop(
         self=user,
         code_name_animal=data["animal"] + data["rarity"],
         quantity=quantity_animal,
+        session=session,
     )
     await message.answer(
         text=await get_text_message("you_paid", fp=finite_price),

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from text_utils import fit_db_field, normalize_choice, preview_text
+
 
 def _to_int(value: Any, default: int = 0) -> int:
     try:
@@ -61,9 +63,9 @@ def _tool_schema_for_action(action: str) -> dict[str, Any]:
                 "target_idpk": {"type": "integer"},
                 "signal_type": {
                     "type": "string",
-                    "enum": ["request_funds", "propose_alliance", "taunt", "info"]
+                    "enum": ["request_funds", "propose_alliance", "taunt", "info"],
                 },
-                "message": {"type": "string"}
+                "message": {"type": "string"},
             },
             "required": ["target_idpk", "signal_type", "message"],
         },
@@ -71,7 +73,9 @@ def _tool_schema_for_action(action: str) -> dict[str, Any]:
     return schemas.get(action, {"type": "object"})
 
 
-def build_tool_catalog(allowed_actions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def build_tool_catalog(
+    allowed_actions: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in allowed_actions or []:
@@ -130,16 +134,36 @@ def normalize_tool_call(tool: str, raw_input: dict[str, Any] | None) -> dict[str
         return {"rerolls": max(0, _to_int(payload.get("rerolls"), default=0))}
 
     if tool == "change_own_mood":
-        return {"mood": str(payload.get("mood", "neutral")).strip()[:32]}
+        return {
+            "mood": fit_db_field(
+                payload.get("mood", "neutral"),
+                max_len=32,
+                default="neutral",
+            )
+        }
 
     if tool == "set_tactical_focus":
-        return {"focus": str(payload.get("focus", "economy")).strip()[:32]}
+        return {
+            "focus": fit_db_field(
+                payload.get("focus", "economy"),
+                max_len=32,
+                default="economy",
+            )
+        }
 
     if tool == "send_npc_signal":
         return {
             "target_idpk": _to_int(payload.get("target_idpk"), default=0),
-            "signal_type": str(payload.get("signal_type", "info")).strip()[:32],
-            "message": str(payload.get("message", "")).strip()[:100],
+            "signal_type": normalize_choice(
+                payload.get("signal_type", "info"),
+                allowed={"request_funds", "propose_alliance", "taunt", "info"},
+                default="info",
+            ),
+            "message": preview_text(
+                payload.get("message", ""),
+                max_chars=100,
+                placeholder="...",
+            ),
         }
 
     return payload

@@ -5,6 +5,7 @@ import string
 from datetime import datetime, timedelta
 
 from db import User
+from db.structured_state import list_user_history_entries
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,39 +70,43 @@ async def fetch_and_parse_str_value(
 
 async def get_events_list(session: AsyncSession, id_user: int):
     events_list = []
-    events = await session.execute(
-        select(User.id_user, User.nickname, User.history_moves).where(
-            User.id_user != id_user,
-            User.history_moves != "{}",
-        )
-    )
-    for id_user, nickname, history_moves in events.all():
-        d: dict = json.loads(history_moves)
-        mention_user = tools.mention_html(id_user, nickname)
-        events_list.append((d.items(), mention_user))
+    users = await session.scalars(select(User).where(User.id_user != id_user))
+    for user in users.all():
+        entries = await list_user_history_entries(session=session, user=user)
+        if not entries:
+            continue
+        mention_user = tools.mention_html(user.id_user, user.nickname)
+        for entry in entries:
+            events_list.append(
+                {
+                    "time": entry["time"],
+                    "event": entry["event"],
+                    "mention": mention_user,
+                }
+            )
     return events_list
 
 
 MESSAGE_LENGTH = 4096
 
 
-def sort_events_by_time(events_list: list[tuple], time: int):
+def sort_events_by_time(events_list: list[dict], time: int):
     combined_events = []
 
     # Пороговое время, до которого нужно отобрать события
     start_time = datetime.now() - timedelta(minutes=time)
 
     # Объединяем все словари в один и обрабатываем коллизии
-    for events, mention_user in events_list:
-        for str_time, event in events:
-            # Преобразуем строку временной метки в объект datetime
-            t_time = datetime.strptime(str_time, "%d.%m.%Y %H:%M:%S.%f")
-            # Фильтруем события по временному промежутку
-            if t_time < start_time:
-                continue
-            combined_events.append(
-                [t_time.strftime("%d/%m/%Y %H:%M:%S.%f"), f"{event} | {mention_user}"]
-            )
+    for row in events_list:
+        t_time = row["time"]
+        if t_time < start_time:
+            continue
+        combined_events.append(
+            [
+                t_time.strftime("%d/%m/%Y %H:%M:%S.%f"),
+                f"{row['event']} | {row['mention']}",
+            ]
+        )
     # Сортируем объединённый словарь по ключам (временным меткам)
     sorted_events = sorted(
         combined_events, key=lambda x: datetime.strptime(x[0], "%d/%m/%Y %H:%M:%S.%f")

@@ -16,7 +16,12 @@ from .models import (
     RequestToUnity,
     Text,
     TransferMoney,
+    TransferMoneyClaim,
     Unity,
+    UnityMember,
     User,
+    UserAnimalState,
+    UserAviaryState,
+    UserHistoryEvent,
     Value,
 )

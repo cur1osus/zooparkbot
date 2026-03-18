@@ -1,7 +1,8 @@
-import json
 from datetime import datetime
 
 from db import Animal, Unity, User, Value
+from db.structured_state import get_user_animals_map
+from fastjson import loads_or_default
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +11,7 @@ import tools
 
 async def income_(session: AsyncSession, user: User):
     unity_idpk = int(user.current_unity.split(":")[-1]) if user.current_unity else None
-    animals: dict = json.loads(user.animals)
+    animals = await get_user_animals_map(session=session, user=user)
     income = await income_from_animal(
         session=session,
         animals=animals,
@@ -83,7 +84,7 @@ async def _has_active_income_buff(session: AsyncSession, unity_idpk: int) -> boo
         return False
 
     try:
-        payload = json.loads(row.value_str)
+        payload = loads_or_default(row.value_str, {})
         if not isinstance(payload, dict):
             return False
         if payload.get("type") != "income_boost":

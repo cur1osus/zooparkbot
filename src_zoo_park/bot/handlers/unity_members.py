@@ -16,6 +16,7 @@ from bot.keyboards import (
 )
 from bot.states import UserState
 from db import Unity, User
+from db.structured_state import remove_unity_member
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
     count_page_unity_members,
@@ -102,7 +103,7 @@ async def process_viewing_member_bio(
             income=await income_(session=session, user=member),
             rub=member.rub,
             usd=member.usd,
-            amount_animals=await get_total_number_animals(self=member),
+            amount_animals=await get_total_number_animals(self=member, session=session),
         ),
         reply_markup=keyboard,
     )
@@ -141,7 +142,11 @@ async def delete_from_members(
 ) -> None:
     data = await state.get_data()
     unity = await session.get(Unity, data["idpk_unity"])
-    unity.remove_member(idpk_member=str(data["idpk_member"]))
+    await remove_unity_member(
+        session=session,
+        unity=unity,
+        member_idpk=int(data["idpk_member"]),
+    )
     member = await session.get(User, data["idpk_member"])
     member.current_unity = None
     await session.commit()

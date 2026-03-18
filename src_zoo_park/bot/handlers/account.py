@@ -41,8 +41,6 @@ from tools import (
 from tools.unity_projects import get_user_chests, open_user_chests, _income_scale
 
 
-
-
 async def _account_text(session: AsyncSession, user: User) -> str:
     return await get_text_message(
         "account_info",
@@ -56,19 +54,30 @@ async def _account_text(session: AsyncSession, user: User) -> str:
 
 def _chests_menu_kb(balance: dict[str, int]):
     b = InlineKeyboardBuilder()
-    b.button(text=f"🟤 Обычный ({int(balance.get('common',0))})", callback_data="open_chest:common")
-    b.button(text=f"🔵 Редкий ({int(balance.get('rare',0))})", callback_data="open_chest:rare")
-    b.button(text=f"🟣 Эпический ({int(balance.get('epic',0))})", callback_data="open_chest:epic")
+    b.button(
+        text=f"🟤 Обычный ({int(balance.get('common', 0))})",
+        callback_data="open_chest:common",
+    )
+    b.button(
+        text=f"🔵 Редкий ({int(balance.get('rare', 0))})",
+        callback_data="open_chest:rare",
+    )
+    b.button(
+        text=f"🟣 Эпический ({int(balance.get('epic', 0))})",
+        callback_data="open_chest:epic",
+    )
     b.button(text="⬅️ Назад", callback_data="open_chests_back")
     b.adjust(1, 1, 1, 1)
     return b.as_markup()
 
 
 def _chests_menu_text() -> str:
-    return "🎁 Меню сундуков\n\nВыбери тип сундука:" 
+    return "🎁 Меню сундуков\n\nВыбери тип сундука:"
 
 
-def _scaled_ranges(kind: str, income_per_min: int) -> tuple[tuple[int,int], tuple[int,int], str]:
+def _scaled_ranges(
+    kind: str, income_per_min: int
+) -> tuple[tuple[int, int], tuple[int, int], str]:
     scale = _income_scale(int(income_per_min or 0))
     if kind == "common":
         rub = (int(15_000 * scale), int(60_000 * scale))
@@ -165,7 +174,7 @@ async def account_animals(
         text=await get_text_message(
             "account_animals",
             t=text,
-            total_animals=await get_total_number_animals(user),
+            total_animals=await get_total_number_animals(user, session=session),
         ),
         reply_markup=await ik_back(
             custom_callback_data=AccountBackCallback(
@@ -443,10 +452,10 @@ async def sell_item_yes(
     )
 
 
-
-
 @router.callback_query(UserState.main_menu, F.data == "open_chests")
-async def open_chests_menu(query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User):
+async def open_chests_menu(
+    query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User
+):
     balance = await get_user_chests(session=session, user_idpk=user.idpk)
     with contextlib.suppress(Exception):
         await query.message.edit_text(
@@ -457,7 +466,9 @@ async def open_chests_menu(query: CallbackQuery, session: AsyncSession, state: F
 
 
 @router.callback_query(UserState.main_menu, F.data == "open_chests_back")
-async def open_chests_back(query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User):
+async def open_chests_back(
+    query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User
+):
     with contextlib.suppress(Exception):
         await query.message.edit_text(
             text=await _account_text(session=session, user=user),
@@ -467,7 +478,9 @@ async def open_chests_back(query: CallbackQuery, session: AsyncSession, state: F
 
 
 @router.callback_query(UserState.main_menu, F.data.startswith("open_chest:"))
-async def chest_info_screen(query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User):
+async def chest_info_screen(
+    query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User
+):
     kind = (query.data or "").split(":", 1)[-1]
     if kind not in {"common", "rare", "epic"}:
         await query.answer("Неизвестный тип сундука", show_alert=True)
@@ -482,7 +495,9 @@ async def chest_info_screen(query: CallbackQuery, session: AsyncSession, state: 
 
 
 @router.callback_query(UserState.main_menu, F.data.startswith("open_chest_do:"))
-async def open_chest_do(query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User):
+async def open_chest_do(
+    query: CallbackQuery, session: AsyncSession, state: FSMContext, user: User
+):
     kind = (query.data or "").split(":", 1)[-1]
     kwargs = {"open_common": 0, "open_rare": 0, "open_epic": 0}
     if kind == "common":
@@ -495,7 +510,9 @@ async def open_chest_do(query: CallbackQuery, session: AsyncSession, state: FSMC
         await query.answer("Неизвестный тип сундука", show_alert=True)
         return
 
-    ok, msg, balance, rewards = await open_user_chests(session=session, user=user, **kwargs)
+    ok, msg, balance, rewards = await open_user_chests(
+        session=session, user=user, **kwargs
+    )
     await session.commit()
     if not ok:
         await query.answer(msg, show_alert=True)
@@ -504,17 +521,21 @@ async def open_chest_do(query: CallbackQuery, session: AsyncSession, state: FSMC
     animals = rewards.get("animals", []) or []
     animal_line = ""
     if animals:
-        code_names = [str(d.get("code_name") or "") for d in animals if d.get("code_name")]
+        code_names = [
+            str(d.get("code_name") or "") for d in animals if d.get("code_name")
+        ]
         animal_names_by_code: dict[str, str] = {}
         if code_names:
             result = await session.execute(
-                select(Animal.code_name, Animal.name).where(Animal.code_name.in_(code_names))
+                select(Animal.code_name, Animal.name).where(
+                    Animal.code_name.in_(code_names)
+                )
             )
             animal_names_by_code = {str(code): str(name) for code, name in result.all()}
 
         an_text = ", ".join(
             [
-                f"{animal_names_by_code.get(str(d.get('code_name')), str(d.get('code_name')))} x{int(d.get('quantity',0) or 0)}"
+                f"{animal_names_by_code.get(str(d.get('code_name')), str(d.get('code_name')))} x{int(d.get('quantity', 0) or 0)}"
                 for d in animals
             ]
         )
@@ -522,8 +543,8 @@ async def open_chest_do(query: CallbackQuery, session: AsyncSession, state: FSMC
 
     result_text = (
         f"✅ Открыт сундук: {_chest_title(kind)}\n"
-        f"+{int(rewards.get('rub',0))} рублей\n"
-        f"+{int(rewards.get('usd',0))} долларов"
+        f"+{int(rewards.get('rub', 0))} рублей\n"
+        f"+{int(rewards.get('usd', 0))} долларов"
         f"{animal_line}"
     )
 

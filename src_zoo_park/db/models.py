@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text as SQLText
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Index,
+    JSON,
+    Numeric,
+    String,
+    Text as SQLText,
+)
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -141,6 +149,106 @@ class NpcMemory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class UserHistoryEvent(Base):
+    __tablename__ = "user_history_events"
+    __table_args__ = (
+        Index("ix_user_history_events_user_time", "idpk_user", "event_time"),
+        Index("ix_user_history_events_user_kind", "idpk_user", "event_kind"),
+    )
+
+    idpk_user: Mapped[int] = mapped_column(index=True)
+    event_time: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, index=True
+    )
+    event_kind: Mapped[str] = mapped_column(
+        String(length=32), default="message", index=True
+    )
+    source: Mapped[str | None] = mapped_column(String(length=32), nullable=True)
+    event_text: Mapped[str | None] = mapped_column(
+        SQLText().with_variant(MEDIUMTEXT(), "mysql"),
+        nullable=True,
+    )
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class UnityMember(Base):
+    __tablename__ = "unity_members"
+    __table_args__ = (
+        Index(
+            "ix_unity_members_unity_user_unique", "idpk_unity", "idpk_user", unique=True
+        ),
+        Index("ix_unity_members_user", "idpk_user"),
+    )
+
+    idpk_unity: Mapped[int] = mapped_column(index=True)
+    idpk_user: Mapped[int] = mapped_column(index=True)
+    role: Mapped[str] = mapped_column(String(length=16), default="member")
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, index=True
+    )
+
+
+class TransferMoneyClaim(Base):
+    __tablename__ = "transfer_money_claims"
+    __table_args__ = (
+        Index(
+            "ix_transfer_money_claims_transfer_user_unique",
+            "idpk_transfer",
+            "idpk_user",
+            unique=True,
+        ),
+        Index("ix_transfer_money_claims_user", "idpk_user"),
+    )
+
+    idpk_transfer: Mapped[int] = mapped_column(index=True)
+    idpk_user: Mapped[int] = mapped_column(index=True)
+    claimed_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, index=True
+    )
+
+
+class UserAnimalState(Base):
+    __tablename__ = "user_animal_states"
+    __table_args__ = (
+        Index(
+            "ix_user_animal_states_user_code_unique",
+            "idpk_user",
+            "animal_code_name",
+            unique=True,
+        ),
+        Index("ix_user_animal_states_code", "animal_code_name"),
+    )
+
+    idpk_user: Mapped[int] = mapped_column(index=True)
+    animal_code_name: Mapped[str] = mapped_column(String(length=64), index=True)
+    quantity: Mapped[int] = mapped_column(default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, index=True
+    )
+
+
+class UserAviaryState(Base):
+    __tablename__ = "user_aviary_states"
+    __table_args__ = (
+        Index(
+            "ix_user_aviary_states_user_code_unique",
+            "idpk_user",
+            "aviary_code_name",
+            unique=True,
+        ),
+        Index("ix_user_aviary_states_code", "aviary_code_name"),
+    )
+
+    idpk_user: Mapped[int] = mapped_column(index=True)
+    aviary_code_name: Mapped[str] = mapped_column(String(length=64), index=True)
+    quantity: Mapped[int] = mapped_column(default=0)
+    buy_count: Mapped[int] = mapped_column(default=0)
+    current_price: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, index=True
+    )
 
 
 class Item(Base):

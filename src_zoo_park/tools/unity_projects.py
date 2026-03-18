@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from text_utils import format_iso_datetime_short
 
 from db import Unity, User, Value
 from init_bot import bot
@@ -409,7 +410,11 @@ async def contribute_to_project(
     )
 
     if rub < requested_rub or usd < requested_usd:
-        return True, f"Вклад принят частично: +{rub} RUB, +{usd} USD{bonus_suffix}", project
+        return (
+            True,
+            f"Вклад принят частично: +{rub} RUB, +{usd} USD{bonus_suffix}",
+            project,
+        )
     return True, f"Вклад принят{bonus_suffix}", project
 
 
@@ -447,10 +452,10 @@ def format_project_text(
     filled_length = int(bar_length * ratio)
     bar = "█" * filled_length + "░" * (bar_length - filled_length)
 
-    rub_current = int(pr.get('rub', 0))
-    usd_current = int(pr.get('usd', 0))
-    rub_target = int(tg.get('rub', 0))
-    usd_target = int(tg.get('usd', 0))
+    rub_current = int(pr.get("rub", 0))
+    usd_current = int(pr.get("usd", 0))
+    rub_target = int(tg.get("rub", 0))
+    usd_target = int(tg.get("usd", 0))
 
     rub_pr = f"{min(rub_current, rub_target):,}".replace(",", " ")
     rub_tg = f"{rub_target:,}".replace(",", " ")
@@ -499,7 +504,10 @@ def format_project_text(
         btype = active_buff.get("type", "")
         bname = active_buff.get("name", "Проект")
         ends_raw = active_buff.get("ends_at", "")
-        active_buff_str = f"✨ <b>Действующий бафф клана:</b> {buff_desc_map.get(btype, btype)} (от '{bname}') до {ends_raw[:16].replace('T', ' ')}\n\n"
+        active_buff_str = (
+            f"✨ <b>Действующий бафф клана:</b> {buff_desc_map.get(btype, btype)} "
+            f"(от '{bname}') до {format_iso_datetime_short(ends_raw)}\n\n"
+        )
 
     reward_preview = get_project_reward_preview(project)
     success_pool = reward_preview["success"]
@@ -518,7 +526,7 @@ def format_project_text(
 
     return (
         f"🏗 Клан-проект: {project.get('name', 'Заповедник')} L{int(project.get('level', 1))}\n"
-        f"До: {ends[:16].replace('T', ' ')} | {status}\n\n"
+        f"До: {format_iso_datetime_short(ends)} | {status}\n\n"
         f"{active_buff_str}"
         f"{buff_str}"
         f"Нужно закрыть обе цели: RUB и USD\n"
@@ -673,7 +681,12 @@ async def open_user_chests(
         apply_one("epic")
 
     for drop in animal_drops:
-        await add_animal(user, drop["code_name"], int(drop["quantity"]))
+        await add_animal(
+            user,
+            drop["code_name"],
+            int(drop["quantity"]),
+            session=session,
+        )
 
     bal["common"] -= oc
     bal["rare"] -= orr

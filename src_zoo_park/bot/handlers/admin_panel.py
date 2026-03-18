@@ -18,6 +18,7 @@ from bot.keyboards import ADMIN_PANEL_BUTTON
 from bot.states import UserState
 from config import ADMIN_ID
 from db import NpcMemory, NpcState, User
+from db.structured_state import list_user_history_entries
 from npc_agent.memory import (
     EVENT_KIND,
     GOAL_KIND,
@@ -29,6 +30,7 @@ from npc_agent.memory import (
 from npc_agent.schedule import wake_npc_now
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from text_utils import preview_text, semantic_preview
 from tools import formatter
 
 import matplotlib.pyplot as plt
@@ -197,7 +199,9 @@ def _render_usage_plot_24h(stats: dict) -> str:
         if active_hours:
             hours = active_hours[-4:]
             prompt_vals = [int((by_hour.get(h) or {}).get("prompt", 0)) for h in hours]
-            completion_vals = [int((by_hour.get(h) or {}).get("completion", 0)) for h in hours]
+            completion_vals = [
+                int((by_hour.get(h) or {}).get("completion", 0)) for h in hours
+            ]
             total_vals = [int((by_hour.get(h) or {}).get("total", 0)) for h in hours]
 
     labels = [h.strftime("%H:%M") for h in hours]
@@ -206,7 +210,9 @@ def _render_usage_plot_24h(stats: dict) -> str:
     fig, ax = plt.subplots(figsize=(16.0, 5.9), facecolor="#ffffff")
     ax.set_facecolor("#d9d9d9")
 
-    bar_prompt = ax.bar(x, prompt_vals, width=0.8, color="#4e73c8", alpha=0.82, label="prompt")
+    bar_prompt = ax.bar(
+        x, prompt_vals, width=0.8, color="#4e73c8", alpha=0.82, label="prompt"
+    )
     bar_completion = ax.bar(
         x,
         completion_vals,
@@ -216,7 +222,9 @@ def _render_usage_plot_24h(stats: dict) -> str:
         alpha=0.82,
         label="completion",
     )
-    (line_total,) = ax.plot(x, total_vals, color="#1f1f1f", linewidth=1.6, label="total")
+    (line_total,) = ax.plot(
+        x, total_vals, color="#1f1f1f", linewidth=1.6, label="total"
+    )
 
     max_y = max(1, max(total_vals) if total_vals else 1)
     ax.set_ylim(0, max_y * 1.05)
@@ -238,7 +246,9 @@ def _render_usage_plot_24h(stats: dict) -> str:
     fig.subplots_adjust(left=0.06, right=0.985, top=0.90, bottom=0.30)
     USAGE_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     filename = USAGE_PLOT_DIR / f"usage24h_{uuid4().hex}.png"
-    plt.savefig(filename, dpi=180, facecolor="#ffffff", bbox_inches="tight", pad_inches=0.1)
+    plt.savefig(
+        filename, dpi=180, facecolor="#ffffff", bbox_inches="tight", pad_inches=0.1
+    )
     plt.close(fig)
     return str(filename)
 
@@ -246,9 +256,7 @@ def _render_usage_plot_24h(stats: dict) -> str:
 def _build_usage_caption_24h(stats: dict) -> str:
     top_kinds = stats.get("top_kinds", []) or []
     top_text = (
-        "\n".join(
-            [f"• {name}: {_fmt_int(tokens)}" for name, tokens in top_kinds]
-        )
+        "\n".join([f"• {name}: {_fmt_int(tokens)}" for name, tokens in top_kinds])
         if top_kinds
         else "• нет"
     )
@@ -280,11 +288,6 @@ def _fmt_iso(value: str | None) -> str:
     return parsed.strftime("%d.%m %H:%M:%S")
 
 
-def _fmt_trait_delta(value: int | None) -> str:
-    numeric = int(value or 0)
-    return f"{numeric:+}"
-
-
 def _load_payload(row: NpcMemory | None) -> dict:
     if not row or not row.payload:
         return {}
@@ -298,14 +301,22 @@ def _load_payload(row: NpcMemory | None) -> dict:
 def _clip_text(text: str) -> str:
     if len(text) <= MAX_ADMIN_TEXT:
         return text
-    return text[: MAX_ADMIN_TEXT - 20].rstrip() + "\n\n...[truncated]"
+    suffix = "\n\n...[truncated]"
+    lines = text.splitlines()
+    selected: list[str] = []
+    for line in lines:
+        candidate = "\n".join([*selected, line]).rstrip() + suffix
+        if len(candidate) > MAX_ADMIN_TEXT:
+            break
+        selected.append(line)
+    if not selected:
+        return preview_text(text, max_chars=MAX_ADMIN_TEXT, placeholder="...")
+    return "\n".join(selected).rstrip() + suffix
 
 
 def _short_label(text: str | None, limit: int) -> str:
     value = " ".join(str(text or "-").split())
-    if len(value) <= limit:
-        return value
-    return value[: limit - 1].rstrip() + "…"
+    return preview_text(value, max_chars=limit, placeholder="…") or "-"
 
 
 def _history_time_sort_key(value: str) -> datetime:
@@ -332,37 +343,16 @@ def _page_bounds(page: int, per_page: int, total_items: int) -> tuple[int, int]:
     return start, end
 
 
-def _load_user_history_entries(target_user: User) -> list[dict]:
-    if not target_user.history_moves or target_user.history_moves == "{}":
-        return []
-    try:
-        payload = json.loads(target_user.history_moves)
-    except Exception:
-        return []
-    if not isinstance(payload, dict):
-        return []
-    entries = []
-    for raw_time, event_text in payload.items():
-        try:
-            parsed_time = _history_time_sort_key(str(raw_time))
-        except Exception:
-            continue
-        entries.append(
-            {
-                "raw_time": str(raw_time),
-                "time": parsed_time,
-                "event": str(event_text),
-            }
-        )
-    entries.sort(key=lambda item: item["time"], reverse=True)
-    return entries
+async def _load_user_history_entries(
+    session: AsyncSession,
+    target_user: User,
+) -> list[dict]:
+    return await list_user_history_entries(session=session, user=target_user)
 
 
 def _history_event_preview(event_text: str, limit: int = 56) -> str:
     compact = " ".join(str(event_text).split())
-    if len(compact) <= limit:
-        return compact
-    return compact[: limit - 3].rstrip() + "..."
+    return preview_text(compact, max_chars=limit, placeholder="...")
 
 
 def _format_event_body_html(event_text: str, expandable: bool = False) -> str:
@@ -426,15 +416,14 @@ async def _get_npc_users(session: AsyncSession) -> list[User]:
 async def _get_users_with_history(session: AsyncSession) -> list[User]:
     rows = await session.scalars(
         select(User)
-        .where(
-            User.id_user > 0,
-            User.history_moves != "{}",
-        )
+        .where(User.id_user > 0)
         .order_by(User.moves.desc(), User.idpk.desc())
     )
     users_with_history = []
     for item in rows.all():
-        history_entries = _load_user_history_entries(item)
+        history_entries = await _load_user_history_entries(
+            session=session, target_user=item
+        )
         if not history_entries:
             continue
         users_with_history.append((item, history_entries[0]["time"]))
@@ -490,7 +479,7 @@ async def _build_admin_panel_text(session: AsyncSession) -> str:
         lines.append(f"  след: {_fmt_dt(state.next_wake_at if state else None)}")
         if last_event:
             lines.append(
-                f"  посл: {last_event.get('action', {}).get('name', '-')} -> {last_event.get('result', {}).get('summary', '-')[:64]}"
+                f"  посл: {last_event.get('action', {}).get('name', '-')} -> {semantic_preview(last_event.get('result', {}).get('summary', '-'), max_segments=1, max_words=10, max_chars=64, placeholder='...')}"
             )
         lines.append(f"  цели: {len(goal_rows)}")
     lines.extend(["", "Открой NPC кнопкой ниже."])
@@ -529,11 +518,16 @@ def _build_admin_panel_keyboard(npcs: list[User]):
     return builder.as_markup()
 
 
-def _build_user_history_list_keyboard(users: list[User], page: int, total_pages: int):
+def _build_user_history_list_keyboard(
+    users: list[User],
+    page: int,
+    total_pages: int,
+    history_map: dict[int, list[dict]],
+):
     builder = InlineKeyboardBuilder()
     row_sizes = []
     for target_user in users:
-        history_entries = _load_user_history_entries(target_user)
+        history_entries = history_map.get(target_user.idpk, [])
         builder.button(
             text=_build_history_user_button_text(target_user, history_entries),
             callback_data=AdminHistoryUserCallback(
@@ -667,7 +661,7 @@ def _build_user_event_detail_keyboard(
 async def _build_user_history_list_text(
     session: AsyncSession,
     page: int,
-) -> tuple[str, list[User], int, int]:
+) -> tuple[str, list[User], int, int, dict[int, list[dict]]]:
     users = await _get_users_with_history(session=session)
     page_users, page, total_pages = _slice_page(
         users, page=page, per_page=USERS_PER_PAGE
@@ -685,11 +679,16 @@ async def _build_user_history_list_text(
         f"Страница: {page}/{total_pages}",
         "",
     ]
+    history_map: dict[int, list[dict]] = {}
     if not users:
         lines.append("История пользователей пока пуста.")
     else:
         for target_user in page_users:
-            history_entries = _load_user_history_entries(target_user)
+            history_entries = await _load_user_history_entries(
+                session=session,
+                target_user=target_user,
+            )
+            history_map[target_user.idpk] = history_entries
             last_event = history_entries[0] if history_entries else None
             lines.append(
                 f"- {_short_label(target_user.nickname, 24)} · {len(history_entries)} событий"
@@ -698,7 +697,7 @@ async def _build_user_history_list_text(
             if last_event:
                 lines.append(f"  last: {last_event['time'].strftime('%d.%m %H:%M')}")
                 lines.append(f"  {_history_event_preview(last_event['event'], 80)}")
-    return "\n".join(lines), page_users, page, total_pages
+    return "\n".join(lines), page_users, page, total_pages, history_map
 
 
 def _build_user_history_text(
@@ -813,22 +812,18 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
     )
     latest_event = _load_payload(event_rows[0]) if event_rows else {}
     latest_plan = latest_event.get("planner", {}) if latest_event else {}
-    latest_guard = latest_event.get("anti_loop_guard", {}) if latest_event else {}
     latest_strategy = latest_event.get("strategy_summary", {}) if latest_event else {}
     due = bool(
         state and (state.next_wake_at is None or state.next_wake_at <= datetime.now())
     )
-    traits = profile.get("traits", {})
-    adaptive_traits = profile.get("adaptive_traits", {})
     adaptation_signals = profile.get("adaptation_signals", {})
     wake_state = "готов" if due else "ждет"
 
     lines = [
         f"NPC: {npc.nickname}",
         f"TG ID: {npc.id_user} · DB ID: {npc.idpk}",
-        f"Профиль: {profile.get('archetype', '-')}",
-        f"Миссия: {profile.get('mission', '-')}",
-        f"Голос: {profile.get('public_voice', '-')}",
+        f"Настроение: {profile.get('current_mood', '-')}",
+        f"Affinity: {profile.get('affinity_score', '-')}",
         f"Тактики: {', '.join(profile.get('active_tactics', [])[:3]) or '-'}",
         "",
         "Экономика:",
@@ -848,30 +843,16 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
         f"- Сон: {getattr(state, 'last_sleep_seconds', None) or '-'} сек",
         f"- Причина: {state.last_wake_reason if state else '-'}",
         "",
-        "Трейты:",
-        f"- Риск: {traits.get('risk_tolerance', '-')}",
-        f"- Соц: {traits.get('social_drive', '-')}",
-        f"- Эконом: {traits.get('economy_focus', '-')}",
-        f"- Рост: {traits.get('expansion_drive', '-')}",
-        f"- Терпение: {traits.get('patience', '-')}",
-        f"- Соревн.: {traits.get('competitiveness', '-')}",
-        f"- dРиск: {_fmt_trait_delta(adaptive_traits.get('risk_tolerance'))}",
-        f"- dСоц: {_fmt_trait_delta(adaptive_traits.get('social_drive'))}",
-        f"- dЭконом: {_fmt_trait_delta(adaptive_traits.get('economy_focus'))}",
-        f"- dРост: {_fmt_trait_delta(adaptive_traits.get('expansion_drive'))}",
-        f"- dТерпение: {_fmt_trait_delta(adaptive_traits.get('patience'))}",
-        f"- dСоревн.: {_fmt_trait_delta(adaptive_traits.get('competitiveness'))}",
+        "Адаптация:",
         f"- Серия+: {adaptation_signals.get('success_streak', 0)}",
         f"- Серия-: {adaptation_signals.get('failure_streak', 0)}",
+        f"- Success rate: {adaptation_signals.get('recent_success_rate', 0.0)}",
         "",
         "План:",
         f"- Фаза: {latest_plan.get('phase', '-')}",
         f"- Цель: {latest_plan.get('primary_goal', '-')}",
         f"- Next unlock: {(latest_plan.get('next_unlock') or {}).get('label', '-')}",
         f"- ETA: {(latest_plan.get('next_unlock') or {}).get('eta_seconds', '-')}",
-        "",
-        "Guard:",
-        "- disabled",
         "",
         "Соперники:",
     ]
@@ -900,11 +881,13 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
     else:
         lines.append("- нет")
 
-    lines.append("")
-    lines.append("Рефлексия:")
+        lines.append("")
+        lines.append("Рефлексия:")
     if reflection_rows:
         payload = _load_payload(reflection_rows[0])
-        lines.append(f"- {str(payload.get('summary', '-'))[:350]}")
+        lines.append(
+            f"- {semantic_preview(payload.get('summary', '-'), max_segments=4, max_words=48, max_chars=350, placeholder='...')}"
+        )
     else:
         lines.append("- нет")
 
@@ -917,7 +900,7 @@ async def _build_npc_overview_text(session: AsyncSession, npc: User) -> str:
             result = payload.get("result", {})
             lines.append(f"- {_fmt_iso(payload.get('time'))}")
             lines.append(
-                f"  {action.get('name', '-')} -> {result.get('summary', '-')[:72]}"
+                f"  {action.get('name', '-')} -> {semantic_preview(result.get('summary', '-'), max_segments=1, max_words=12, max_chars=72, placeholder='...')}"
             )
     else:
         lines.append("- нет")
@@ -932,7 +915,6 @@ async def _build_tactics_text(session: AsyncSession, npc: User) -> str:
         session=session, npc=npc, kind=EVENT_KIND, limit=1
     )
     latest_event = _load_payload(event_rows[0]) if event_rows else {}
-    latest_guard = latest_event.get("anti_loop_guard", {}) if latest_event else {}
     latest_behavior = latest_event.get("behavior_guidance", {}) if latest_event else {}
     tactic_rows = sorted(
         tactic_scores.items(),
@@ -956,24 +938,11 @@ async def _build_tactics_text(session: AsyncSession, npc: User) -> str:
     if lines[-1] == "Сдвиги тактик:":
         lines.append("- нет")
     lines.append("")
-    lines.append("Сдвиги трейтов:")
-    for shift in profile.get("adaptation_signals", {}).get("recent_trait_shifts", [])[
-        -6:
-    ]:
-        lines.append(
-            f"- {_fmt_iso(shift.get('time'))} | {shift.get('trait')} {int(shift.get('delta', 0)):+} | {shift.get('reason') or '-'}"
-        )
-    if lines[-1] == "Сдвиги трейтов:":
-        lines.append("- нет")
-    lines.append("")
     lines.append("Плейбук:")
     for row in latest_behavior.get("playbook", [])[:4]:
         lines.append(f"- {row}")
     if lines[-1] == "Плейбук:":
         lines.append("- нет")
-    lines.append("")
-    lines.append("Анти-луп:")
-    lines.append("- disabled")
     lines.append("")
     lines.append("Действия:")
     ranked_actions = sorted(
@@ -1038,11 +1007,17 @@ async def _build_reflection_text(session: AsyncSession, npc: User) -> str:
             f"- {_fmt_iso(payload.get('generated_at'))}: {payload.get('summary', '-')}"
         )
         if payload.get("lessons"):
-            lines.append(f"  уроки: {'; '.join(payload['lessons'][:2])}")
+            lines.append(
+                f"  уроки: {'; '.join(semantic_preview(item, max_segments=1, max_words=14, max_chars=110, placeholder='...') for item in payload['lessons'][:2])}"
+            )
         if payload.get("opportunities"):
-            lines.append(f"  шансы: {'; '.join(payload['opportunities'][:2])}")
+            lines.append(
+                f"  шансы: {'; '.join(semantic_preview(item, max_segments=1, max_words=14, max_chars=110, placeholder='...') for item in payload['opportunities'][:2])}"
+            )
         if payload.get("risks"):
-            lines.append(f"  риски: {'; '.join(payload['risks'][:2])}")
+            lines.append(
+                f"  риски: {'; '.join(semantic_preview(item, max_segments=1, max_words=14, max_chars=110, placeholder='...') for item in payload['risks'][:2])}"
+            )
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -1063,7 +1038,15 @@ async def _build_event_text(session: AsyncSession, npc: User) -> str:
             f"<b>{escape(str(action.get('name', '-')))}</b> · <code>{escape(str(result.get('status', '-')))}</code>"
         )
         lines.append(
-            _format_event_body_html(str(result.get("summary", "-") or "-")[:180])
+            _format_event_body_html(
+                semantic_preview(
+                    result.get("summary", "-") or "-",
+                    max_segments=2,
+                    max_words=24,
+                    max_chars=180,
+                    placeholder="...",
+                )
+            )
         )
         lines.append(
             "<code>"
@@ -1251,7 +1234,13 @@ async def admin_user_history_list_callbacks(
     if not _is_admin(user=user, telegram_id=query.from_user.id):
         await query.answer("У вас нет прав", show_alert=True)
         return
-    text, page_users, page, total_pages = await _build_user_history_list_text(
+    (
+        text,
+        page_users,
+        page,
+        total_pages,
+        history_map,
+    ) = await _build_user_history_list_text(
         session=session,
         page=callback_data.page,
     )
@@ -1262,6 +1251,7 @@ async def admin_user_history_list_callbacks(
             users=page_users,
             page=page,
             total_pages=total_pages,
+            history_map=history_map,
         ),
     )
     await query.answer("История пользователей")
@@ -1281,7 +1271,7 @@ async def admin_user_history_user_callbacks(
     if not target_user:
         await query.answer("Пользователь не найден", show_alert=True)
         return
-    entries = _load_user_history_entries(target_user)
+    entries = await _load_user_history_entries(session=session, target_user=target_user)
     indexed_entries = [
         {
             **entry,
@@ -1328,7 +1318,7 @@ async def admin_user_history_callbacks(
     if not target_user:
         await query.answer("Пользователь не найден", show_alert=True)
         return
-    entries = _load_user_history_entries(target_user)
+    entries = await _load_user_history_entries(session=session, target_user=target_user)
     if not entries:
         await query.answer("У пользователя нет истории", show_alert=True)
         return

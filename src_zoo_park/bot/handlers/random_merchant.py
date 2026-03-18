@@ -92,13 +92,14 @@ async def check_funds_and_seats(
     return True
 
 
-async def update_user_data(user, merchant, price, quantity_animals):
+async def update_user_data(user, merchant, price, quantity_animals, session):
     user.usd -= price
     user.amount_expenses_usd += price
     await add_animal(
         self=user,
         code_name_animal=merchant.code_name_animal,
         quantity=quantity_animals,
+        session=session,
     )
 
 
@@ -126,7 +127,11 @@ async def buy_one_of_offer(
             ):
                 return
             await update_user_data(
-                user, merchant, merchant.price_with_discount, merchant.quantity_animals
+                user,
+                merchant,
+                merchant.price_with_discount,
+                merchant.quantity_animals,
+                session,
             )
             merchant.first_offer_bought = True
             await session.commit()
@@ -165,6 +170,7 @@ async def buy_one_of_offer(
                     self=user,
                     code_name_animal=animal.code_name,
                     quantity=part_animals,
+                    session=session,
                 )
                 async with ChatActionSender.typing(
                     bot=query.bot, chat_id=query.message.chat.id
@@ -175,7 +181,11 @@ async def buy_one_of_offer(
                             "you_got_this_animal", an=animal.name, aq=part_animals
                         )
                     )
-            merchant.price = await gen_price(session=session, animals=user.animals)
+            merchant.price = await gen_price(
+                session=session,
+                animals=user.animals,
+                user=user,
+            )
             await session.commit()
             await state.set_state(UserState.zoomarket_menu)
             await query.message.answer(
@@ -265,6 +275,7 @@ async def choice_qa_to_buy(
             self=user,
             code_name_animal=animal_obj.code_name,
             quantity=part_animals,
+            session=session,
         )
     await state.set_state(UserState.zoomarket_menu)
 
@@ -426,6 +437,7 @@ async def get_custom_quantity_animals(
             self=user,
             code_name_animal=animal.code_name,
             quantity=part_animals,
+            session=session,
         )
     await state.set_state(UserState.zoomarket_menu)
 

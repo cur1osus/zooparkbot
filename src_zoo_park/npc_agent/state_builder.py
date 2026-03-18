@@ -20,8 +20,17 @@ from db import (
     Unity,
     User,
 )
+from db.structured_state import (
+    append_npc_turn_history,
+    count_unity_members,
+    get_user_animals_map,
+    get_user_aviaries_map,
+    list_recent_npc_history_payloads,
+    list_transfer_claim_user_ids,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from text_utils import semantic_preview
 from tools.animals import get_all_animals, get_price_animal, get_total_number_animals
 from tools.aviaries import get_price_aviaries, get_remain_seats, get_total_number_seats
 from tools.bank import get_rate
@@ -193,7 +202,7 @@ async def build_standings(session: AsyncSession, user: User) -> dict[str, Any]: 
         *[income_(session=session, user=m) for m in users]
     )
     animals_results = await asyncio.gather(
-        *[get_total_number_animals(self=m) for m in users]
+        *[get_total_number_animals(self=m, session=session) for m in users]
     )
 
     incomes = [(users[i], int(income_results[i])) for i in range(len(users))]
@@ -305,7 +314,9 @@ async def build_recruit_targets(
             continue
 
         candidate_income = int(await income_(session=session, user=member))
-        candidate_animals = int(await get_total_number_animals(self=member))
+        candidate_animals = int(
+            await get_total_number_animals(self=member, session=session)
+        )
 
         # Recruit priority: income first, animals as tie-breaker.
         # Keep score as an explicit value so execution can enforce a quality bar.
@@ -422,9 +433,11 @@ async def build_chat_transfers_state(
             continue
         if int(tr.idpk_user) == int(user.idpk):
             continue
-        used_raw = str(tr.used or "")
-        used_ids = {part.strip() for part in used_raw.split(",") if part.strip()}
-        if str(user.idpk) in used_ids:
+        claimed_user_ids = await list_transfer_claim_user_ids(
+            session=session,
+            transfer_idpk=int(tr.idpk),
+        )
+        if int(user.idpk) in claimed_user_ids:
             continue
         payload.append(
             {
@@ -468,7 +481,9 @@ async def build_unity_state(session: AsyncSession, user: User) -> dict[str, Any]
                             "usd": int(applicant.usd),
                             "rub": int(applicant.rub),
                             "animals": int(
-                                await get_total_number_animals(self=applicant)
+                                await get_total_number_animals(
+                                    self=applicant, session=session
+                                )
                             ),
                             "income": int(
                                 await income_(session=session, user=applicant)
@@ -489,7 +504,7 @@ async def build_unity_state(session: AsyncSession, user: User) -> dict[str, Any]
                 "idpk": unity.idpk,
                 "name": unity.name,
                 "level": int(unity.level),
-                "members": int(unity.get_number_members()),
+                "members": int(await count_unity_members(session=session, unity=unity)),
                 "owner_idpk": int(unity.idpk_user),
                 "income": int(await count_income_unity(session=session, unity=unity)),
                 "can_upgrade": bool(upgrade_requirements.get("can_upgrade", False)),
@@ -515,7 +530,7 @@ async def build_unity_state(session: AsyncSession, user: User) -> dict[str, Any]
                 "idpk": int(unity.idpk),
                 "name": unity.name,
                 "level": int(unity.level),
-                "members": int(unity.get_number_members()),
+                "members": int(await count_unity_members(session=session, unity=unity)),
                 "owner_idpk": int(unity.idpk_user),
                 "owner_nickname": owner.nickname if owner else None,
                 "income": int(await count_income_unity(session=session, unity=unity)),
@@ -659,26 +674,6 @@ def _effective_usd(player: dict[str, Any], bank: dict[str, Any]) -> float:
     )
 
 
-def _load_history_rows(user: User) -> list[dict[str, Any]]:
-    try:
-        raw_history = json.loads(user.history_moves or "{}")
-    except (TypeError, json.JSONDecodeError):
-        return []
-
-    rows: list[dict[str, Any]] = []
-    for key, value in raw_history.items():
-        payload = value
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-        if isinstance(payload, dict):
-            payload["_history_key"] = key
-            rows.append(payload)
-    return rows[-12:]
-
-
 def _actions_since_last(rows: list[dict[str, Any]], target_actions: set[str]) -> int:
     count = 0
     for row in reversed(rows):
@@ -741,8 +736,12 @@ def _build_rate_history_snapshot(
     }
 
 
-def build_momentum_signal(user: User, current_income: int) -> dict[str, Any]:
-    rows = _load_history_rows(user)
+async def build_momentum_signal(
+    session: AsyncSession,
+    user: User,
+    current_income: int,
+) -> dict[str, Any]:
+    rows = await list_recent_npc_history_payloads(session=session, user=user, limit=12)
     recent_rows = rows[-3:]
     last_3_actions = [
         str(row.get("action", "wait")).strip() or "wait" for row in recent_rows[-3:]
@@ -1877,18 +1876,6 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
     cycle_goal = _derive_cycle_goal(observation)
     phase_a_candidates = _build_phase_a_candidates(observation, cycle_goal=cycle_goal)
     recommended_actions: list[dict[str, Any]] = []
-    avoid_actions = {
-        str(item).strip()
-        for item in (behavior.get("avoid_actions") or [])
-        if str(item).strip()
-    }
-
-    best_aviary_option = summary.get("best_aviary_option") or {}
-    force_capacity_unlock = bool(
-        summary.get("need_seats")
-        and best_aviary_option
-        and int(best_aviary_option.get("affordable_quantity", 0) or 0) > 0
-    )
 
     def add_step(
         action: str,
@@ -1899,17 +1886,19 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
         action = str(action).strip()
         if not action:
             return
-        if action in avoid_actions and not (
-            force_capacity_unlock and action == "buy_aviary"
-        ):
-            return
         if any(step["action"] == action for step in recommended_actions):
             return
         recommended_actions.append(
             {
                 "action": action,
                 "params": params or {},
-                "reason": reason[:180],
+                "reason": semantic_preview(
+                    reason,
+                    max_segments=2,
+                    max_words=24,
+                    max_chars=180,
+                    placeholder="...",
+                ),
                 "eta_seconds": eta_seconds,
             }
         )
@@ -2041,44 +2030,6 @@ def build_npc_plan(observation: dict[str, Any]) -> dict[str, Any]:
             "prefer_phase_a": True,
             "min_combined_score": 42,
         },
-        "avoid_actions": sorted(avoid_actions),
-    }
-
-
-def build_anti_loop_guard(observation: dict[str, Any]) -> dict[str, Any]:
-    memory = observation.get("memory", {})
-    behavior = memory.get("behavior_guidance", {})
-    planner = observation.get("planner", {})
-    summary = observation.get("strategy_signals", {}).get("summary", {})
-
-    blocked_actions = {
-        str(item).strip()
-        for item in behavior.get("avoid_actions", [])
-        if str(item).strip()
-    }
-    repeated_action = behavior.get("repeated_action")
-
-    best_aviary_option = summary.get("best_aviary_option") or {}
-    force_capacity_unlock = bool(
-        summary.get("need_seats")
-        and best_aviary_option
-        and int(best_aviary_option.get("affordable_quantity", 0) or 0) > 0
-    )
-    if force_capacity_unlock:
-        blocked_actions.discard("buy_aviary")
-
-    planner_fallback = None
-    for step in planner.get("recommended_actions", []) or []:
-        action_name = str(step.get("action", "")).strip()
-        if action_name and action_name not in blocked_actions:
-            planner_fallback = step
-            break
-    return {
-        "blocked_actions": sorted(blocked_actions)[:6],
-        "repeated_action": repeated_action,
-        "idle_streak": int(behavior.get("idle_streak", 0) or 0),
-        "fallback": planner_fallback,
-        "playbook": behavior.get("playbook", [])[:4],
     }
 
 
@@ -2171,7 +2122,9 @@ async def build_observation(
     merchant = await ensure_random_merchant_for_user(session=session, user=user)
     rate = await get_rate(session=session, user=user)
     current_income = await income_(session=session, user=user)
-    total_seats = await get_total_number_seats(session=session, aviaries=user.aviaries)
+    animals_state = await get_user_animals_map(session=session, user=user)
+    aviaries_state = await get_user_aviaries_map(session=session, user=user)
+    total_seats = await get_total_number_seats(session=session, aviaries=aviaries_state)
     remain_seats = await get_remain_seats(session=session, user=user)
     standings = await build_standings(session=session, user=user)
     unity = await build_unity_state(session=session, user=user)
@@ -2187,7 +2140,11 @@ async def build_observation(
     )
     aviary_market = await build_aviary_market(session=session, user=user)
     items = await build_item_state(session=session, user=user)
-    momentum = build_momentum_signal(user=user, current_income=int(current_income))
+    momentum = await build_momentum_signal(
+        session=session,
+        user=user,
+        current_income=int(current_income),
+    )
     bank_storage = await get_value(
         session=session,
         value_name="BANK_STORAGE",
@@ -2274,8 +2231,8 @@ async def build_observation(
             "unity_idpk": get_unity_idpk(user.current_unity),
         },
         "zoo": {
-            "animals": json.loads(user.animals),
-            "aviaries": json.loads(user.aviaries),
+            "animals": animals_state,
+            "aviaries": aviaries_state,
             "total_seats": int(total_seats),
             "remain_seats": int(remain_seats),
         },
@@ -2321,7 +2278,6 @@ async def build_observation(
         observation=observation,
     )
     observation["planner"] = build_npc_plan(observation=observation)
-    observation["anti_loop_guard"] = build_anti_loop_guard(observation=observation)
     observation["action_contract"] = build_action_contract(observation=observation)
     observation["strategy_signals"]["goal_focus"] = [
         goal.get("topic") for goal in observation["memory"].get("active_goals", [])
@@ -2344,7 +2300,7 @@ async def build_animal_market(
 ) -> list[dict[str, Any]]:
     animals = await get_all_animals(session=session)
     unity_idpk = int(get_unity_idpk(user.current_unity) or 0) or None
-    animals_state = json.loads(user.animals)
+    animals_state = await get_user_animals_map(session=session, user=user)
     market = []
     for animal in animals[: settings.max_observation_animals]:
         base_code = animal.code_name.strip("-")
@@ -2425,11 +2381,12 @@ async def build_aviary_market(
     session: AsyncSession, user: User
 ) -> list[dict[str, Any]]:
     aviaries = await session.scalars(select(Aviary))
+    aviaries_state = await get_user_aviaries_map(session=session, user=user)
     market = []
     for aviary in aviaries.all():
         price = await get_price_aviaries(
             session=session,
-            aviaries=user.aviaries,
+            aviaries=aviaries_state,
             code_name_aviary=aviary.code_name,
             info_about_items=user.info_about_items,
         )
@@ -2476,7 +2433,13 @@ def validate_action(decision: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(params, dict):
         params = {}
 
-    reason = str(decision.get("reason", ""))[:300]
+    reason = semantic_preview(
+        decision.get("reason", ""),
+        max_segments=3,
+        max_words=40,
+        max_chars=300,
+        placeholder="...",
+    )
     sleep_seconds = decision.get("sleep_seconds")
 
     # If model quota is exhausted (HTTP 403), force a long cooldown fallback.
@@ -2552,14 +2515,6 @@ def build_action_contract(observation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def apply_action_guardrails(
-    action: dict[str, Any],
-    observation: dict[str, Any],
-) -> dict[str, Any]:
-    # Guardrails disabled by operator request: execute validated LLM action as-is.
-    return action
-
-
 def should_stop_npc_cycle(action: dict[str, Any], result: dict[str, Any]) -> bool:
     if action["action"] == "wait":
         return True
@@ -2607,15 +2562,12 @@ def compute_smart_sleep_seconds(
 
     summary = observation.get("strategy_signals", {}).get("summary", {})
     planner = observation.get("planner", {})
-    guard = observation.get("anti_loop_guard", {})
     player = observation.get("player", {})
     unity_current = observation.get("unity", {}).get("current") or {}
 
     if int(player.get("daily_bonus_available", 0) or 0) > 0:
         smart_sleep = min(smart_sleep, settings.step_seconds)
     if int(unity_current.get("pending_requests_count", 0) or 0) > 0:
-        smart_sleep = min(smart_sleep, settings.step_seconds)
-    if int(guard.get("idle_streak", 0) or 0) >= 2:
         smart_sleep = min(smart_sleep, settings.step_seconds)
 
     next_unlock = planner.get("next_unlock") or summary.get("next_unlock") or {}
@@ -2717,46 +2669,34 @@ async def register_npc_move(
     result: dict[str, Any],
     wake_trigger: dict[str, Any] | None = None,
 ) -> None:
-    history = json.loads(user.history_moves)
-    key = datetime.now().strftime("%d.%m.%Y %H:%M:%S.%f")
     current_income = int(await income_(session=session, user=user))
-    total_animals = int(await get_total_number_animals(self=user))
-    history[key] = json.dumps(
-        {
-            "npc": user.nickname,
-            "action": action["action"],
-            "params": action["params"],
-            "reason": action.get("reason", ""),
-            "sleep_seconds": action.get("sleep_seconds"),
-            "wake_source": (wake_trigger or {}).get("source"),
-            "wake_reason": (wake_trigger or {}).get("reason"),
-            "result": result,
-            "after_state": {
-                "usd": int(user.usd),
-                "rub": int(user.rub),
-                "paw_coins": int(user.paw_coins),
-                "income_per_minute_rub": current_income,
-                "total_animals": total_animals,
-                "current_unity": user.current_unity,
-            },
+    total_animals = int(await get_total_number_animals(self=user, session=session))
+    payload = {
+        "npc": user.nickname,
+        "action": action["action"],
+        "params": action["params"],
+        "reason": action.get("reason", ""),
+        "sleep_seconds": action.get("sleep_seconds"),
+        "wake_source": (wake_trigger or {}).get("source"),
+        "wake_reason": (wake_trigger or {}).get("reason"),
+        "result": result,
+        "after_state": {
+            "usd": int(user.usd),
+            "rub": int(user.rub),
+            "paw_coins": int(user.paw_coins),
+            "income_per_minute_rub": current_income,
+            "total_animals": total_animals,
+            "current_unity": user.current_unity,
         },
-        ensure_ascii=False,
-    )
+    }
     limit_on_write_moves = await get_value(
         session=session,
         value_name="LIMIT_ON_WRITE_MOVES",
     )
-    while len(history) > int(limit_on_write_moves):
-        first_key = next(iter(history))
-        del history[first_key]
-
-    # Hard cap for DB row size / lock pressure protection.
-    max_history_chars = 20_000
-    encoded = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
-    while len(encoded) > max_history_chars and history:
-        first_key = next(iter(history))
-        del history[first_key]
-        encoded = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
-
-    user.history_moves = encoded
+    await append_npc_turn_history(
+        session=session,
+        user=user,
+        payload=payload,
+        limit=int(limit_on_write_moves),
+    )
     user.moves += 1
