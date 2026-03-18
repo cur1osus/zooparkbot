@@ -19,7 +19,7 @@ from tools.value import get_value
 
 from .client import NpcDecisionClient
 from .logs import log_npc_decision
-from .memory import build_npc_snapshot, remember_npc_turn, apply_planned_trait_update
+from .memory import build_npc_snapshot, remember_npc_turn
 from .schedule import (
     clear_npc_event_wake,
     clamp_npc_sleep_seconds,
@@ -141,7 +141,9 @@ async def update_npc_v2_memory(
             "delta_income": delta_income,
         }
     )
-    recent = [row for row in recent if int(row.get("ts", 0) or 0) >= now_ts - ttl_seconds]
+    recent = [
+        row for row in recent if int(row.get("ts", 0) or 0) >= now_ts - ttl_seconds
+    ]
     recent = recent[-12:]
 
     stats = tool_scores.get(action_name, {"ok": 0, "err": 0})
@@ -253,17 +255,28 @@ def _classify_llm_error(error_text: str) -> str:
     return "other"
 
 
-def _fallback_action_without_llm(observation: dict[str, Any], retry_delay: int) -> dict[str, Any]:
+def _fallback_action_without_llm(
+    observation: dict[str, Any], retry_delay: int
+) -> dict[str, Any]:
     allowed = [
-        row for row in (observation.get("allowed_actions", []) or []) if isinstance(row, dict)
+        row
+        for row in (observation.get("allowed_actions", []) or [])
+        if isinstance(row, dict)
     ]
 
     # Capacity lock mode: prefer opening seats first, then liquidity.
     need_seats = bool(
-        (observation.get("strategy_signals", {}).get("summary", {}) or {}).get("need_seats")
+        (observation.get("strategy_signals", {}).get("summary", {}) or {}).get(
+            "need_seats"
+        )
     )
     if need_seats:
-        seat_lock_priority = ["buy_aviary", "exchange_bank", "invest_for_income", "wait"]
+        seat_lock_priority = [
+            "buy_aviary",
+            "exchange_bank",
+            "invest_for_income",
+            "wait",
+        ]
         for action_name in seat_lock_priority:
             for row in allowed:
                 if str(row.get("action", "")).strip() == action_name:
@@ -379,7 +392,11 @@ async def run_npc_players_turn() -> None:
                     # On any primary LLM error, try secondary provider/model once.
                     err_text = str(exc)
                     fallback_model_ok = False
-                    if settings.fallback_model and settings.fallback_api_key and settings.fallback_base_url:
+                    if (
+                        settings.fallback_model
+                        and settings.fallback_api_key
+                        and settings.fallback_base_url
+                    ):
                         try:
                             decision = await client.choose_action_with_provider(
                                 observation=observation,
@@ -388,7 +405,7 @@ async def run_npc_players_turn() -> None:
                                 api_key_override=settings.fallback_api_key,
                             )
                             decision["reason"] = (
-                                f"fallback_model:{settings.fallback_model} | {decision.get('reason','')}"
+                                f"fallback_model:{settings.fallback_model} | {decision.get('reason', '')}"
                             )[:280]
                             llm_error_count = 0
                             fallback_model_ok = True
@@ -410,24 +427,33 @@ async def run_npc_players_turn() -> None:
                                         api_key_override=settings.fallback_api_key,
                                     )
                                     decision["reason"] = (
-                                        f"fallback_retry:{settings.fallback_model} | {decision.get('reason','')}"
+                                        f"fallback_retry:{settings.fallback_model} | {decision.get('reason', '')}"
                                     )[:280]
                                     llm_error_count = 0
                                     fallback_model_ok = True
-                                    await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
+                                    await redis.delete(
+                                        npc_llm_error_streak_key(npc_user.idpk)
+                                    )
                                 except Exception as fallback_retry_exc:
                                     exc = fallback_retry_exc
                                     err_text = str(exc)
 
                     if not fallback_model_ok:
                         llm_error_count += 1
-                        streak = int(await redis.incr(npc_llm_error_streak_key(npc_user.idpk)) or 1)
-                        await redis.expire(npc_llm_error_streak_key(npc_user.idpk), 3600)
+                        streak = int(
+                            await redis.incr(npc_llm_error_streak_key(npc_user.idpk))
+                            or 1
+                        )
+                        await redis.expire(
+                            npc_llm_error_streak_key(npc_user.idpk), 3600
+                        )
                         # Exponential backoff with ±10% jitter
                         base_delay = default_npc_sleep_seconds(
                             user=npc_user, salt="llm_error"
                         )
-                        retry_delay = min(int(base_delay * (2**min(streak, 6))), 4 * 3600)
+                        retry_delay = min(
+                            int(base_delay * (2 ** min(streak, 6))), 4 * 3600
+                        )
                         retry_delay += int(retry_delay * random.uniform(-0.1, 0.1))
 
                         # Degraded mode alert (one message per 30 min max)
@@ -448,14 +474,35 @@ async def run_npc_players_turn() -> None:
                             observation=observation,
                             retry_delay=retry_delay,
                         )
-                        decision["reason"] = f"llm_error:{err_text[:180]} | {decision['reason']}"
+                        decision["reason"] = (
+                            f"llm_error:{err_text[:180]} | {decision['reason']}"
+                        )
 
-                if decision.get("action") not in {"wait"} and "llm_error" not in str(decision.get("reason", "")):
+                if decision.get("action") not in {"wait"} and "llm_error" not in str(
+                    decision.get("reason", "")
+                ):
                     with contextlib.suppress(Exception):
-                        eval_result = await client.evaluate_decision(decision=decision, observation=observation)
-                        if not eval_result.get("is_valid") and isinstance(eval_result.get("correction"), dict):
+                        is_two_step_npc = int(
+                            (observation.get("player") or {}).get("id_user", 0) or 0
+                        ) in {-1001, -1002}
+                        if is_two_step_npc:
+                            eval_result = await client.optimize_decision(
+                                decision=decision, observation=observation
+                            )
+                            correction_prefix = "optimizer_correction"
+                        else:
+                            eval_result = await client.evaluate_decision(
+                                decision=decision, observation=observation
+                            )
+                            correction_prefix = "critic_correction"
+
+                        if not eval_result.get("is_valid") and isinstance(
+                            eval_result.get("correction"), dict
+                        ):
                             corrected = dict(eval_result["correction"])
-                            corrected["reason"] = f"critic_correction:{eval_result.get('reason', '')} | {corrected.get('reason', '')}"
+                            corrected["reason"] = (
+                                f"{correction_prefix}:{eval_result.get('reason', '')} | {corrected.get('reason', '')}"
+                            )
                             decision.update(corrected)
 
                 action = apply_action_guardrails(
@@ -466,14 +513,6 @@ async def run_npc_players_turn() -> None:
                 # Phase 3: Execute in DB and Commit
                 async with _sessionmaker_for_func() as session:
                     npc_user_refreshed = await session.get(User, npc_user.idpk)
-                    trait_update_result = await apply_planned_trait_update(
-                        session=session,
-                        user=npc_user_refreshed,
-                        decision=decision,
-                    )
-                    if trait_update_result is not None:
-                        action["trait_update"] = trait_update_result
-
                     try:
                         result = await execute_action(
                             session=session,
@@ -560,22 +599,45 @@ async def run_npc_players_turn() -> None:
                                 "phase_1_observation": {
                                     "wake_context": observation.get("wake_context"),
                                     "planner": observation.get("planner"),
-                                    "anti_loop_guard": observation.get("anti_loop_guard"),
-                                    "action_contract": observation.get("action_contract"),
+                                    "anti_loop_guard": observation.get(
+                                        "anti_loop_guard"
+                                    ),
+                                    "action_contract": observation.get(
+                                        "action_contract"
+                                    ),
                                 },
                                 "phase_2_decision": decision,
                                 "phase_2_guardrailed": action,
                                 "phase_3_execution": result,
                                 "phase_3_delta": {
-                                    "usd": int(after_snapshot.get("usd", 0) or 0) - int(before_snapshot.get("usd", 0) or 0),
-                                    "rub": int(after_snapshot.get("rub", 0) or 0) - int(before_snapshot.get("rub", 0) or 0),
-                                    "income_per_minute_rub": int(after_snapshot.get("income_per_minute_rub", 0) or 0) - int(before_snapshot.get("income_per_minute_rub", 0) or 0),
-                                    "animals": int(after_snapshot.get("total_animals", 0) or 0) - int(before_snapshot.get("total_animals", 0) or 0),
+                                    "usd": int(after_snapshot.get("usd", 0) or 0)
+                                    - int(before_snapshot.get("usd", 0) or 0),
+                                    "rub": int(after_snapshot.get("rub", 0) or 0)
+                                    - int(before_snapshot.get("rub", 0) or 0),
+                                    "income_per_minute_rub": int(
+                                        after_snapshot.get("income_per_minute_rub", 0)
+                                        or 0
+                                    )
+                                    - int(
+                                        before_snapshot.get("income_per_minute_rub", 0)
+                                        or 0
+                                    ),
+                                    "animals": int(
+                                        after_snapshot.get("total_animals", 0) or 0
+                                    )
+                                    - int(before_snapshot.get("total_animals", 0) or 0),
                                 },
                                 "quality_metrics": {
-                                    "decision_execution_match": str(decision.get("action", "")).strip() == str(action.get("action", "")).strip(),
-                                    "rerouted": str(decision.get("action", "")).strip() != str(action.get("action", "")).strip(),
-                                    "status_ok": str(result.get("status", "")).strip().lower() == "ok",
+                                    "decision_execution_match": str(
+                                        decision.get("action", "")
+                                    ).strip()
+                                    == str(action.get("action", "")).strip(),
+                                    "rerouted": str(decision.get("action", "")).strip()
+                                    != str(action.get("action", "")).strip(),
+                                    "status_ok": str(result.get("status", ""))
+                                    .strip()
+                                    .lower()
+                                    == "ok",
                                 },
                             },
                         },
@@ -586,14 +648,28 @@ async def run_npc_players_turn() -> None:
                 status = str(result.get("status", "")).strip().lower()
                 if status != "ok":
                     reflection_feedback = {
-                        "failed_action": str(result.get("failed_action") or action.get("action") or "wait"),
-                        "error_code": str(result.get("error_code") or result.get("summary") or "action_unavailable"),
-                        "error_message": str(result.get("error_message") or result.get("summary") or "action unavailable"),
+                        "failed_action": str(
+                            result.get("failed_action")
+                            or action.get("action")
+                            or "wait"
+                        ),
+                        "error_code": str(
+                            result.get("error_code")
+                            or result.get("summary")
+                            or "action_unavailable"
+                        ),
+                        "error_message": str(
+                            result.get("error_message")
+                            or result.get("summary")
+                            or "action unavailable"
+                        ),
                         "allowed_actions": list(result.get("allowed_actions") or []),
                         "blocked_actions": list(result.get("blocked_actions") or []),
                         "retryable": bool(result.get("retryable", False)),
                         "cooldown_sec": int(result.get("cooldown_sec", 0) or 0),
-                        "suggested_alternatives": list(result.get("suggested_alternatives") or []),
+                        "suggested_alternatives": list(
+                            result.get("suggested_alternatives") or []
+                        ),
                         "resource_deficit": result.get("resource_deficit"),
                     }
                 else:
@@ -634,7 +710,10 @@ async def run_npc_players_turn() -> None:
                         player_obs = last_observation.get("player", {})
                         mood = player_obs.get("current_mood", "neutral")
                         affinity = player_obs.get("affinity_score", 50)
-                        if mood in {"energetic", "positive", "chatty", "focused"} or affinity > 70:
+                        if (
+                            mood in {"energetic", "positive", "chatty", "focused"}
+                            or affinity > 70
+                        ):
                             is_proactive = True
 
                     await maybe_send_npc_chat_comment(
@@ -710,9 +789,10 @@ async def maybe_send_npc_chat_comment(
 
     import datetime as dt
     import pytz
-    moscow_tz = pytz.timezone('Europe/Moscow')
+
+    moscow_tz = pytz.timezone("Europe/Moscow")
     moscow_time = dt.datetime.now(moscow_tz)
-    
+
     # Do not chat between 23:00 and 09:00 Moscow time
     if moscow_time.hour >= 23 or moscow_time.hour < 9:
         return
@@ -770,9 +850,6 @@ async def maybe_send_npc_chat_comment(
             "rub": int(user.rub),
             "paw_coins": int(user.paw_coins),
             "moves": int(user.moves),
-            "public_voice": profile.get("public_voice"),
-            "humor_style": profile.get("humor_style"),
-            "rivalry_style": profile.get("rivalry_style"),
         },
         "action": {
             "name": action.get("action", "wait"),
@@ -836,9 +913,17 @@ async def maybe_send_npc_chat_comment(
     )
 
     async with _sessionmaker_for_func() as session:
-        from .memory import ensure_npc_profile_memory, _json_loads
+        from .memory import (
+            ensure_npc_profile_memory,
+            _json_loads,
+            _rehydrate_profile_payload,
+        )
+
         profile_row = await ensure_npc_profile_memory(session, user)
-        profile_data = _json_loads(profile_row.payload)
+        profile_data = _rehydrate_profile_payload(
+            user=user,
+            payload=_json_loads(profile_row.payload),
+        )
         recent = profile_data.get("recent_sent_chats", [])
         if not isinstance(recent, list):
             recent = []

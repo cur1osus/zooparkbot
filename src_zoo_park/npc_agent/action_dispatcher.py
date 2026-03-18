@@ -36,7 +36,11 @@ from tools.unity import get_unity_idpk
 
 from tools import add_to_currency, add_user_to_used, gen_key, in_used
 from tools.value import get_value
-from tools.unity_projects import contribute_to_project, get_user_chests, open_user_chests
+from tools.unity_projects import (
+    contribute_to_project,
+    get_user_chests,
+    open_user_chests,
+)
 
 from .client import NpcDecisionClient
 from .settings import settings
@@ -148,7 +152,9 @@ async def execute_action(
                 "action": str(name),
                 "reason": "blocked_by_guard",
             }
-            for name in (observation.get("anti_loop_guard", {}).get("blocked_actions", []) or [])
+            for name in (
+                observation.get("anti_loop_guard", {}).get("blocked_actions", []) or []
+            )
             if str(name).strip()
         ]
 
@@ -198,9 +204,16 @@ async def execute_change_own_mood(
     params: dict[str, Any],
     observation: dict[str, Any],
 ) -> dict[str, Any]:
-    from .memory import ensure_npc_profile_memory, _json_loads
+    from .memory import (
+        ensure_npc_profile_memory,
+        _json_loads,
+        _rehydrate_profile_payload,
+    )
+
     profile_row = await ensure_npc_profile_memory(session, user)
-    profile = _json_loads(profile_row.payload)
+    profile = _rehydrate_profile_payload(
+        user=user, payload=_json_loads(profile_row.payload)
+    )
     mood = str(params.get("mood", "neutral")).strip()[:32]
     profile["current_mood"] = mood
     profile_row.payload = json.dumps(profile)
@@ -214,9 +227,16 @@ async def execute_set_tactical_focus(
     params: dict[str, Any],
     observation: dict[str, Any],
 ) -> dict[str, Any]:
-    from .memory import ensure_npc_profile_memory, _json_loads
+    from .memory import (
+        ensure_npc_profile_memory,
+        _json_loads,
+        _rehydrate_profile_payload,
+    )
+
     profile_row = await ensure_npc_profile_memory(session, user)
-    profile = _json_loads(profile_row.payload)
+    profile = _rehydrate_profile_payload(
+        user=user, payload=_json_loads(profile_row.payload)
+    )
     focus = str(params.get("focus", "economy")).strip()[:32]
     tactics = profile.get("active_tactics", [])
     if isinstance(tactics, list):
@@ -237,7 +257,7 @@ async def execute_send_npc_signal(
     target_idpk = int(params.get("target_idpk", 0) or 0)
     if not target_idpk or target_idpk == user.idpk:
         return {"status": "error", "summary": "invalid_target_idpk"}
-    
+
     target_user = await session.get(User, target_idpk)
     if not target_user:
         return {"status": "error", "summary": "target_not_found"}
@@ -250,19 +270,22 @@ async def execute_send_npc_signal(
     message = str(params.get("message", "")).strip()[:100]
 
     from .memory import NpcMemory, FACT_KIND
+
     signal_fact = NpcMemory(
         idpk_user=target_idpk,
         kind=FACT_KIND,
         topic=f"incoming_signal:{user.idpk}",
-        payload=json.dumps({
-            "fact": f"Signal '{signal_type}' from {user.nickname} (id:{user.idpk}): {message}",
-            "confidence": 1000,
-            "source": "npc_link"
-        })
+        payload=json.dumps(
+            {
+                "fact": f"Signal '{signal_type}' from {user.nickname} (id:{user.idpk}): {message}",
+                "confidence": 1000,
+                "source": "npc_link",
+            }
+        ),
     )
     session.add(signal_fact)
     await session.flush()
-    
+
     return {"status": "ok", "summary": f"signal sent to {target_user.nickname}"}
 
 
@@ -302,7 +325,9 @@ async def execute_invest_for_income(
     if signal["need_seats"] and signal["best_aviary_option"]:
         best_aviary = signal["best_aviary_option"]
         aviary_size = max(1, int(best_aviary.get("size", 1) or 1))
-        affordable_quantity = max(1, int(best_aviary.get("affordable_quantity", 1) or 1))
+        affordable_quantity = max(
+            1, int(best_aviary.get("affordable_quantity", 1) or 1)
+        )
         # Open a practical seat buffer in one move when possible.
         target_new_seats = max(aviary_size, 6)
         quantity = max(1, (target_new_seats + aviary_size - 1) // aviary_size)
@@ -1002,8 +1027,6 @@ async def execute_review_unity_request(
     return {"status": "ok", "summary": f"accept_unity_request:{applicant.nickname}"}
 
 
-
-
 async def execute_contribute_clan_project(
     session: AsyncSession,
     user: User,
@@ -1039,8 +1062,8 @@ async def execute_contribute_clan_project(
         "status": "ok",
         "summary": (
             f"project_contribution:+{rub}RUB +{usd}USD | "
-            f"progress rub {int(pr.get('rub',0))}/{int(tg.get('rub',0))}, "
-            f"usd {int(pr.get('usd',0))}/{int(tg.get('usd',0))}"
+            f"progress rub {int(pr.get('rub', 0))}/{int(tg.get('rub', 0))}, "
+            f"usd {int(pr.get('usd', 0))}/{int(tg.get('usd', 0))}"
         ),
     }
 
@@ -1060,17 +1083,20 @@ async def execute_open_clan_chest(
     elif chest_type == "epic":
         kwargs["open_epic"] = 1
 
-    ok, msg, balance, rewards = await open_user_chests(session=session, user=user, **kwargs)
+    ok, msg, balance, rewards = await open_user_chests(
+        session=session, user=user, **kwargs
+    )
     if not ok:
         return {"status": "skipped", "summary": f"open_chest_skipped:{msg}"}
 
     return {
         "status": "ok",
         "summary": (
-            f"open_chest:{chest_type} +{int(rewards.get('rub',0))}RUB +{int(rewards.get('usd',0))}USD | "
-            f"left c:{int(balance.get('common',0))} r:{int(balance.get('rare',0))} e:{int(balance.get('epic',0))}"
+            f"open_chest:{chest_type} +{int(rewards.get('rub', 0))}RUB +{int(rewards.get('usd', 0))}USD | "
+            f"left c:{int(balance.get('common', 0))} r:{int(balance.get('rare', 0))} e:{int(balance.get('epic', 0))}"
         ),
     }
+
 
 async def execute_exit_from_unity(
     session: AsyncSession,
@@ -1167,7 +1193,10 @@ async def execute_send_chat_transfer(
         ),
         reply_markup=keyboard,
     )
-    return {"status": "ok", "summary": f"chat_transfer:{currency}:{total_spend}:{pieces}"}
+    return {
+        "status": "ok",
+        "summary": f"chat_transfer:{currency}:{total_spend}:{pieces}",
+    }
 
 
 async def execute_claim_chat_transfer(
@@ -1252,7 +1281,9 @@ async def execute_create_chat_game(
         user.rub -= amount_award
         user.amount_expenses_rub += amount_award
 
-    sec_to_expire_game = int(await get_value(session=session, value_name="SEC_TO_EXPIRE_GAME"))
+    sec_to_expire_game = int(
+        await get_value(session=session, value_name="SEC_TO_EXPIRE_GAME")
+    )
     game = Game(
         id_game=f"game_{gen_key(length=12)}",
         idpk_user=user.idpk,
@@ -1315,11 +1346,15 @@ async def execute_join_chat_game(
         return {"status": "skipped", "summary": "has_active_game"}
 
     current_gamers = int(
-        await session.scalar(select(func.count()).select_from(Gamer).where(Gamer.id_game == id_game))
+        await session.scalar(
+            select(func.count()).select_from(Gamer).where(Gamer.id_game == id_game)
+        )
         or 0
     )
     if current_gamers >= int(game.amount_gamers):
         return {"status": "skipped", "summary": "game_full"}
 
-    session.add(Gamer(id_game=id_game, idpk_gamer=user.idpk, moves=int(game.amount_moves)))
+    session.add(
+        Gamer(id_game=id_game, idpk_gamer=user.idpk, moves=int(game.amount_moves))
+    )
     return {"status": "ok", "summary": f"join_chat_game:{id_game}"}

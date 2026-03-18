@@ -21,7 +21,6 @@ class ActionDecision(BaseModel):
     params: dict[str, Any]
     reason: str
     sleep_seconds: int
-    trait_update: dict[str, Any] | None = None
 
 
 class ReflectionOutput(BaseModel):
@@ -30,7 +29,6 @@ class ReflectionOutput(BaseModel):
     opportunities: list[str]
     risks: list[str]
     semantic_facts: list[str]
-    trait_adjustments: list[dict[str, Any]]
     tactical_focus: list[str]
     goal_adjustments: list[dict[str, Any]]
 
@@ -42,13 +40,11 @@ class ToolDecision(BaseModel):
     input: dict[str, Any]
     reason: str
     sleep_seconds: int
-    trait_update: dict[str, Any] | None = None
 
 
 DECISION_JSON_CONTRACT = (
     '{"thought_process":"string","user_sentiment":"neutral|positive|negative|annoyed",'
-    '"action":"string","params":{},"reason":"short","sleep_seconds":300,'
-    '"trait_update":{"trait":"optional","delta":0,"reason":"optional"}}'
+    '"action":"string","params":{},"reason":"short","sleep_seconds":300}'
 )
 
 
@@ -81,7 +77,7 @@ V2_TOOL_SYSTEM_PROMPT = (
     BASE_DECISION_PROMPT
     + "\n\n"
     + "Tool mode output contract:\n"
-    + "- Return JSON only: {\"thought_process\":\"string\",\"user_sentiment\":\"neutral|positive|negative\",\"tool\":\"name\",\"input\":{},\"reason\":\"short\",\"sleep_seconds\":300,\"trait_update\":{\"trait\":\"optional\",\"delta\":0,\"reason\":\"optional\"}}\n"
+    + '- Return JSON only: {"thought_process":"string","user_sentiment":"neutral|positive|negative","tool":"name","input":{},"reason":"short","sleep_seconds":300}\n'
     + "- tool must be from available_tools only.\n"
     + "- input must match the selected tool schema.\n"
     + "- If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.\n"
@@ -112,7 +108,10 @@ CHAT_TROPES = [
     "Comment on your own recent action as if it's historic.",
 ]
 
-def _build_chat_system_prompt(chat_mode: str, current_mood: str, recent_chats: list[str]) -> str:
+
+def _build_chat_system_prompt(
+    chat_mode: str, current_mood: str, recent_chats: list[str]
+) -> str:
     base = """You are the public voice of an autonomous AI NPC in a Telegram zoo economy game.
 Write one short message in Russian for the shared game chat.
 
@@ -140,21 +139,24 @@ Output Rules:
     elif chat_mode == "social":
         tone_guidance += "- You are negotiating alliances and evaluating clan requests. Sound calculative but open to deals.\n"
     elif current_mood == "aggressive":
-        tone_guidance += "- You are feeling aggressive and hostile. Tone down the friendliness.\n"
+        tone_guidance += (
+            "- You are feeling aggressive and hostile. Tone down the friendliness.\n"
+        )
     else:
         tone_guidance += "- Keep a light humor and playful tone, focused on growth and competition.\n"
 
     trope = random.choice(CHAT_TROPES)
     banned = ", ".join(BANNED_CLICHES)
-    
+
     constraints = f"\n\nStrict Conditions For This Turn:\n- {trope}\n- DO NOT USE THESE CLICHES: {banned}\n- Do not use emojis more than twice.\n"
-    
+
     if recent_chats:
         constraints += "\nAvoid repeating these recent sentiments:\n"
         for rc in recent_chats:
             constraints += f" - '{rc}'\n"
 
     return base + tone_guidance + constraints
+
 
 REFLECTION_SYSTEM_PROMPT = """
 You are generating strategic memory for an autonomous NPC in a Telegram zoo economy game.
@@ -166,9 +168,6 @@ Return JSON only with this shape:
   "opportunities": ["opportunity 1"],
   "risks": ["risk 1"],
   "semantic_facts": ["fact about user or world to remember"],
-  "trait_adjustments": [
-    {"trait": "economy_focus", "delta": 3, "reason": "short note"}
-  ],
   "tactical_focus": ["economy_growth"],
   "goal_adjustments": [
     {"topic": "goal_topic", "adjustment": "short note"}
@@ -176,8 +175,7 @@ Return JSON only with this shape:
 }
 
 Rules:
-- Use the profile and mission to keep behavior consistent.
-- Suggest only small, bounded trait adjustments that reflect recent evidence.
+- Use recent events, active goals, and current state to stay grounded.
 - Focus on what the NPC should remember for future turns.
 - Prefer concrete lessons over vague narration.
 - Keep lists short and high-signal.
@@ -340,7 +338,9 @@ class NpcDecisionClient:
         base_url_override: str | None = None,
         api_key_override: str | None = None,
     ) -> dict[str, Any]:
-        available_tools = build_tool_catalog(observation.get("allowed_actions", []) or [])
+        available_tools = build_tool_catalog(
+            observation.get("allowed_actions", []) or []
+        )
         payload = {
             "task": "Select one tool call for this NPC turn.",
             "available_tools": available_tools,
@@ -375,9 +375,15 @@ class NpcDecisionClient:
                 api_key_override=api_key_override,
             )
         tool_name = str(tool_decision.get("tool", "wait")).strip() or "wait"
-        allowed_tool_names = {str(item.get("name", "")).strip() for item in available_tools}
+        allowed_tool_names = {
+            str(item.get("name", "")).strip() for item in available_tools
+        }
         if tool_name not in allowed_tool_names:
-            tool_name = "wait" if "wait" in allowed_tool_names else next(iter(allowed_tool_names), "wait")
+            tool_name = (
+                "wait"
+                if "wait" in allowed_tool_names
+                else next(iter(allowed_tool_names), "wait")
+            )
 
         params = normalize_tool_call(tool_name, tool_decision.get("input", {}) or {})
 
@@ -388,7 +394,6 @@ class NpcDecisionClient:
             "params": params,
             "reason": str(tool_decision.get("reason", "v2_tool_selection"))[:220],
             "sleep_seconds": int(tool_decision.get("sleep_seconds", 300) or 300),
-            "trait_update": tool_decision.get("trait_update"),
         }
 
     async def choose_action(self, observation: dict[str, Any]) -> dict[str, Any]:
@@ -407,7 +412,7 @@ class NpcDecisionClient:
         api_key_override: str | None = None,
     ) -> dict[str, Any]:
         clean_obs = self._build_trimmed_observation(observation)
-        
+
         return await self.choose_action_v2_tools(
             observation=clean_obs,
             model_override=model_override,
@@ -444,13 +449,15 @@ class NpcDecisionClient:
         )
         return str(data.get("name", "")).strip()
 
-    async def evaluate_decision(self, decision: dict[str, Any], observation: dict[str, Any]) -> dict[str, Any]:
+    async def evaluate_decision(
+        self, decision: dict[str, Any], observation: dict[str, Any]
+    ) -> dict[str, Any]:
         evaluate_prompt = {
             "task": "Review the proposed decision for hard constraint violations. If invalid, return a corrected JSON decision. If valid, return unmodified.",
             "required_output": {
                 "is_valid": "boolean",
                 "correction": "object",
-                "reason": "short string"
+                "reason": "short string",
             },
             "observation": self._build_trimmed_observation(observation),
             "proposed_decision": decision,
@@ -466,10 +473,43 @@ class NpcDecisionClient:
             return {
                 "is_valid": bool(result.get("is_valid", True)),
                 "correction": result.get("correction"),
-                "reason": str(result.get("reason", ""))
+                "reason": str(result.get("reason", "")),
             }
         except Exception:
             return {"is_valid": True, "correction": None, "reason": "eval_error"}
+
+    async def optimize_decision(
+        self, decision: dict[str, Any], observation: dict[str, Any]
+    ) -> dict[str, Any]:
+        optimize_prompt = {
+            "task": "Optimize the proposed decision for long-term compounding value while strictly respecting allowed_actions, action_contract and hard constraints. Return improved decision if a better legal move exists; otherwise keep the same decision.",
+            "required_output": {
+                "is_valid": "boolean",
+                "correction": "object",
+                "reason": "short string",
+            },
+            "observation": self._build_trimmed_observation(observation),
+            "proposed_decision": decision,
+        }
+        try:
+            result = await self._request_json(
+                system_prompt=(
+                    "You are a strict decision optimizer. "
+                    "First optimize EV/priority, then enforce legality and constraints. "
+                    "Never output illegal actions or params."
+                ),
+                user_payload=optimize_prompt,
+                max_tokens=360,
+                temperature=0.15,
+                request_kind="optimize_decision",
+            )
+            return {
+                "is_valid": bool(result.get("is_valid", True)),
+                "correction": result.get("correction"),
+                "reason": str(result.get("reason", "")),
+            }
+        except Exception:
+            return {"is_valid": True, "correction": None, "reason": "optimize_error"}
 
     async def reflect_on_memory(self, payload: dict[str, Any]) -> dict[str, Any]:
         cli_payload = {
@@ -481,9 +521,6 @@ class NpcDecisionClient:
                 "opportunities": ["string"],
                 "risks": ["string"],
                 "semantic_facts": ["string"],
-                "trait_adjustments": [
-                    {"trait": "string", "delta": "integer", "reason": "string"}
-                ],
                 "tactical_focus": ["string"],
                 "goal_adjustments": [{"topic": "string", "adjustment": "string"}],
             },
