@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -36,9 +35,6 @@ class User(Base):
     id_referrer: Mapped[int] = mapped_column(BigInteger, nullable=True, index=True)
     referral_verification: Mapped[bool] = mapped_column(default=False, index=True)
     moves: Mapped[int] = mapped_column(default=0)
-    history_moves: Mapped[str] = mapped_column(
-        SQLText().with_variant(MEDIUMTEXT(), "mysql"), default="{}"
-    )
     paw_coins: Mapped[int] = mapped_column(default=0)
     amount_expenses_paw_coins: Mapped[int] = mapped_column(default=0)
     rub: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0)
@@ -49,9 +45,7 @@ class User(Base):
     amount_expenses_usd: Mapped[int] = mapped_column(
         Numeric(precision=65, scale=0), default=0
     )
-    animals: Mapped[str] = mapped_column(SQLText, default="{}")
     info_about_items: Mapped[str] = mapped_column(SQLText, default="{}")
-    aviaries: Mapped[str] = mapped_column(SQLText, default="{}")
     current_unity: Mapped[str] = mapped_column(String(64), nullable=True)
     sub_on_chat: Mapped[bool] = mapped_column(default=False)
     sub_on_channel: Mapped[bool] = mapped_column(default=False)
@@ -63,41 +57,11 @@ class Unity(Base):
 
     idpk_user: Mapped[int] = mapped_column()
     name: Mapped[str] = mapped_column(String(length=64))
-    members: Mapped[str] = mapped_column(SQLText, default="{}")
     level: Mapped[int] = mapped_column(default=0)
 
     @property
     def format_name(self) -> str:
         return f"«{self.name}»"
-
-    def add_member(self, idpk_member: int, rule: str = "member") -> None:
-        decoded_dict: dict = json.loads(self.members)
-        decoded_dict[idpk_member] = rule
-        self.members = json.dumps(decoded_dict, ensure_ascii=False)
-
-    def remove_member(self, idpk_member: str) -> None:
-        decoded_dict: dict = json.loads(self.members)
-        if idpk_member in decoded_dict:
-            del decoded_dict[idpk_member]
-        self.members = json.dumps(decoded_dict, ensure_ascii=False)
-
-    def remove_first_member(self) -> int:
-        decoded_dict: dict = json.loads(self.members)
-        key = 0
-        if decoded_dict:
-            key = list(decoded_dict.keys())[0]
-            del decoded_dict[key]
-        self.members = json.dumps(decoded_dict, ensure_ascii=False)
-        return int(key)
-
-    def get_number_members(self) -> int:
-        """Возвращает количество участников вместе с владельцем"""
-        decoded_dict: dict = json.loads(self.members)
-        return len(decoded_dict) + 1
-
-    def get_members_idpk(self) -> List[str]:
-        decoded_dict: dict = json.loads(self.members)
-        return list(decoded_dict.keys()) + [self.idpk_user]
 
 
 class RequestToUnity(Base):
@@ -312,7 +276,6 @@ class TransferMoney(Base):
     currency: Mapped[str] = mapped_column(String(length=10))
     one_piece_sum: Mapped[int] = mapped_column(BigInteger)
     pieces: Mapped[int] = mapped_column()
-    used: Mapped[str] = mapped_column(SQLText, nullable=True)
     id_mess: Mapped[str] = mapped_column(String(length=80), nullable=True)
     source_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
     status: Mapped[bool] = mapped_column(default=False)

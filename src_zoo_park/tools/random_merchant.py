@@ -18,7 +18,7 @@ async def create_random_merchant(session: AsyncSession, user: User) -> RandomMer
     MAX_DISCOUNT = await tools.get_value(session=session, value_name="MAX_DISCOUNT")
     random_animal = await tools.get_random_animal(
         session=session,
-        user_animals=user.animals,
+        user=user,
     )
     random_quantity_animals = await tools.gen_quantity_animals(
         session=session, user=user
@@ -28,7 +28,7 @@ async def create_random_merchant(session: AsyncSession, user: User) -> RandomMer
         price=random_animal.price * random_quantity_animals,
         discount=random_discount,
     )
-    random_price = await gen_price(session=session, animals=user.animals, user=user)
+    random_price = await gen_price(session=session, user=user)
     rm = RandomMerchant(
         id_user=user.id_user,
         name=fake.first_name_male(),
@@ -53,7 +53,7 @@ def calculate_price_with_discount(price: int, discount: int) -> int:
 
 async def gen_price(
     session: AsyncSession,
-    animals: str,
+    animals: str | None = None,
     user: User | None = None,
 ) -> int:
     animals_dict = (

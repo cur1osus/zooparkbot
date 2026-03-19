@@ -136,7 +136,7 @@ async def get_members_not_have_amount_animals(
     members_not_have_amount_animals = []
     for idpk in members_idpk:
         user = await session.get(User, idpk)
-        animals = tools.get_numbers_animals(self=user)
+        animals = await tools.get_numbers_animals(self=user, session=session)
         is_have = all(i >= condition for i in animals) if animals else False
         if not is_have:
             members_not_have_amount_animals.append(user.nickname)
@@ -201,7 +201,7 @@ async def get_top_unity_by_animal(session: AsyncSession) -> tuple[int, dict]:
         animals = defaultdict(int)
         for idpk in member_ids:
             user = users[int(idpk)]
-            animals_user = await tools.get_dict_animals(self=user)
+            animals_user = await tools.get_dict_animals(self=user, session=session)
             for animal_name, num_animal in animals_user.items():
                 animals[animal_name] += num_animal
         if not animals:
@@ -238,7 +238,7 @@ async def check_condition_2nd_lvl(session: AsyncSession, unity: Unity) -> bool:
         return all(
             num_animal >= AMOUNT_ANIMALS_2ND_LVL
             for user in users
-            for num_animal in tools.get_numbers_animals(user)
+            for num_animal in await tools.get_numbers_animals(user, session=session)
         )
 
 
@@ -271,7 +271,7 @@ async def check_condition_3rd_lvl(session: AsyncSession, unity: Unity) -> bool:
         return all(
             num_animal >= AMOUNT_ANIMALS_3RD_LVL
             for user in users
-            for num_animal in await tools.get_numbers_animals(user)
+            for num_animal in await tools.get_numbers_animals(user, session=session)
         )
 
 

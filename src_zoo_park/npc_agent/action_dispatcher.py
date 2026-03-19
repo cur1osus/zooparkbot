@@ -589,7 +589,7 @@ async def execute_buy_merchant_random_offer(
     quantity_animals = await gen_quantity_animals(session=session, user=user)
     rewards = []
     while quantity_animals > 0:
-        animal_obj = await get_random_animal(session=session, user_animals=user.animals)
+        animal_obj = await get_random_animal(session=session, user=user)
         part_animals = min(quantity_animals, max(1, quantity_animals // 2))
         quantity_animals -= part_animals
         await add_animal(
@@ -599,7 +599,7 @@ async def execute_buy_merchant_random_offer(
             session=session,
         )
         rewards.append(f"{animal_obj.code_name}x{part_animals}")
-    merchant.price = await gen_price(session=session, animals=user.animals, user=user)
+    merchant.price = await gen_price(session=session, user=user)
     return {"status": "ok", "summary": f"merchant_random:{','.join(rewards)}"}
 
 

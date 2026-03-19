@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from text_utils import format_iso_datetime_short
 
 from db import Unity, User, Value
+from db.structured_state import count_unity_members
 from init_bot import bot
 from tools.animals import add_animal
 from tools.aviaries import get_remain_seats
@@ -44,8 +45,8 @@ def _base_targets(level: int) -> tuple[int, int]:
     return rub, usd
 
 
-def _new_project(unity: Unity, level: int = 1) -> dict[str, Any]:
-    member_count = max(1, unity.get_number_members())
+def _new_project(unity: Unity, member_count: int, level: int = 1) -> dict[str, Any]:
+    member_count = max(1, int(member_count or 1))
     factor = _clan_size_factor(member_count)
     base_rub, base_usd = _base_targets(level)
     target_rub = int(base_rub * factor)
@@ -89,14 +90,14 @@ def _new_project(unity: Unity, level: int = 1) -> dict[str, Any]:
     }
 
 
-def _sync_project_target_with_clan(project: dict[str, Any], unity: Unity) -> bool:
+def _sync_project_target_with_clan(project: dict[str, Any], member_count: int) -> bool:
     if project.get("status") != "active":
         return False
 
     level = int(project.get("level", 1) or 1)
     if level < 1:
         level = 1
-    member_count = max(1, unity.get_number_members())
+    member_count = max(1, int(member_count or 1))
     factor = _clan_size_factor(member_count)
     base_rub, base_usd = _base_targets(level)
 
@@ -126,6 +127,7 @@ async def _get_or_create_value(session: AsyncSession, name: str) -> Value:
 
 async def get_or_create_project(session: AsyncSession, unity: Unity) -> dict[str, Any]:
     row = await _get_or_create_value(session, _project_key(unity.idpk))
+    member_count = await count_unity_members(session=session, unity=unity)
     payload: dict[str, Any]
     try:
         payload = json.loads(row.value_str or "{}")
@@ -133,11 +135,13 @@ async def get_or_create_project(session: AsyncSession, unity: Unity) -> dict[str
         payload = {}
     if not isinstance(payload, dict) or payload.get("status") != "active":
         payload = _new_project(
-            unity=unity, level=int(payload.get("level", 0) or 0) + 1 if payload else 1
+            unity=unity,
+            member_count=member_count,
+            level=int(payload.get("level", 0) or 0) + 1 if payload else 1,
         )
         row.value_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         await session.flush()
-    elif _sync_project_target_with_clan(payload, unity):
+    elif _sync_project_target_with_clan(payload, member_count=member_count):
         row.value_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         await session.flush()
     return payload

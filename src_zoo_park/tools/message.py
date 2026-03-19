@@ -4,6 +4,7 @@ import bot.keyboards as kb
 from aiogram.types import CallbackQuery, Message
 from config import CHAT_ID
 from db import User
+from db.structured_state import get_user_aviaries_map
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import tools
@@ -22,10 +23,11 @@ async def disable_not_main_window(data: dict, message: Message):
 async def m_choice_quantity_avi(
     session: AsyncSession, aviary: str, state, query: CallbackQuery, user: User
 ):
+    aviaries_state = await get_user_aviaries_map(session=session, user=user)
     aviary_price = await tools.get_price_aviaries(
         session=session,
         code_name_aviary=aviary,
-        aviaries=user.aviaries,
+        aviaries=aviaries_state,
         info_about_items=user.info_about_items,
     )
     await state.update_data(code_name_aviary=aviary, aviary_price=aviary_price)

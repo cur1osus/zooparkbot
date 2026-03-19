@@ -69,7 +69,9 @@ async def get_rarity_shop_caption(
             info_about_items=user.info_about_items,
         ),
         usd=user.usd,
-        quantity_animals=(await get_dict_animals(user)).get(animal.code_name, 0),
+        quantity_animals=(await get_dict_animals(user, session=session)).get(
+            animal.code_name, 0
+        ),
     )
 
 

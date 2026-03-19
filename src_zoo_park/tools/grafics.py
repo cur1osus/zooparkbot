@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 from cache import plot_cache
-from db import User
-from sqlalchemy import select
+from db import User, UserAnimalState
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import tools
@@ -53,7 +53,10 @@ def remove_plot_files(pattern: str) -> None:
 
 
 async def get_users_with_animals(session: AsyncSession) -> list[User]:
-    result = await session.scalars(select(User).where(User.animals != "{}"))
+    animals_exists = exists(
+        select(UserAnimalState.idpk).where(UserAnimalState.idpk_user == User.idpk)
+    )
+    result = await session.scalars(select(User).where(animals_exists))
     return list(result.all())
 
 
@@ -89,8 +92,8 @@ async def get_user_income(session: AsyncSession, user: User) -> int:
     return await tools.income_(session=session, user=user)
 
 
-def get_user_animals(user: User) -> int:
-    return sum(tools.get_numbers_animals(self=user))
+async def get_user_animals(session: AsyncSession, user: User) -> int:
+    return sum(await tools.get_numbers_animals(self=user, session=session))
 
 
 def get_user_money(user: User) -> int:
@@ -99,6 +102,10 @@ def get_user_money(user: User) -> int:
 
 async def get_top_income_data(session: AsyncSession) -> list[tuple[str, int]]:
     return await build_user_top_data(session=session, metric_loader=get_user_income)
+
+
+async def get_top_animals_data(session: AsyncSession) -> list[tuple[str, int]]:
+    return await build_user_top_data(session=session, metric_loader=get_user_animals)
 
 
 async def get_top_referrals_data(session: AsyncSession) -> list[tuple[str, int]]:

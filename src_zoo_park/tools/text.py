@@ -456,9 +456,12 @@ async def factory_text_account_animals(
     return text
 
 
-async def factory_text_account_aviaries(session: AsyncSession, aviaries: str) -> str:
+async def factory_text_account_aviaries(
+    session: AsyncSession, aviaries: str | dict
+) -> str:
     text = ""
-    aviaries = loads_or_default(aviaries, {})
+    if isinstance(aviaries, str):
+        aviaries = loads_or_default(aviaries, {})
     sorted_keys = sorted(aviaries, key=lambda x: aviaries[x]["quantity"], reverse=True)
     for aviary in sorted_keys:
         name = await session.scalar(

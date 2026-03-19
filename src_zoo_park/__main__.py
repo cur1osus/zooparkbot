@@ -16,6 +16,7 @@ from bot.middlewares import (
     ThrottlingMiddleware,
 )
 from db import Base
+from db.finalize_legacy_schema import finalize_legacy_schema
 from init_bot import bot
 from init_db import _engine, _sessionmaker
 from init_db_redis import redis
@@ -33,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 async def on_startup(_engine: AsyncEngine) -> None:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await finalize_legacy_schema(_engine)
 
 
 async def on_shutdown(*args, **kwargs) -> None:

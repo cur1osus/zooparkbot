@@ -22,6 +22,7 @@ from bot.keyboards import (
 )
 from bot.states import UserState
 from db import Animal, Item, User
+from db.structured_state import get_user_animals_map, get_user_aviaries_map
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
@@ -163,13 +164,14 @@ async def account_animals(
     state: FSMContext,
     user: User,
 ):
-    if user.animals == "{}":
+    animals_state = await get_user_animals_map(session=session, user=user)
+    if not animals_state:
         await query.answer(
             text=await get_text_message("no_animals"),
             show_alert=True,
         )
         return
-    text = await factory_text_account_animals(session=session, animals=user.animals)
+    text = await factory_text_account_animals(session=session, animals=animals_state)
     await query.message.edit_text(
         text=await get_text_message(
             "account_animals",
@@ -191,14 +193,17 @@ async def account_aviaries(
     state: FSMContext,
     user: User,
 ):
-    if user.aviaries == "{}":
+    aviaries_state = await get_user_aviaries_map(session=session, user=user)
+    if not aviaries_state:
         await query.answer(
             text=await get_text_message("no_aviaries"),
             show_alert=True,
         )
         return
-    text = await factory_text_account_aviaries(session=session, aviaries=user.aviaries)
-    total_places = await get_total_number_seats(session=session, aviaries=user.aviaries)
+    text = await factory_text_account_aviaries(session=session, aviaries=aviaries_state)
+    total_places = await get_total_number_seats(
+        session=session, aviaries=aviaries_state
+    )
     remain_places = await get_remain_seats(
         session=session,
         user=user,

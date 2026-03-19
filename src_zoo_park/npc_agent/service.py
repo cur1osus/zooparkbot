@@ -753,10 +753,7 @@ async def ensure_default_npc_user(session: AsyncSession) -> User:
         nickname=settings.npc_nickname,
         date_reg=datetime.now(),
         usd=start_usd,
-        history_moves="{}",
-        animals="{}",
         info_about_items="{}",
-        aviaries="{}",
     )
     session.add(npc_user)
     await session.commit()

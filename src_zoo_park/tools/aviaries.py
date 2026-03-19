@@ -1,6 +1,6 @@
 from db import Aviary, User
 from db.structured_state import get_user_aviaries_map, upsert_user_aviary
-from fastjson import dumps as json_dumps, loads_or_default
+from fastjson import loads_or_default
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

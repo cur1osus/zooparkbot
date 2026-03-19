@@ -1,7 +1,7 @@
 from decimal import Decimal
 
-from db import User
-from sqlalchemy import or_, select
+from db import User, UserAnimalState
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -33,7 +33,10 @@ async def add_to_amount_expenses_currency(
 
 
 async def fetch_users_for_top(session: AsyncSession, idpk_user: int) -> list[User]:
+    animals_exists = exists(
+        select(UserAnimalState.idpk).where(UserAnimalState.idpk_user == User.idpk)
+    )
     users = await session.scalars(
-        select(User).where(or_(User.animals != "{}", User.idpk == idpk_user))
+        select(User).where(or_(animals_exists, User.idpk == idpk_user))
     )
     return users.all()

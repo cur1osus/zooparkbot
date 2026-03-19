@@ -2,8 +2,12 @@ import random
 
 import game_variables
 from db import Animal, Unity, User
-from db.structured_state import add_user_animals, get_user_total_animals
-from fastjson import dumps as json_dumps, loads_or_default
+from db.structured_state import (
+    add_user_animals,
+    get_user_animals_map,
+    get_user_total_animals,
+)
+from fastjson import loads_or_default
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,12 +88,20 @@ async def get_income_animal(
     return int(animal_income)
 
 
-async def get_dict_animals(self: User) -> dict:
-    return loads_or_default(self.animals, {})
+async def get_dict_animals(
+    self: User,
+    session: AsyncSession | None = None,
+) -> dict[str, int]:
+    if session is not None:
+        return await get_user_animals_map(session=session, user=self)
+    return {}
 
 
-def get_numbers_animals(self: User) -> list[int]:
-    decoded_dict: dict = loads_or_default(self.animals, {})
+async def get_numbers_animals(
+    self: User,
+    session: AsyncSession | None = None,
+) -> list[int]:
+    decoded_dict = await get_dict_animals(self=self, session=session)
     return list(decoded_dict.values())
 
 
@@ -97,31 +109,21 @@ async def add_animal(
     self: User,
     code_name_animal: str,
     quantity: int,
-    session: AsyncSession | None = None,
+    session: AsyncSession,
 ) -> None:
-    if session is not None:
-        await add_user_animals(
-            session=session,
-            user=self,
-            animal_code_name=code_name_animal,
-            quantity=quantity,
-        )
-        return
-    decoded_dict: dict = loads_or_default(self.animals, {})
-    decoded_dict[code_name_animal] = int(
-        decoded_dict.get(code_name_animal, 0) or 0
-    ) + int(quantity)
-    self.animals = json_dumps(decoded_dict)
+    await add_user_animals(
+        session=session,
+        user=self,
+        animal_code_name=code_name_animal,
+        quantity=quantity,
+    )
 
 
 async def get_total_number_animals(
     self: User,
-    session: AsyncSession | None = None,
+    session: AsyncSession,
 ) -> int:
-    if session is not None:
-        return await get_user_total_animals(session=session, user=self)
-    decoded_dict: dict = loads_or_default(self.animals, {})
-    return sum(decoded_dict.values())
+    return await get_user_total_animals(session=session, user=self)
 
 
 # async def _get_income_animal(
@@ -145,8 +147,18 @@ async def get_total_number_animals(
 #     return int(animal_income)
 
 
-async def get_random_animal(session: AsyncSession, user_animals: str) -> Animal:
-    dict_animals: dict = loads_or_default(user_animals, {})
+async def get_random_animal(
+    session: AsyncSession,
+    user_animals: str | dict[str, int] | None = None,
+    user: User | None = None,
+) -> Animal:
+    dict_animals: dict[str, int] = {}
+    if user is not None:
+        dict_animals = await get_user_animals_map(session=session, user=user)
+    elif isinstance(user_animals, dict):
+        dict_animals = user_animals
+    else:
+        dict_animals = loads_or_default(user_animals, {})
     if not dict_animals:
         animal_names_to_choice = await tools.fetch_and_parse_str_value(
             session=session,

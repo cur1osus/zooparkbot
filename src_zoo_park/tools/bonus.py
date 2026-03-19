@@ -75,7 +75,7 @@ async def handle_aviary_bonus(user, session, **kwargs) -> tuple[dict, int]:
 async def handle_animal_bonus(
     user: User, session: AsyncSession, **kwargs
 ) -> tuple[dict, int]:
-    animal = await tools.get_random_animal(session=session, user_animals=user.animals)
+    animal = await tools.get_random_animal(session=session, user=user)
     THRESHOLD_MIN = 1
     THRESHOLD_MAX = min(20, kwargs["remain_seats"])
     amount_to_add = random.randint(

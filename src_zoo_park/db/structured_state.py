@@ -21,8 +21,7 @@ from .models import (
 _LEGACY_HISTORY_TIME_FORMAT = "%d.%m.%Y %H:%M:%S.%f"
 
 
-def _parse_legacy_history_entries(user: User) -> list[dict[str, Any]]:
-    raw_history = getattr(user, "history_moves", None)
+def parse_legacy_history_payload(raw_history: str | None) -> list[dict[str, Any]]:
     if not raw_history or raw_history == "{}":
         return []
     try:
@@ -69,6 +68,10 @@ def _parse_legacy_history_entries(user: User) -> list[dict[str, Any]]:
 
     entries.sort(key=lambda item: item["event_time"])
     return entries
+
+
+def _parse_legacy_history_entries(user: User) -> list[dict[str, Any]]:
+    return parse_legacy_history_payload(getattr(user, "history_moves", None))
 
 
 async def ensure_user_history_backfilled(session: AsyncSession, user: User) -> None:
@@ -207,11 +210,13 @@ async def list_recent_npc_history_payloads(
     return list(reversed(payloads))
 
 
-def _parse_legacy_unity_members(unity: Unity) -> list[tuple[int, str]]:
-    if not unity.members or unity.members == "{}":
+def parse_legacy_unity_members_payload(
+    raw_members: str | None,
+) -> list[tuple[int, str]]:
+    if not raw_members or raw_members == "{}":
         return []
     try:
-        payload = json_loads(unity.members)
+        payload = json_loads(raw_members)
     except Exception:
         return []
     if not isinstance(payload, dict):
@@ -224,6 +229,10 @@ def _parse_legacy_unity_members(unity: Unity) -> list[tuple[int, str]]:
         except (TypeError, ValueError):
             continue
     return result
+
+
+def _parse_legacy_unity_members(unity: Unity) -> list[tuple[int, str]]:
+    return parse_legacy_unity_members_payload(getattr(unity, "members", None))
 
 
 def _serialize_unity_members(rows: list[UnityMember]) -> str:
@@ -240,7 +249,8 @@ async def ensure_unity_members_backfilled(
         .order_by(UnityMember.idpk.asc())
     )
     member_rows = list(rows.all())
-    if member_rows or not unity.members or unity.members == "{}":
+    legacy_members = getattr(unity, "members", None)
+    if member_rows or not legacy_members or legacy_members == "{}":
         return member_rows
 
     for member_idpk, role in _parse_legacy_unity_members(unity):
@@ -286,8 +296,6 @@ async def add_unity_member(
         UnityMember(idpk_unity=unity.idpk, idpk_user=int(member_idpk), role=role)
     )
     await session.flush()
-    rows = await list_unity_member_rows(session=session, unity=unity)
-    unity.members = _serialize_unity_members(rows)
 
 
 async def remove_unity_member(
@@ -302,25 +310,20 @@ async def remove_unity_member(
         await session.delete(row)
         await session.flush()
         break
-    rows = await list_unity_member_rows(session=session, unity=unity)
-    unity.members = _serialize_unity_members(rows)
 
 
 async def pop_next_unity_owner(session: AsyncSession, unity: Unity) -> int | None:
     rows = await list_unity_member_rows(session=session, unity=unity)
     if not rows:
-        unity.members = "{}"
         return None
     promoted = rows[0]
     await session.delete(promoted)
     await session.flush()
-    rows = await list_unity_member_rows(session=session, unity=unity)
-    unity.members = _serialize_unity_members(rows)
     return int(promoted.idpk_user)
 
 
-def _parse_legacy_transfer_claims(transfer: TransferMoney) -> list[int]:
-    used_raw = str(transfer.used or "")
+def parse_legacy_transfer_claims_payload(used_raw: str | None) -> list[int]:
+    used_raw = str(used_raw or "")
     result: list[int] = []
     for chunk in used_raw.split(","):
         chunk = chunk.strip()
@@ -331,6 +334,10 @@ def _parse_legacy_transfer_claims(transfer: TransferMoney) -> list[int]:
         except ValueError:
             continue
     return result
+
+
+def _parse_legacy_transfer_claims(transfer: TransferMoney) -> list[int]:
+    return parse_legacy_transfer_claims_payload(getattr(transfer, "used", None))
 
 
 async def ensure_transfer_claims_backfilled(
@@ -404,8 +411,7 @@ async def list_transfer_claim_user_ids(
     return {int(item) for item in rows.all()}
 
 
-def _parse_legacy_animals(user: User) -> dict[str, int]:
-    raw = getattr(user, "animals", None)
+def parse_legacy_animals_payload(raw: str | None) -> dict[str, int]:
     if not raw or raw == "{}":
         return {}
     try:
@@ -428,6 +434,10 @@ def _parse_legacy_animals(user: User) -> dict[str, int]:
     return result
 
 
+def _parse_legacy_animals(user: User) -> dict[str, int]:
+    return parse_legacy_animals_payload(getattr(user, "animals", None))
+
+
 def _serialize_animals(payload: dict[str, int]) -> str:
     return json_dumps(payload)
 
@@ -441,7 +451,8 @@ async def ensure_user_animals_backfilled(
         .order_by(UserAnimalState.idpk.asc())
     )
     animal_rows = list(rows.all())
-    if animal_rows or not user.animals or user.animals == "{}":
+    legacy_animals = getattr(user, "animals", None)
+    if animal_rows or not legacy_animals or legacy_animals == "{}":
         return animal_rows
 
     for code_name, quantity in _parse_legacy_animals(user).items():
@@ -474,7 +485,6 @@ async def get_user_animals_map(session: AsyncSession, user: User) -> dict[str, i
         for row in rows
         if int(row.quantity or 0) > 0
     }
-    user.animals = _serialize_animals(payload)
     return payload
 
 
@@ -508,13 +518,9 @@ async def add_user_animals(
         target.quantity = int(target.quantity) + int(quantity)
         target.updated_at = datetime.now()
     await session.flush()
-    user.animals = _serialize_animals(
-        await get_user_animals_map(session=session, user=user)
-    )
 
 
-def _parse_legacy_aviaries(user: User) -> dict[str, dict[str, int]]:
-    raw = getattr(user, "aviaries", None)
+def parse_legacy_aviaries_payload(raw: str | None) -> dict[str, dict[str, int]]:
     if not raw or raw == "{}":
         return {}
     try:
@@ -545,6 +551,10 @@ def _parse_legacy_aviaries(user: User) -> dict[str, dict[str, int]]:
     return result
 
 
+def _parse_legacy_aviaries(user: User) -> dict[str, dict[str, int]]:
+    return parse_legacy_aviaries_payload(getattr(user, "aviaries", None))
+
+
 def _serialize_aviaries(payload: dict[str, dict[str, int]]) -> str:
     return json_dumps(payload)
 
@@ -558,7 +568,8 @@ async def ensure_user_aviaries_backfilled(
         .order_by(UserAviaryState.idpk.asc())
     )
     aviary_rows = list(rows.all())
-    if aviary_rows or not user.aviaries or user.aviaries == "{}":
+    legacy_aviaries = getattr(user, "aviaries", None)
+    if aviary_rows or not legacy_aviaries or legacy_aviaries == "{}":
         return aviary_rows
 
     for code_name, row in _parse_legacy_aviaries(user).items():
@@ -599,7 +610,6 @@ async def get_user_aviaries_map(
         for row in rows
         if int(row.quantity or 0) > 0
     }
-    user.aviaries = _serialize_aviaries(payload)
     return payload
 
 
@@ -634,6 +644,3 @@ async def upsert_user_aviary(
             target.current_price = max(0, int(current_price))
         target.updated_at = datetime.now()
     await session.flush()
-    user.aviaries = _serialize_aviaries(
-        await get_user_aviaries_map(session=session, user=user)
-    )
