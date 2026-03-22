@@ -381,7 +381,8 @@ async def build_chat_games_state(
     payload: list[dict[str, Any]] = []
     now = datetime.now()
     for game in games.all():
-        if int(getattr(game, "source_chat_id", 0) or 0) != int(CHAT_ID):
+        game_chat_id = int(getattr(game, "source_chat_id", 0) or 0)
+        if game_chat_id != 0 and game_chat_id != int(CHAT_ID):
             continue
         if game.end_date and game.end_date < now:
             continue
@@ -426,8 +427,9 @@ async def build_chat_transfers_state(
     )
     payload: list[dict[str, Any]] = []
     for tr in transfers.all():
-        # Only official chat transfers posted in the configured chat.
-        if int(getattr(tr, "source_chat_id", 0) or 0) != int(CHAT_ID):
+        # Only official chat transfers or globally created user transfers.
+        tr_chat_id = int(getattr(tr, "source_chat_id", 0) or 0)
+        if tr_chat_id != 0 and tr_chat_id != int(CHAT_ID):
             continue
         if not getattr(tr, "id_mess", None):
             continue
@@ -1132,8 +1134,9 @@ async def build_allowed_actions(
     # Joining existing chat games is low-cost and can be +EV even during capacity lock.
     if not recent_chat_action:
         for row in (observation.get("chat_games") or [])[:3]:
-            # Join only official chat games, skip private/user contexts.
-            if int(row.get("source_chat_id", 0) or 0) != int(CHAT_ID):
+            # Join official chat games or user-created global games.
+            game_chat_id = int(row.get("source_chat_id", 0) or 0)
+            if game_chat_id != 0 and game_chat_id != int(CHAT_ID):
                 continue
             if int(row.get("owner_idpk", 0) or 0) == int(player.get("idpk", 0) or 0):
                 continue

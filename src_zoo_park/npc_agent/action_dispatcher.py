@@ -1219,7 +1219,8 @@ async def execute_claim_chat_transfer(
     tr = await session.get(TransferMoney, idpk_tr)
     if not tr or not tr.status:
         return {"status": "skipped", "summary": "transfer_not_found"}
-    if int(getattr(tr, "source_chat_id", 0) or 0) != int(CHAT_ID):
+    tr_chat_id = int(getattr(tr, "source_chat_id", 0) or 0)
+    if tr_chat_id != 0 and tr_chat_id != int(CHAT_ID):
         return {"status": "skipped", "summary": "transfer_not_official_chat"}
     if int(tr.idpk_user) == int(user.idpk):
         return {"status": "skipped", "summary": "own_transfer"}
