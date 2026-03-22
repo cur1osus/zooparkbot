@@ -306,6 +306,11 @@ def _rehydrate_profile_payload(
             max_len=32,
             default="neutral",
         ),
+        "active_strategic_goal": fit_db_field(
+            source.get("active_strategic_goal", "compound_income_growth"),
+            max_len=255,
+            default="compound_income_growth",
+        ),
         "affinity_score": _clamp(int(source.get("affinity_score", 50) or 50), 1, 100),
         "recent_sent_chats": source.get("recent_sent_chats", [])[:3],
         "tactic_scores_raw": tactic_scores_raw,
@@ -1400,6 +1405,10 @@ async def evolve_npc_profile(
     adaptation_signals["recent_trait_shifts"] = []
     adaptation_signals["recent_tactic_shifts"] = _limit_entries(tactic_shift_log, 16)
     if reflection_payload:
+        new_goal = reflection_payload.get("active_strategic_goal")
+        if new_goal:
+            profile["active_strategic_goal"] = fit_db_field(str(new_goal), max_len=255)
+
         adaptation_signals["last_reflection_summary"] = semantic_preview(
             reflection_payload.get("summary", ""),
             max_segments=2,
@@ -2221,6 +2230,7 @@ async def build_npc_memory_context(
     )
     return {
         "profile": profile_for_context,
+        "active_strategic_goal": profile.get("active_strategic_goal", "compound_income_growth"),
         "active_goals": goals_for_context,
         "recent_events": recent_events_for_context,
         "reflections": reflections_for_context,

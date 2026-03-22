@@ -371,6 +371,7 @@ async def process_viewing_recipes(
         item.is_active = False
         items.remove(item)
     user.info_about_items = await synchronize_info_about_items(items=items)
+    await tools.sync_user_income(session=session, user=user)
     await session.commit()
     all_stat_props = await ft_item_props(item_props=user.info_about_items)
     await state.update_data(all_stat_props=all_stat_props)

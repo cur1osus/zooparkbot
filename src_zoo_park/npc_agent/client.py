@@ -32,6 +32,7 @@ class ReflectionOutput(BaseModel):
     risks: list[str]
     semantic_facts: list[str]
     tactical_focus: list[str]
+    active_strategic_goal: str | None = None
     goal_adjustments: list[dict[str, Any]]
 
 
@@ -54,24 +55,26 @@ BASE_DECISION_PROMPT = f"""
 You choose exactly one next legal action for an autonomous NPC in a Telegram zoo economy.
 
 === HARD CONSTRAINTS (VIOLATION = INVALID DECISION) ===
-1. action MUST be in the allowed_actions list - never choose actions outside this list.
-2. params MUST match the action's parameter schema exactly.
-3. If execution_feedback shows repeated failure for action X, do NOT repeat X unless context changed significantly.
-4. If resource_deficit is present, prioritize actions that resolve the deficit before other goals.
-5. sleep_seconds MUST be within [min_sleep, max_sleep] from wake_context.constraints.
-6. Never output fields outside the JSON contract.
+1. You MUST prioritize the memory.active_strategic_goal. If the goal is long-term (e.g., "save_for_mythical"), do not waste USD on minor actions.
+2. action MUST be in the allowed_actions list - never choose actions outside this list.
+3. params MUST match the action's parameter schema exactly.
+4. If execution_feedback shows repeated failure for action X, do NOT repeat X unless context changed significantly.
+5. If resource_deficit is present, prioritize actions that resolve the deficit before other goals.
+6. sleep_seconds MUST be within [min_sleep, max_sleep] from wake_context.constraints.
+7. Never output fields outside the JSON contract.
 
 === DECISION QUALITY RULES ===
 1. Prefer actions with highest expected long-term compounding value.
-2. Unblock hard bottlenecks (seats, liquidity) before optimization plays.
-3. Respect tactical focus from memory.active_tactics and planner.phase.
-4. Consider rival pressure from standings when choosing social or leaderboard actions.
-5. Use decision_brief and planner.recommended_actions as primary shortlist.
-6. If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.
+2. Follow the active_strategic_goal strictly but adapt to hard bottlenecks (seats, liquidity).
+3. Unblock hard bottlenecks (seats, liquidity) before optimization plays.
+4. Respect tactical focus from memory.active_tactics and planner.phase.
+5. Consider rival pressure from standings when choosing social or leaderboard actions.
+6. Use decision_brief and planner.recommended_actions as primary shortlist.
+7. If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.
 
 === GAME KNOWLEDGE APPLICATION ===
 Use game_knowledge to make informed decisions:
-- economy.bank_strategy: Exchange RUB→USD when rate is low (15-25), avoid when high (80+)
+- economy.bank_strategy: Use bank.market_analysis. If is_wait_signal=true, prefer "wait" over exchange. If is_buy_signal=true, maximize exchange.
 - animals.rarity_tiers: Higher rarity = higher income but longer payback
 - aviaries.critical_rules: 0 seats = blocked, price increases 30% per purchase
 - items.strategy: Max 3 active items, prioritize general_income > animal_income
@@ -228,6 +231,7 @@ You are generating strategic memory for an autonomous NPC in a Telegram zoo econ
 Return JSON only with this shape:
 {
   "summary": "short reflection",
+  "active_strategic_goal": "string (optional: set a new long-term goal like 'save_for_mythical' or 'aggressively_climb_top')",
   "lessons": ["lesson 1", "lesson 2"],
   "opportunities": ["opportunity 1"],
   "risks": ["risk 1"],

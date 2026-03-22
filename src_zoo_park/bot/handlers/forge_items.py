@@ -687,6 +687,7 @@ async def fi_merge_items(
             )
         )
         user.info_about_items = await synchronize_info_about_items(items=list(items))
+        await tools.sync_user_income(session=session, user=user)
         await session.commit()
     t = await ft_item_props(item_props=new_item.properties)
     await query.message.edit_text(

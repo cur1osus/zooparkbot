@@ -51,6 +51,10 @@ class User(Base):
     sub_on_channel: Mapped[bool] = mapped_column(default=False)
     bonus: Mapped[int] = mapped_column(default=1)
 
+    # Optimized fields for high-performance background jobs
+    income_per_minute: Mapped[int] = mapped_column(BigInteger, default=0, index=True)
+    last_income_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
 
 class Unity(Base):
     __tablename__ = "unity"

@@ -98,6 +98,60 @@ def estimate_usd_eta_seconds(
 
 
 def score_animal_market_option(option: dict[str, Any]) -> float:
+    pass  # to be found below
+
+
+def _build_market_analysis(
+    rate: int, min_rate: int, max_rate: int, history: list[dict[str, Any]]
+) -> dict[str, Any]:
+    if not history:
+        return {"trend": "stable", "advice": "No historical data to analyze."}
+
+    current_rate = rate
+    points = [int(h.get("rate", current_rate)) for h in history if "rate" in h]
+    if not points:
+        return {"trend": "stable", "advice": "No rate points in history."}
+
+    last_rate = points[-1]
+
+    # Calculate simple trend
+    if len(points) >= 3:
+        avg_past = sum(points[-3:]) / 3
+        trend_val = float(current_rate) - float(avg_past)
+    else:
+        trend_val = float(current_rate) - float(last_rate)
+
+    trend = (
+        "rising" if trend_val > 0.5 else "falling" if trend_val < -0.5 else "stable"
+    )
+
+    # Advice based on rate levels and trend
+    if current_rate <= 25:
+        advice = "Rate is exceptionally low (BUY USD NOW). This is a rare opportunity."
+    elif current_rate <= 40:
+        advice = (
+            "Rate is favorable for buying USD."
+            if trend != "falling"
+            else "Rate is good, but falling. Wait a bit more if not urgent."
+        )
+    elif current_rate >= 80:
+        advice = "Rate is extremely high (AVOID BUYING). Exchange only if critical."
+    elif current_rate >= 65:
+        advice = (
+            "Rate is expensive."
+            if trend != "rising"
+            else "Rate is expensive and rising. Buy now ONLY if you need USD immediately."
+        )
+    else:
+        advice = "Rate is average."
+
+    return {
+        "trend": trend,
+        "advice": advice,
+        "is_buy_signal": current_rate <= 35,
+        "is_wait_signal": trend == "falling" and current_rate > 25,
+    }
+
     price = max(1, int(option.get("price_usd", 0) or 0))
     income = max(0, int(option.get("income_rub", 0) or 0))
     payback = option.get("payback_minutes")
@@ -2124,190 +2178,27 @@ async def build_observation(
     wake_context: dict[str, Any] | None = None,
     execution_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    merchant = await ensure_random_merchant_for_user(session=session, user=user)
-    rate = await get_rate(session=session, user=user)
-    current_income = await income_(session=session, user=user)
-    animals_state = await get_user_animals_map(session=session, user=user)
-    aviaries_state = await get_user_aviaries_map(session=session, user=user)
-    total_seats = await get_total_number_seats(session=session, aviaries=aviaries_state)
-    remain_seats = await get_remain_seats(session=session, user=user)
-    standings = await build_standings(session=session, user=user)
-    unity = await build_unity_state(session=session, user=user)
-    chat_games = await build_chat_games_state(session=session, user=user)
-    chat_transfers = await build_chat_transfers_state(session=session, user=user)
-    item_opportunities = await build_item_opportunities(session=session, user=user)
-    animal_market = await build_animal_market(
-        session=session,
-        user=user,
-        remain_seats=remain_seats,
-        rate_rub_usd=int(rate),
-        income_per_minute_rub=int(current_income),
+    from npc_agent.v2.state import (
+        ObservationBuilder,
+        WakeContextProvider,
+        PlayerContextProvider,
+        ZooContextProvider,
+        EconomyContextProvider,
+        MarketContextProvider,
+        SocialContextProvider,
+        AIStrategyContextProvider,
     )
-    aviary_market = await build_aviary_market(session=session, user=user)
-    items = await build_item_state(session=session, user=user)
-    momentum = await build_momentum_signal(
-        session=session,
-        user=user,
-        current_income=int(current_income),
-    )
-    bank_storage = await get_value(
-        session=session,
-        value_name="BANK_STORAGE",
-        value_type="str",
-        cache_=False,
-    )
-    bank_percent_fee = await get_value(
-        session=session,
-        value_name="BANK_PERCENT_FEE",
-    )
-    min_rate_rub_usd = await get_value(
-        session=session,
-        value_name="MIN_RATE_RUB_USD",
-    )
-    max_rate_rub_usd = await get_value(
-        session=session,
-        value_name="MAX_RATE_RUB_USD",
-    )
-    rate_history_raw = await get_value(
-        session=session,
-        value_name="RATE_RUB_USD_HISTORY_JSON",
-        value_type="str",
-        cache_=False,
-    )
-    rate_history = _build_rate_history_snapshot(rate_history_raw)
-    clan_project_summary = {}
-    with contextlib.suppress(Exception):
-        unity_idpk = int(get_unity_idpk(user.current_unity) or 0)
-        if unity_idpk:
-            unity_obj = await session.get(Unity, unity_idpk)
-            if unity_obj is not None:
-                project = await get_or_create_project(session=session, unity=unity_obj)
-                pr = project.get("progress", {}) or {}
-                tg = project.get("target", {}) or {}
-                reward_preview = get_project_reward_preview(project)
-                clan_project_summary = {
-                    "name": str(project.get("name", "Заповедник")),
-                    "status": str(project.get("status", "active")),
-                    "level": int(project.get("level", 1) or 1),
-                    "member_count": int(project.get("member_count", 1) or 1),
-                    "ends_at": str(project.get("ends_at", "")),
-                    "progress_rub": int(pr.get("rub", 0) or 0),
-                    "target_rub": int(tg.get("rub", 0) or 0),
-                    "progress_usd": int(pr.get("usd", 0) or 0),
-                    "target_usd": int(tg.get("usd", 0) or 0),
-                    "reward_success": reward_preview.get("success", {}),
-                    "reward_current": reward_preview.get("current", {}),
-                    "mvp_epic_bonus": int(reward_preview.get("mvp_epic_bonus", 1) or 1),
-                }
 
-    observation = {
-        "schema_version": 5,
-        "current_time": datetime.now().isoformat(),
-        "wake_context": {
-            "source": (wake_context or {}).get("source", "scheduled"),
-            "reason": (wake_context or {}).get("reason", "planned_wake"),
-            "scheduled_at": (wake_context or {}).get("scheduled_at"),
-            "constraints": {
-                "min_sleep_seconds": settings.min_sleep_seconds,
-                "max_sleep_seconds": settings.max_sleep_seconds,
-                "default_sleep_seconds": settings.step_seconds,
-            },
-        },
-        "execution_feedback": execution_feedback or {},
-        "player": {
-            "idpk": user.idpk,
-            "id_user": user.id_user,
-            "nickname": user.nickname,
-            "usd": int(user.usd),
-            "rub": int(user.rub),
-            "paw_coins": int(user.paw_coins),
-            "income_per_minute_rub": int(current_income),
-            "moves_logged": int(user.moves),
-            "daily_bonus_available": int(user.bonus),
-            "bonus_reroll_attempts": int(
-                get_value_prop_from_iai(
-                    info_about_items=user.info_about_items,
-                    name_prop="bonus_changer",
-                )
-                or 0
-            ),
-            "amount_expenses_usd": int(user.amount_expenses_usd),
-            "current_unity": user.current_unity,
-            "unity_idpk": get_unity_idpk(user.current_unity),
-        },
-        "zoo": {
-            "animals": animals_state,
-            "aviaries": aviaries_state,
-            "total_seats": int(total_seats),
-            "remain_seats": int(remain_seats),
-        },
-        "bank": {
-            "rate_rub_usd": int(rate),
-            "min_rate_rub_usd": int(min_rate_rub_usd),
-            "max_rate_rub_usd": int(max_rate_rub_usd),
-            "percent_fee": int(bank_percent_fee),
-            "bank_storage": str(bank_storage),
-            "rate_history_1h": rate_history.get("points_1h", []),
-            "rate_history_1h_summary": rate_history.get("summary_1h", {}),
-        },
-        "merchant": {
-            "name": merchant.name,
-            "first_offer_bought": merchant.first_offer_bought,
-            "code_name_animal": merchant.code_name_animal,
-            "quantity_animals": int(merchant.quantity_animals),
-            "discount": int(merchant.discount),
-            "price_with_discount": int(merchant.price_with_discount),
-            "random_offer_price": int(merchant.price),
-        },
-        "items": items,
-        "item_opportunities": item_opportunities,
-        "unity": unity,
-        "clan_project": clan_project_summary,
-        "chat_games": chat_games,
-        "chat_transfers": chat_transfers,
-        "standings": standings,
-        "animal_market": animal_market,
-        "aviary_market": aviary_market,
-        "momentum": momentum,
-    }
-    observation["allowed_actions"] = await build_allowed_actions(
-        session=session,
-        user=user,
-        observation=observation,
-    )
-    observation["strategy_signals"] = build_strategy_signals(observation=observation)
-    observation["decision_brief"] = build_decision_brief(observation=observation)
-    observation["memory"] = await build_npc_memory_context(
-        session=session,
-        user=user,
-        observation=observation,
-    )
-    observation["planner"] = build_npc_plan(observation=observation)
-    observation["action_contract"] = build_action_contract(observation=observation)
-    observation["strategy_signals"]["goal_focus"] = [
-        goal.get("topic") for goal in observation["memory"].get("active_goals", [])
-    ][: settings.memory_goal_limit]
-    observation["player"]["current_mood"] = (
-        observation["memory"].get("profile", {}).get("current_mood", "neutral")
-    )
-    observation["player"]["affinity_score"] = (
-        observation["memory"].get("profile", {}).get("affinity_score", 50)
-    )
-    
-    # Add game knowledge encyclopedia for better NPC reasoning
-    from .game_knowledge import GAME_KNOWLEDGE
-    observation["game_knowledge"] = {
-        "economy": GAME_KNOWLEDGE["economy"],
-        "animals": GAME_KNOWLEDGE["animals"],
-        "aviaries": GAME_KNOWLEDGE["aviaries"],
-        "items": GAME_KNOWLEDGE["items"],
-        "clans": GAME_KNOWLEDGE["clans"],
-        "thresholds": GAME_KNOWLEDGE["thresholds"],
-        "mistakes": GAME_KNOWLEDGE["mistakes"],
-        "current_phase": get_knowledge_phase(observation),
-    }
-    
-    return observation
+    builder = ObservationBuilder()
+    builder.add_provider(WakeContextProvider(wake_context, execution_feedback))
+    builder.add_provider(PlayerContextProvider())
+    builder.add_provider(ZooContextProvider())
+    builder.add_provider(EconomyContextProvider())
+    builder.add_provider(MarketContextProvider())
+    builder.add_provider(SocialContextProvider())
+    builder.add_provider(AIStrategyContextProvider())
+
+    return await builder.build(session, user)
 
 
 def get_knowledge_phase(observation: dict[str, Any]) -> dict[str, Any]:

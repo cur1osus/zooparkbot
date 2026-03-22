@@ -220,10 +220,15 @@ async def update_rate_bank(session: AsyncSession):
 async def accrual_of_income(
     session: AsyncSession,
 ):
-    users = await session.scalars(select(User))
-    users = users.all()
-    for user in users:
-        user.rub += await income_(session=session, user=user)
+    """
+    Optimized high-performance income accrual.
+    Uses bulk update to process all users in a single SQL operation.
+    """
+    await session.execute(
+        update(User)
+        .where(User.income_per_minute > 0)
+        .values(rub=User.rub + User.income_per_minute, last_income_at=datetime.now())
+    )
 
 
 async def deleter_request_to_unity(session: AsyncSession):

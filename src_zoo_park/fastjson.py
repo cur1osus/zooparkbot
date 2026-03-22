@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from decimal import Decimal
 
 try:
     import orjson as _json_impl
@@ -8,6 +9,12 @@ except Exception:  # pragma: no cover
     _json_impl = None
 
 import json as _stdlib_json
+
+
+def _default_serializer(obj: Any) -> Any:
+    if isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    raise TypeError
 
 
 def loads(value: str | bytes | bytearray | memoryview | None) -> Any:
@@ -25,8 +32,16 @@ def dumps(value: Any, *, ensure_ascii: bool = False, sort_keys: bool = False) ->
         option = 0
         if sort_keys:
             option |= _json_impl.OPT_SORT_KEYS
-        return _json_impl.dumps(value, option=option).decode("utf-8")
-    return _stdlib_json.dumps(value, ensure_ascii=ensure_ascii, sort_keys=sort_keys)
+        # orjson.dumps returns bytes, so we decode it for use in most bot contexts
+        return _json_impl.dumps(value, default=_default_serializer, option=option).decode("utf-8")
+    
+    # Stdlib fallback with simple Decimal support
+    def std_default(obj):
+        if isinstance(obj, Decimal):
+            return int(obj) if obj % 1 == 0 else float(obj)
+        raise TypeError
+        
+    return _stdlib_json.dumps(value, default=std_default, ensure_ascii=ensure_ascii, sort_keys=sort_keys)
 
 
 def loads_or_default(value: str | bytes | None, default: Any) -> Any:

@@ -56,6 +56,16 @@ async def _get_unity_data_for_price_animal(session: AsyncSession, idpk_unity: in
         bonus = await tools.get_value(
             session=session, value_name="BONUS_DISCOUNT_FOR_ANIMAL_3RD_LVL"
         )
+
+    # Check for clan project buff "Центр выкупа" (-10% price)
+    from tools.unity_projects import get_active_clan_buff
+
+    active_buff = await get_active_clan_buff(session=session, unity_idpk=idpk_unity)
+    if active_buff and active_buff.get("type") == "shop_discount":
+        # Multiplicative stacking: 0.9 discount.
+        # If bonus was 5 (5%), result is 14.5 (14.5% discount)
+        bonus = 100 - ((100 - bonus) * 0.9)
+
     return bonus
 
 
@@ -117,6 +127,8 @@ async def add_animal(
         animal_code_name=code_name_animal,
         quantity=quantity,
     )
+    # Auto-sync income to keep background jobs fast
+    await tools.sync_user_income(session=session, user=self)
 
 
 async def get_total_number_animals(

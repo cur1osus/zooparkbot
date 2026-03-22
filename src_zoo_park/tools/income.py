@@ -9,7 +9,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import tools
 
 
+async def sync_user_income(session: AsyncSession, user: User) -> int:
+    """Recalculate and update the cached income_per_minute for a user."""
+    income = await income_(session=session, user=user)
+    user.income_per_minute = int(income)
+    await session.flush()
+    return int(income)
+
+
 async def income_(session: AsyncSession, user: User):
+    # If the user has a cached income, we can return it unless we explicitly want a fresh calculation.
+    # For now, keep the logic, but we'll use sync_user_income when state changes.
     unity_idpk = int(user.current_unity.split(":")[-1]) if user.current_unity else None
     animals = await get_user_animals_map(session=session, user=user)
     income = await income_from_animal(

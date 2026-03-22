@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from text_utils import format_iso_datetime_short
 
-from db import Unity, User, Value
+from db import Animal, Unity, User, Value
 from db.structured_state import count_unity_members
 from init_bot import bot
 from tools.animals import add_animal
@@ -600,30 +600,52 @@ def _chest_reward_roll(kind: str, income_per_minute_rub: int) -> tuple[int, int]
     return int(rub * scale), int(usd * scale)
 
 
-def _animal_drop_roll(kind: str) -> tuple[str | None, int]:
+async def _animal_drop_roll(
+    session: AsyncSession, kind: str, active_buff: dict | None = None
+) -> tuple[str | None, int]:
     # returns (animal_code_name or None, quantity)
     # chances and rarity pools by chest type
     roll = random.random()
-    if kind == "common":
-        if roll > 0.15:
-            return None, 0
-        rarity = random.choices(["_rare", "_epic"], weights=[0.9, 0.1], k=1)[0]
-    elif kind == "rare":
-        if roll > 0.35:
-            return None, 0
-        rarity = random.choices(
-            ["_rare", "_epic", "_mythical"], weights=[0.65, 0.3, 0.05], k=1
-        )[0]
-    else:  # epic
-        if roll > 0.60:
-            return None, 0
-        rarity = random.choices(
-            ["_epic", "_mythical", "_leg"], weights=[0.55, 0.35, 0.10], k=1
-        )[0]
+    base_drop_chance = 0.15 if kind == "common" else 0.35 if kind == "rare" else 0.60
 
-    base_animal = random.choice(["animal1", "animal2", "animal3"])
+    # Rare chance buff: +5% to ANY animal drop chance from chest.
+    if active_buff and active_buff.get("type") == "rare_chance":
+        base_drop_chance += 0.05
+
+    if roll > base_drop_chance:
+        return None, 0
+
+    if kind == "common":
+        pop = ["_rare", "_epic"]
+        w = [0.9, 0.1]
+        if active_buff and active_buff.get("type") == "chest_luck":
+            w = [0.75, 0.25]  # shift towards Epic
+    elif kind == "rare":
+        pop = ["_rare", "_epic", "_mythical"]
+        w = [0.65, 0.3, 0.05]
+        if active_buff and active_buff.get("type") == "chest_luck":
+            w = [0.45, 0.45, 0.10]  # shift towards Epic/Mythical
+    else:  # epic
+        pop = ["_epic", "_mythical", "_leg"]
+        w = [0.55, 0.35, 0.10]
+        if active_buff and active_buff.get("type") == "chest_luck":
+            w = [0.40, 0.45, 0.15]  # shift towards Mythical/Leg
+
+    rarity = random.choices(pop, weights=w, k=1)[0]
+
+    # Use a query to get real animal code names from the database
+    # Matching the suffix (e.g. "_rare", "_epic", etc.)
+    result = await session.execute(
+        select(Animal.code_name).where(Animal.code_name.like(f"%{rarity}"))
+    )
+    codes = [row[0] for row in result.all()]
+
+    if not codes:
+        return None, 0
+
+    code = random.choice(codes)
     qty = 1 if kind != "epic" else random.choice([1, 1, 2])
-    return f"{base_animal}{rarity}", qty
+    return code, qty
 
 
 async def open_user_chests(
@@ -664,13 +686,23 @@ async def open_user_chests(
     animal_drops: list[dict[str, Any]] = []
 
     remain_seats = int(await get_remain_seats(session=session, user=user))
+    
+    # Get active clan buff if any (affects drop rates and rarities)
+    active_buff = None
+    if user.current_unity:
+        from tools.unity import get_unity_idpk
+        unity_idpk = get_unity_idpk(user.current_unity)
+        if unity_idpk:
+            active_buff = await get_active_clan_buff(session=session, unity_idpk=unity_idpk)
 
-    def apply_one(kind: str):
+    async def apply_one(kind: str):
         nonlocal total_rub, total_usd, remain_seats
         r, u = _chest_reward_roll(kind, income_now)
         total_rub += r
         total_usd += u
-        code, qty = _animal_drop_roll(kind)
+        
+        # Now async and with real DB lookup
+        code, qty = await _animal_drop_roll(session=session, kind=kind, active_buff=active_buff)
         if code and qty > 0 and remain_seats > 0:
             q = min(qty, remain_seats)
             if q > 0:
@@ -678,11 +710,11 @@ async def open_user_chests(
                 remain_seats -= q
 
     for _ in range(oc):
-        apply_one("common")
+        await apply_one("common")
     for _ in range(orr):
-        apply_one("rare")
+        await apply_one("rare")
     for _ in range(oe):
-        apply_one("epic")
+        await apply_one("epic")
 
     for drop in animal_drops:
         await add_animal(

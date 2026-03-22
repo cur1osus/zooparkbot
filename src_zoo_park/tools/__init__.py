@@ -55,7 +55,7 @@ from .game import (
     get_user_where_max_score,
 )
 from .grafics import get_plot
-from .income import income_
+from .income import income_, sync_user_income
 from .items import (
     CREATE_ITEM_PAW_PRICE,
     able_to_enhance,
