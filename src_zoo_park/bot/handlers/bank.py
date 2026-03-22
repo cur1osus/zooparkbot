@@ -1,6 +1,8 @@
+import contextlib
 from datetime import datetime
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from bot.filters import GetTextButton
@@ -66,10 +68,11 @@ async def bank(
         else:
             text += f"\n\n(Оригинальный курс банка: 1$ = {int(base_rate)}₽)"
 
-    await dict_func[edit](
-        text=text,
-        reply_markup=keyboard,
-    )
+    with contextlib.suppress(TelegramBadRequest):
+        await dict_func[edit](
+            text=text,
+            reply_markup=keyboard,
+        )
 
 
 # @router.callback_query(UserState.main_menu, F.data == "market_collapse")
