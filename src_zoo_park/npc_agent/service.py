@@ -320,26 +320,11 @@ def _fallback_action_without_llm(
     }
 
 
-async def run_npc_players_turn() -> None:
-    # CLI mode doesn't require api_key; HTTP mode does.
-    if not settings.enabled:
-        return
-    if settings.transport != "cli" and not settings.api_key:
-        return
-
-    import logging
-
-    client = NpcDecisionClient(settings=settings)
-    # Fetch all NPC users outside any per-NPC lock
-    async with _sessionmaker_for_func() as session:
-        npc_users = await get_npc_users(session=session)
-        if not npc_users:
-            npc_users = [await ensure_default_npc_user(session=session)]
-
-    for npc_user in npc_users:
+async def _process_single_npc(npc_user: User, client: NpcDecisionClient, sem: asyncio.Semaphore) -> None:
+    async with sem:
         npc_lock = get_npc_lock(npc_user.idpk)  # per-NPC lock (#9)
         if npc_lock.locked():
-            continue
+            return
         async with npc_lock:
             # Wake trigger checks
             async with _sessionmaker_for_func() as session:
@@ -347,7 +332,7 @@ async def run_npc_players_turn() -> None:
                     session=session, user=npc_user
                 )
                 if not wake_trigger["due"]:
-                    continue
+                    return
                 await ensure_random_merchant_for_user(session=session, user=npc_user)
                 await session.commit()
 
@@ -455,15 +440,26 @@ async def run_npc_players_turn() -> None:
                             or 1
                         )
                         await redis.expire(
-                            npc_llm_error_streak_key(npc_user.idpk), 3600
+                            npc_llm_error_streak_key(npc_user.idpk), 14400
                         )
+                        
+                        kind = _classify_llm_error(err_text)
+                        if kind in {"rate_limit", "transient"}:
+                            # Short exponential backoff for rate limits, max 15 minutes
+                            base_delay = 60
+                            retry_delay = min(
+                                int(base_delay * (1.5 ** min(streak, 10))), 15 * 60
+                            )
+                        else:
+                            # Default backoff for serious auth or content errors, up to 4 hours
+                            base_delay = default_npc_sleep_seconds(
+                                user=npc_user, salt="llm_error"
+                            )
+                            retry_delay = min(
+                                int(base_delay * (2 ** min(streak, 6))), 4 * 3600
+                            )
+                            
                         # Exponential backoff with ±10% jitter
-                        base_delay = default_npc_sleep_seconds(
-                            user=npc_user, salt="llm_error"
-                        )
-                        retry_delay = min(
-                            int(base_delay * (2 ** min(streak, 6))), 4 * 3600
-                        )
                         retry_delay += int(retry_delay * random.uniform(-0.1, 0.1))
 
                         # Degraded mode alert (one message per 30 min max)
@@ -687,7 +683,7 @@ async def run_npc_players_turn() -> None:
             async with _sessionmaker_for_func() as session:
                 npc_user_refreshed = await session.get(User, npc_user.idpk)
                 if not npc_user_refreshed:
-                    continue
+                    return
                 planned_sleep_seconds = resolve_npc_sleep_seconds(
                     user=npc_user_refreshed,
                     wake_trigger=wake_trigger,
@@ -732,6 +728,25 @@ async def run_npc_players_turn() -> None:
                         planned_sleep_seconds=planned_sleep_seconds,
                         is_proactive=is_proactive,
                     )
+
+
+async def run_npc_players_turn() -> None:
+    if not settings.enabled:
+        return
+    if settings.transport != "cli" and not settings.api_key:
+        return
+    import logging
+    client = NpcDecisionClient(settings=settings)
+    async with _sessionmaker_for_func() as session:
+        npc_users = await get_npc_users(session=session)
+        if not npc_users:
+            npc_users = [await ensure_default_npc_user(session=session)]
+
+    sem = asyncio.Semaphore(5)
+    tasks = [asyncio.create_task(_process_single_npc(u, client, sem)) for u in npc_users]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
 
 
 async def get_npc_users(session: AsyncSession) -> list[User]:

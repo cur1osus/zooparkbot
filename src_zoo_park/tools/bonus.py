@@ -111,7 +111,18 @@ async def get_bonus(session: AsyncSession, user: User) -> DataBonus:
     if bonus_type == "animal":
         remain_seats = await tools.get_remain_seats(session=session, user=user)
         if remain_seats == 0:
-            bonus_type = random.choices(population=types_bonus, weights=weights)[0]
+            available_bonus_types = [
+                bonus for bonus in types_bonus if bonus != "animal"
+            ]
+            available_weights = [
+                weight
+                for bonus, weight in zip(types_bonus, weights)
+                if bonus != "animal"
+            ]
+            bonus_type = random.choices(
+                population=available_bonus_types,
+                weights=available_weights,
+            )[0]
         else:
             args["remain_seats"] = remain_seats
     # if bonus_type == "item":

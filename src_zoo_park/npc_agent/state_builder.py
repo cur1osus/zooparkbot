@@ -2486,14 +2486,6 @@ def build_action_contract(observation: dict[str, Any]) -> dict[str, Any]:
     must_not_do: list[str] = []
 
     if remain_seats <= 0 or bool(summary.get("need_seats")):
-        aviary_allowed = [
-            row
-            for row in (observation.get("allowed_actions", []) or [])
-            if isinstance(row, dict)
-            and str(row.get("action", "")).strip() == "buy_aviary"
-        ]
-        if aviary_allowed:
-            must_do.append("buy_aviary")
         must_not_do.extend(
             [
                 "buy_rarity_animal",

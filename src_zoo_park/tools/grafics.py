@@ -118,11 +118,6 @@ async def get_top_referrals_data(session: AsyncSession) -> list[tuple[str, int]]
     return prepare_top_data(data)
 
 
-async def get_top_animals_data(session: AsyncSession) -> list[tuple[str, int]]:
-    users = await get_users_with_animals(session=session)
-    return build_local_top_data(users=users, metric_loader=get_user_animals)
-
-
 async def get_top_money_data(session: AsyncSession) -> list[tuple[str, int]]:
     users = await get_users_with_animals(session=session)
     return build_local_top_data(users=users, metric_loader=get_user_money)

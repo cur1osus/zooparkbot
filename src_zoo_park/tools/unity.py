@@ -7,7 +7,6 @@ from db.structured_state import (
     count_unity_members,
     list_unity_member_ids,
 )
-from init_db import _sessionmaker_for_func
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -217,62 +216,67 @@ async def get_top_unity_by_animal(session: AsyncSession) -> tuple[int, dict]:
     return int(top_unity), table_for_compare[top_unity]
 
 
+async def get_unity_users(session: AsyncSession, unity: Unity) -> list[User]:
+    users: list[User] = []
+    for idpk in await list_unity_member_ids(session=session, unity=unity):
+        user = await session.get(User, int(idpk))
+        if user is not None:
+            users.append(user)
+    return users
+
+
 async def check_condition_2nd_lvl(session: AsyncSession, unity: Unity) -> bool:
-    async with _sessionmaker_for_func() as session:
-        AMOUNT_INCOME_2ND_LVL = await tools.get_value(
-            session=session, value_name="AMOUNT_INCOME_2ND_LVL"
-        )
-        AMOUNT_ANIMALS_2ND_LVL = await tools.get_value(
-            session=session, value_name="AMOUNT_ANIMALS_2ND_LVL"
-        )
-        total_income = 0
-        users = [
-            await session.get(User, int(idpk))
-            for idpk in await list_unity_member_ids(session=session, unity=unity)
-        ]
-        total_income = sum(
-            [await tools.income_(session=session, user=user) for user in users]
-        )
-        if total_income < AMOUNT_INCOME_2ND_LVL:
+    AMOUNT_INCOME_2ND_LVL = int(
+        await tools.get_value(session=session, value_name="AMOUNT_INCOME_2ND_LVL")
+    )
+    AMOUNT_ANIMALS_2ND_LVL = int(
+        await tools.get_value(session=session, value_name="AMOUNT_ANIMALS_2ND_LVL")
+    )
+    users = await get_unity_users(session=session, unity=unity)
+    total_income = sum(
+        [await tools.income_(session=session, user=user) for user in users]
+    )
+    if total_income < AMOUNT_INCOME_2ND_LVL:
+        return False
+
+    for user in users:
+        animal_counts = await tools.get_numbers_animals(self=user, session=session)
+        if not animal_counts or any(
+            num_animal < AMOUNT_ANIMALS_2ND_LVL for num_animal in animal_counts
+        ):
             return False
-        return all(
-            num_animal >= AMOUNT_ANIMALS_2ND_LVL
-            for user in users
-            for num_animal in await tools.get_numbers_animals(user, session=session)
-        )
+
+    return True
 
 
 async def check_condition_3rd_lvl(session: AsyncSession, unity: Unity) -> bool:
-    async with _sessionmaker_for_func() as session:
-        AMOUNT_INCOME_3RD_LVL = await tools.get_value(
-            session=session, value_name="AMOUNT_INCOME_3RD_LVL"
-        )
-        AMOUNT_ANIMALS_3RD_LVL = await tools.get_value(
-            session=session, value_name="AMOUNT_ANIMALS_3RD_LVL"
-        )
-        AMOUNT_MEMBERS_3RD_LVL = await tools.get_value(
-            session=session, value_name="AMOUNT_MEMBERS_3RD_LVL"
-        )
-        if (
-            await count_unity_members(session=session, unity=unity)
-            < AMOUNT_MEMBERS_3RD_LVL
+    AMOUNT_INCOME_3RD_LVL = int(
+        await tools.get_value(session=session, value_name="AMOUNT_INCOME_3RD_LVL")
+    )
+    AMOUNT_ANIMALS_3RD_LVL = int(
+        await tools.get_value(session=session, value_name="AMOUNT_ANIMALS_3RD_LVL")
+    )
+    AMOUNT_MEMBERS_3RD_LVL = int(
+        await tools.get_value(session=session, value_name="AMOUNT_MEMBERS_3RD_LVL")
+    )
+    if await count_unity_members(session=session, unity=unity) < AMOUNT_MEMBERS_3RD_LVL:
+        return False
+
+    users = await get_unity_users(session=session, unity=unity)
+    total_income = sum(
+        [await tools.income_(session=session, user=user) for user in users]
+    )
+    if total_income < AMOUNT_INCOME_3RD_LVL:
+        return False
+
+    for user in users:
+        animal_counts = await tools.get_numbers_animals(self=user, session=session)
+        if not animal_counts or any(
+            num_animal < AMOUNT_ANIMALS_3RD_LVL for num_animal in animal_counts
         ):
             return False
-        total_income = 0
-        users = [
-            await session.get(User, int(idpk))
-            for idpk in await list_unity_member_ids(session=session, unity=unity)
-        ]
-        total_income = sum(
-            [await tools.income_(session=session, user=user) for user in users]
-        )
-        if total_income < AMOUNT_INCOME_3RD_LVL:
-            return False
-        return all(
-            num_animal >= AMOUNT_ANIMALS_3RD_LVL
-            for user in users
-            for num_animal in await tools.get_numbers_animals(user, session=session)
-        )
+
+    return True
 
 
 async def count_income_unity(session: AsyncSession, unity: Unity) -> int:

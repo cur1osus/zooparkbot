@@ -74,16 +74,42 @@ SYSTEM_PROMPT = (
     + "- Keep reason short and concrete."
 )
 
-V2_TOOL_SYSTEM_PROMPT = (
-    BASE_DECISION_PROMPT
-    + "\n\n"
-    + "Tool mode output contract:\n"
-    + '- Return JSON only: {"thought_process":"string","user_sentiment":"neutral|positive|negative","tool":"name","input":{},"reason":"short","sleep_seconds":300}\n'
-    + "- tool must be from available_tools only.\n"
-    + "- input must match the selected tool schema.\n"
-    + "- If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.\n"
-    + "- Keep reason short and concrete."
-)
+def _build_v2_system_prompt(observation: dict[str, Any]) -> str:
+    player = observation.get("player", {})
+    mood = str(player.get("current_mood", "neutral")).strip().lower()
+    affinity = int(player.get("affinity_score", 50) or 50)
+    strategy = observation.get("strategy_signals", {})
+    tactics = strategy.get("goal_focus", [])
+    if not isinstance(tactics, list):
+        tactics = []
+    
+    persona_extra = ""
+    if "economy_growth" in tactics and mood == "aggressive":
+        persona_extra = "- PERSONA: You are aggressive and growth-oriented. Take high ROI risks, buy the best items, and never hoard money unnecessarily. Move fast.\n"
+    elif "liquidity_buffer" in tactics or mood == "focused":
+        persona_extra = "- PERSONA: You are highly conservative and focused on liquidity. Exchange currency, claim bonuses, and hoard wealth safely.\n"
+    elif "unity_leadership" in tactics or "unity_contribution" in tactics:
+        persona_extra = "- PERSONA: You are highly diplomatic and social. Prioritize clan events, recruiting, and sending targeted signals to allies.\n"
+    else:
+        persona_extra = "- PERSONA: You are a balanced, opportunistic investor. Make decisions based on expected value and steady progression.\n"
+
+    if affinity > 80:
+        persona_extra += "- PERSONA: You are extremely friendly and cooperative with other players. Treat your clanmates like family.\n"
+    elif affinity < 30:
+        persona_extra += "- PERSONA: You are cynical, untrusting, and prefer acting entirely alone. You view everyone as a rival.\n"
+
+    return (
+        BASE_DECISION_PROMPT
+        + "\n\n"
+        + "Tool mode output contract:\n"
+        + '- Return JSON only: {"thought_process":"string","user_sentiment":"neutral|positive|negative","tool":"name","input":{},"reason":"short","sleep_seconds":300}\n'
+        + "- tool must be from available_tools only.\n"
+        + "- input must match the selected tool schema.\n"
+        + "- If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.\n"
+        + "- Keep reason short and concrete.\n\n"
+        + "Dynamic Personality Directives:\n"
+        + persona_extra
+    )
 
 BANNED_CLICHES = [
     "Ну что",
@@ -200,9 +226,9 @@ class NpcDecisionClient:
             },
             "item_opportunities": {"upgrade_candidates": 5, "merge_candidates": 3},
             "unity": {"candidates": 3, "recruit_targets": 3},
-            "animal_market": 7,
+            "animal_market": 5,
             "aviary_market": 5,
-            "allowed_actions": 14,
+            "allowed_actions": 10,
             "decision_brief": {"top_affordable_actions": 4},
         }
         default_list_limit = 5
@@ -248,6 +274,20 @@ class NpcDecisionClient:
         standings = clean_obs.get("standings")
         if isinstance(standings, dict):
             standings.pop("top_referrals", None)
+
+        memory = clean_obs.get("memory")
+        if isinstance(memory, dict):
+            recent_events = memory.get("recent_events")
+            if isinstance(recent_events, list):
+                trimmed_events = []
+                for ev in recent_events[:3]:
+                    if isinstance(ev, dict):
+                        trimmed_events.append({
+                            "action": ev.get("action", {}).get("name"),
+                            "result": ev.get("result", {}).get("summary"),
+                            "delta_usd": ev.get("delta", {}).get("usd"),
+                        })
+                memory["recent_events"] = trimmed_events
 
         if npc_id_user in v2_tool_npcs:
             # V2 payload (experimental): clean-room OpenClaw-style context.
@@ -357,7 +397,7 @@ class NpcDecisionClient:
         if use_cli:
             content = await self._run_cli_prompt(
                 prompt_payload={
-                    "system": V2_TOOL_SYSTEM_PROMPT,
+                    "system": _build_v2_system_prompt(observation),
                     **payload,
                 },
                 request_kind="choose_action_v2_tools",
@@ -365,7 +405,7 @@ class NpcDecisionClient:
             tool_decision = self._parse_json(content, model_class=ToolDecision)
         else:
             tool_decision = await self._request_json(
-                system_prompt=V2_TOOL_SYSTEM_PROMPT,
+                system_prompt=_build_v2_system_prompt(observation),
                 user_payload=payload,
                 max_tokens=min(260, self.settings.max_tokens),
                 temperature=self.settings.action_temperature,
