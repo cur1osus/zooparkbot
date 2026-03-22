@@ -545,24 +545,6 @@ async def _process_single_npc(npc_user: User, client: NpcDecisionClient, sem: as
                             decision.update(corrected)
 
                 action = validate_action(decision=decision)
-                
-                # HARD CONSTRAINT: Enforce action_contract before execution
-                action_contract = observation.get("action_contract", {}) or {}
-                must_not_do = set(action_contract.get("must_not_do", []) or [])
-                if action["action"] in must_not_do:
-                    # Action violates hard constraints - force wait instead
-                    action = {
-                        "action": "wait",
-                        "params": {},
-                        "reason": f"action_contract_violation:{action['action']} was blocked but LLM chose it anyway. Forcing wait.",
-                        "sleep_seconds": action.get("sleep_seconds", 300),
-                    }
-                    logging.warning(
-                        "NPC %s: Action '%s' violated action_contract (must_not_do=%s). Forced wait instead.",
-                        npc_user.nickname,
-                        decision.get("action"),
-                        list(must_not_do)[:5],
-                    )
 
                 # Phase 3: Execute in DB and Commit
                 async with _sessionmaker_for_func() as session:
