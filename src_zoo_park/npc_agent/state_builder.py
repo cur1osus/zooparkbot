@@ -61,6 +61,8 @@ from tools.unity_projects import (
     get_user_chests,
 )
 
+import tools
+
 from .memory import build_npc_memory_context
 from .schedule import clamp_npc_sleep_seconds
 from .settings import settings
@@ -2385,6 +2387,10 @@ async def build_aviary_market(
 ) -> list[dict[str, Any]]:
     aviaries = await session.scalars(select(Aviary))
     aviaries_state = await get_user_aviaries_map(session=session, user=user)
+    
+    # Get price increase percentage (default 30%)
+    increase_pct = int(await tools.get_value(session, value_name="INCREASE_FOR_AVIARY") or 30)
+    
     market = []
     for aviary in aviaries.all():
         price = await get_price_aviaries(
@@ -2393,13 +2399,29 @@ async def build_aviary_market(
             code_name_aviary=aviary.code_name,
             info_about_items=user.info_about_items,
         )
+        
+        # Calculate realistic affordable_quantity considering price increases
+        # Each purchase increases price by increase_pct%
+        affordable_qty = 0
+        remaining_usd = int(user.usd)
+        current_price = price
+        while remaining_usd >= current_price and affordable_qty < 100:
+            remaining_usd -= current_price
+            current_price = int(current_price * (1 + increase_pct / 100))
+            affordable_qty += 1
+        
+        # Also calculate next purchase price for transparency
+        next_purchase_price = int(price * (1 + increase_pct / 100)) if aviaries_state.get(aviary.code_name) else price
+        
         market.append(
             {
                 "code_name": aviary.code_name,
                 "name": aviary.name,
                 "size": int(aviary.size),
                 "price_usd": int(price),
-                "affordable_quantity": int(int(user.usd) // price if price else 0),
+                "next_purchase_price": next_purchase_price,
+                "price_increase_pct": increase_pct,
+                "affordable_quantity": affordable_qty,
             }
         )
     return market
