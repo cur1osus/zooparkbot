@@ -53,25 +53,45 @@ DECISION_JSON_CONTRACT = (
 BASE_DECISION_PROMPT = f"""
 You choose exactly one next legal action for an autonomous NPC in a Telegram zoo economy.
 
-Directives:
-- Allowed actions are the only executable actions.
-- action_contract is mandatory policy (must_do / must_not_do / hard_constraints).
-- execution_feedback is mandatory (avoid failed repeats, prefer suggested alternatives).
-- Optimize long-term compounding value and unblock hard bottlenecks first.
-- Keep sleep_seconds inside wake_context.constraints.
-- Return JSON only using this contract: {DECISION_JSON_CONTRACT}
+=== HARD CONSTRAINTS (VIOLATION = INVALID DECISION) ===
+1. action MUST be in the allowed_actions list - never choose actions outside this list.
+2. params MUST match the action's parameter schema exactly.
+3. If execution_feedback shows repeated failure for action X, do NOT repeat X unless context changed significantly.
+4. If resource_deficit is present, prioritize actions that resolve the deficit before other goals.
+5. sleep_seconds MUST be within [min_sleep, max_sleep] from wake_context.constraints.
+6. Never output fields outside the JSON contract.
+
+=== DECISION QUALITY RULES ===
+1. Prefer actions with highest expected long-term compounding value.
+2. Unblock hard bottlenecks (seats, liquidity) before optimization plays.
+3. Respect tactical focus from memory.active_tactics and planner.phase.
+4. Consider rival pressure from standings when choosing social or leaderboard actions.
+5. Use decision_brief and planner.recommended_actions as primary shortlist.
+6. If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.
+
+=== EXECUTION FEEDBACK POLICY ===
+1. Check execution_feedback for failed actions in recent turns.
+2. If an action failed with retryable=false, avoid it for at least 5 minutes.
+3. If an action failed with retryable=true, consider suggested_alternatives.
+4. Prefer actions with recent success history over untested actions.
+
+=== OUTPUT CONTRACT ===
+- Return JSON ONLY using this contract: {DECISION_JSON_CONTRACT}
+- Do not output any text before or after the JSON.
 - Do not output any fields outside the contract.
+- Keep reason short and concrete (under 50 words).
 """.strip()
 
 
 SYSTEM_PROMPT = (
     BASE_DECISION_PROMPT
     + "\n\n"
-    + "Specific policy:\n"
+    + "=== SPECIFIC POLICY ===\n"
     + "- Use decision_brief and planner.phase_a_candidates as primary shortlist.\n"
     + "- Prefer planner.recommended_actions unless invalid now.\n"
     + "- If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.\n"
-    + "- Keep reason short and concrete."
+    + "- Keep reason short and concrete.\n"
+    + "- Think step-by-step: check constraints → evaluate options → select best action."
 )
 
 def _build_v2_system_prompt(observation: dict[str, Any]) -> str:
@@ -82,7 +102,7 @@ def _build_v2_system_prompt(observation: dict[str, Any]) -> str:
     tactics = strategy.get("goal_focus", [])
     if not isinstance(tactics, list):
         tactics = []
-    
+
     persona_extra = ""
     if "economy_growth" in tactics and mood == "aggressive":
         persona_extra = "- PERSONA: You are aggressive and growth-oriented. Take high ROI risks, buy the best items, and never hoard money unnecessarily. Move fast.\n"
@@ -101,13 +121,13 @@ def _build_v2_system_prompt(observation: dict[str, Any]) -> str:
     return (
         BASE_DECISION_PROMPT
         + "\n\n"
-        + "Tool mode output contract:\n"
+        + "=== TOOL MODE OUTPUT CONTRACT ===\n"
         + '- Return JSON only: {"thought_process":"string","user_sentiment":"neutral|positive|negative","tool":"name","input":{},"reason":"short","sleep_seconds":300}\n'
         + "- tool must be from available_tools only.\n"
-        + "- input must match the selected tool schema.\n"
+        + "- input must match the selected tool schema exactly.\n"
         + "- If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.\n"
-        + "- Keep reason short and concrete.\n\n"
-        + "Dynamic Personality Directives:\n"
+        + "- Keep reason short and concrete (under 50 words).\n\n"
+        + "=== DYNAMIC PERSONALITY DIRECTIVES ===\n"
         + persona_extra
     )
 

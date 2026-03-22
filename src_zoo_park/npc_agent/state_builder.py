@@ -2695,3 +2695,462 @@ async def register_npc_move(
         limit=int(limit_on_write_moves),
     )
     user.moves += 1
+
+
+# =============================================================================
+# ACTION PRE-VALIDATION / SIMULATION
+# =============================================================================
+
+def _get_action_resource_requirements(action: dict[str, Any]) -> dict[str, int]:
+    """
+    Возвращает требования к ресурсам для действия.
+    """
+    action_name = str(action.get("action", "")).strip()
+    params = action.get("params", {}) or {}
+    
+    requirements: dict[str, int] = {}
+    
+    if action_name == "buy_aviary":
+        # Требуется USD для покупки авиария
+        quantity = max(1, int(params.get("quantity", 1) or 1))
+        requirements["usd_estimate"] = 500 * quantity  # Approximate
+    
+    elif action_name == "buy_rarity_animal":
+        # Требуется USD и места
+        quantity = max(1, int(params.get("quantity", 1) or 1))
+        requirements["usd_estimate"] = 200 * quantity  # Approximate
+        requirements["seats"] = quantity
+    
+    elif action_name == "exchange_bank":
+        # Требуется RUB
+        mode = str(params.get("mode", "all")).strip()
+        if mode == "amount":
+            amount = int(params.get("amount", 0) or 0)
+            requirements["rub"] = amount
+        else:
+            requirements["rub_any"] = 1
+    
+    elif action_name == "create_item":
+        requirements["usd_or_paw"] = 1
+    
+    elif action_name == "upgrade_item":
+        requirements["usd_estimate"] = 100
+    
+    elif action_name == "merge_items":
+        requirements["usd_estimate"] = 50
+    
+    elif action_name == "create_unity":
+        requirements["usd_estimate"] = 1000  # PRICE_FOR_CREATE_UNITY
+    
+    return requirements
+
+
+def _get_user_resources(observation: dict[str, Any]) -> dict[str, int]:
+    """
+    Извлекает доступные ресурсы пользователя из observation.
+    """
+    player = observation.get("player", {}) or {}
+    zoo = observation.get("zoo", {}) or {}
+    items = observation.get("items", {}) or {}
+    
+    return {
+        "usd": int(player.get("usd", 0) or 0),
+        "rub": int(player.get("rub", 0) or 0),
+        "paw_coins": int(player.get("paw_coins", 0) or 0),
+        "seats": int(zoo.get("remain_seats", 0) or 0),
+        "usd_create_item": int(items.get("create_price_usd", 0) or 0),
+    }
+
+
+def _compute_action_ev(action: dict[str, Any], observation: dict[str, Any]) -> float:
+    """
+    Оценивает ожидаемую ценность (expected value) действия.
+    """
+    action_name = str(action.get("action", "")).strip()
+    strategy = observation.get("strategy_signals", {}) or {}
+    summary = strategy.get("summary", {}) or {}
+    
+    # Базовые EV для разных типов действий
+    base_ev: dict[str, float] = {
+        "claim_daily_bonus": 100.0,
+        "invest_for_income": 80.0,
+        "buy_rarity_animal": 70.0,
+        "buy_aviary": 75.0,
+        "exchange_bank": 50.0,
+        "create_item": 60.0,
+        "optimize_items": 55.0,
+        "upgrade_item": 50.0,
+        "merge_items": 45.0,
+        "create_unity": 85.0,
+        "join_best_unity": 70.0,
+        "recruit_top_player": 65.0,
+        "review_unity_request": 60.0,
+        "wait": 10.0,
+    }
+    
+    ev = base_ev.get(action_name, 30.0)
+    
+    # Бонусы за соответствие стратегии
+    if action_name == "buy_aviary" and summary.get("need_seats"):
+        ev += 50.0
+    
+    best_aviary = summary.get("best_aviary_option")
+    if action_name == "buy_aviary" and best_aviary:
+        ev += min(30.0, float(best_aviary.get("affordable_quantity", 0) or 0) * 5.0)
+    
+    best_income = summary.get("best_income_option")
+    if action_name in {"invest_for_income", "buy_rarity_animal"} and best_income:
+        ev += min(30.0, float(best_income.get("affordable_quantity", 0) or 0) * 5.0)
+    
+    # Штраф за недостаточность ресурсов
+    resources = _get_user_resources(observation)
+    requirements = _get_action_resource_requirements(action)
+    
+    for res, needed in requirements.items():
+        if res == "usd_estimate" and resources.get("usd", 0) < needed:
+            ev -= 40.0
+        elif res == "seats" and resources.get("seats", 0) < needed:
+            ev -= 50.0
+        elif res == "rub" and resources.get("rub", 0) < needed:
+            ev -= 30.0
+    
+    return max(0.0, ev)
+
+
+def _assess_action_risk(action: dict[str, Any], observation: dict[str, Any]) -> str:
+    """
+    Оценивает уровень риска действия: low, medium, high.
+    """
+    action_name = str(action.get("action", "")).strip()
+    resources = _get_user_resources(observation)
+    requirements = _get_action_resource_requirements(action)
+    
+    # Проверяем, насколько действие истощает ресурсы
+    resource_strain = 0.0
+    
+    if requirements.get("usd_estimate", 0) > 0:
+        usd_ratio = requirements["usd_estimate"] / max(1, resources.get("usd", 1))
+        resource_strain += usd_ratio
+    
+    if requirements.get("seats", 0) > 0:
+        seats_ratio = requirements["seats"] / max(1, resources.get("seats", 1))
+        resource_strain += seats_ratio
+    
+    if requirements.get("rub", 0) > 0:
+        rub_ratio = requirements["rub"] / max(1, resources.get("rub", 1))
+        resource_strain += rub_ratio
+    
+    # Высокий риск для крупных инвестиций
+    high_risk_actions = {"create_unity", "buy_merchant_random_offer"}
+    if action_name in high_risk_actions:
+        resource_strain += 0.3
+    
+    if resource_strain > 1.5:
+        return "high"
+    elif resource_strain > 0.7:
+        return "medium"
+    return "low"
+
+
+async def simulate_action_outcome(
+    session: AsyncSession,
+    user: User,
+    action: dict[str, Any],
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Предсказывает результат действия без реального выполнения.
+    Проверяет ресурсы, совместимость параметров и оценивает успешность.
+    """
+    action_name = str(action.get("action", "")).strip()
+    params = action.get("params", {}) or {}
+    
+    # Проверка ресурсов
+    required_resources = _get_action_resource_requirements(action)
+    available = _get_user_resources(observation)
+    
+    deficits: dict[str, int] = {}
+    for res, needed in required_resources.items():
+        if res.endswith("_estimate") or res.endswith("_any"):
+            continue
+        if available.get(res, 0) < needed:
+            deficits[res] = needed - available.get(res, 0)
+    
+    # Проверка на блокирующие условия
+    blockers: list[str] = []
+    
+    # Проверка мест для действий, требующих места
+    if action_name in {
+        "buy_rarity_animal",
+        "buy_merchant_discount_offer",
+        "buy_merchant_random_offer",
+        "buy_merchant_targeted_offer",
+    }:
+        if available.get("seats", 0) <= 0:
+            blockers.append("no_seat_capacity")
+    
+    # Проверка USD для создания предмета
+    if action_name == "create_item":
+        create_price = available.get("usd_create_item", 0)
+        has_usd = available.get("usd", 0) >= create_price
+        has_paw = available.get("paw_coins", 0) >= CREATE_ITEM_PAW_PRICE
+        if not has_usd and not has_paw:
+            blockers.append("not_enough_create_currency")
+    
+    # Проверка на явные дефициты ресурсов
+    if deficits:
+        for res, deficit in deficits.items():
+            blockers.append(f"need_{res}:{deficit}")
+    
+    if blockers:
+        return {
+            "feasible": False,
+            "blockers": blockers,
+            "estimated_success_rate": 0.0,
+            "risk_level": "high",
+            "expected_value": 0.0,
+        }
+    
+    # Оценка ожидаемой ценности и риска
+    expected_value = _compute_action_ev(action, observation)
+    risk_level = _assess_action_risk(action, observation)
+    
+    # Оценка успешности на основе доступности ресурсов
+    success_rate = 100.0
+    for res, needed in required_resources.items():
+        if res.endswith("_estimate"):
+            continue
+        if res.endswith("_any"):
+            continue
+        if available.get(res, 0) < needed:
+            success_rate -= 30.0
+        elif available.get(res, 0) < needed * 1.5:
+            success_rate -= 10.0
+    
+    # Корректировка на основе контекста
+    strategy = observation.get("strategy_signals", {}) or {}
+    summary = strategy.get("summary", {}) or {}
+    
+    if action_name == "buy_aviary" and not summary.get("need_seats"):
+        success_rate -= 15.0
+    
+    if action_name == "wait" and available.get("usd", 0) < 100:
+        success_rate -= 20.0
+    
+    return {
+        "feasible": len(blockers) == 0,
+        "blockers": blockers,
+        "estimated_success_rate": max(0.0, min(100.0, success_rate)),
+        "risk_level": risk_level,
+        "expected_value": round(expected_value, 2),
+        "resource_requirements": required_resources,
+        "resource_available": available,
+    }
+
+
+# =============================================================================
+# LONG-TERM STRATEGIC PLANNING
+# =============================================================================
+
+def _determine_game_phase(snapshot: dict[str, Any]) -> str:
+    """
+    Определяет текущую фазу игры на основе метрик пользователя.
+    """
+    income = int(snapshot.get("income_per_minute_rub", 0) or 0)
+    usd = int(snapshot.get("usd", 0) or 0)
+    animals = int(snapshot.get("total_animals", 0) or 0)
+    unity = snapshot.get("current_unity")
+    
+    # Late game: высокий доход, есть unity
+    if income >= 2000 and unity:
+        return "late_game"
+    
+    # Mid game: средний доход, активное развитие
+    if income >= 500 or (income >= 200 and usd >= 500):
+        return "mid_game"
+    
+    # Early game: низкий доход, накопление ресурсов
+    if income < 500 and animals < 50:
+        return "early_game"
+    
+    # По умолчанию mid_game
+    return "mid_game"
+
+
+def _compute_milestone_for_priority(
+    priority: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """
+    Генерирует веху для конкретного приоритета.
+    """
+    income = int(snapshot.get("income_per_minute_rub", 0) or 0)
+    usd = int(snapshot.get("usd", 0) or 0)
+    seats = int(snapshot.get("total_seats", 0) or 0)
+    animals = int(snapshot.get("total_animals", 0) or 0)
+    
+    if priority == "seats":
+        target_seats = max(seats + 10, int(animals * 1.5))
+        return {
+            "metric": "total_seats",
+            "current": seats,
+            "target": target_seats,
+            "priority": 1,
+        }
+    
+    elif priority == "basic_income":
+        target_income = max(income + 100, 300)
+        return {
+            "metric": "income_per_minute_rub",
+            "current": income,
+            "target": target_income,
+            "priority": 1,
+        }
+    
+    elif priority == "liquidity":
+        target_usd = max(usd + 300, 500)
+        return {
+            "metric": "usd",
+            "current": usd,
+            "target": target_usd,
+            "priority": 2,
+        }
+    
+    elif priority == "compound_income":
+        target_income = max(income + 500, 1500)
+        return {
+            "metric": "income_per_minute_rub",
+            "current": income,
+            "target": target_income,
+            "priority": 1,
+        }
+    
+    elif priority == "unity":
+        return {
+            "metric": "unity_status",
+            "current": 1 if snapshot.get("current_unity") else 0,
+            "target": 1,
+            "priority": 2,
+        }
+    
+    elif priority == "items":
+        active_items = int(snapshot.get("active_items", 0) or 0)
+        return {
+            "metric": "active_items",
+            "current": active_items,
+            "target": 3,
+            "priority": 2,
+        }
+    
+    elif priority == "optimization":
+        target_income = max(income + 1000, 3000)
+        return {
+            "metric": "income_per_minute_rub",
+            "current": income,
+            "target": target_income,
+            "priority": 1,
+        }
+    
+    elif priority == "leaderboard":
+        return {
+            "metric": "income_rank",
+            "current": int(snapshot.get("income_rank", 10) or 10),
+            "target": 3,
+            "priority": 1,
+        }
+    
+    elif priority == "dominance":
+        target_income = max(income + 2000, 5000)
+        return {
+            "metric": "income_per_minute_rub",
+            "current": income,
+            "target": target_income,
+            "priority": 1,
+        }
+    
+    return None
+
+
+def _estimate_turns_to_advance(phase: str, snapshot: dict[str, Any]) -> int:
+    """
+    Оценивает количество ходов до перехода на следующую фазу.
+    """
+    income = int(snapshot.get("income_per_minute_rub", 0) or 0)
+    usd = int(snapshot.get("usd", 0) or 0)
+    
+    if phase == "early_game":
+        # До mid_game: нужно 500 income или 200 income + 500 USD
+        income_gap = max(0, 500 - income)
+        if income > 0:
+            turns_by_income = income_gap // income
+        else:
+            turns_by_income = 100
+        turns_by_usd = max(0, 500 - usd) // 50
+        return max(10, min(100, turns_by_income + turns_by_usd))
+    
+    elif phase == "mid_game":
+        # До late_game: нужно 2000 income + unity
+        income_gap = max(0, 2000 - income)
+        if income > 0:
+            turns_by_income = income_gap // income
+        else:
+            turns_by_income = 100
+        unity_bonus = 0 if snapshot.get("current_unity") else 20
+        return max(20, min(150, turns_by_income + unity_bonus))
+    
+    else:
+        # Late game — уже достигнут максимум
+        return 0
+
+
+async def build_strategic_plan(
+    session: AsyncSession,
+    user: User,
+    observation: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Генерирует долгосрочный план с вехами для NPC.
+    Возвращает структуру с фазой, приоритетами и вехами.
+    """
+    from .memory import build_npc_snapshot
+    
+    snapshot = await build_npc_snapshot(session, user)
+    
+    # Определяем текущую стадию игры
+    phase = _determine_game_phase(snapshot)
+    
+    # Приоритеты по фазам
+    phase_priorities: dict[str, list[str]] = {
+        "early_game": ["seats", "basic_income", "liquidity"],
+        "mid_game": ["compound_income", "unity", "items"],
+        "late_game": ["optimization", "leaderboard", "dominance"],
+    }
+    
+    priorities = phase_priorities.get(phase, ["compound_income", "unity", "items"])
+    
+    # Генерируем вехи
+    milestones = []
+    for priority in priorities:
+        milestone = _compute_milestone_for_priority(priority, snapshot)
+        if milestone:
+            milestones.append(milestone)
+    
+    # Оцениваем прогресс до следующей фазы
+    turns_to_next = _estimate_turns_to_advance(phase, snapshot)
+    
+    # Вычисляем общий прогресс по вехам
+    total_progress = 0.0
+    for ms in milestones:
+        if ms["target"] > 0:
+            progress = min(1.0, ms["current"] / ms["target"])
+            total_progress += progress
+    avg_progress = total_progress / max(1, len(milestones))
+    
+    return {
+        "phase": phase,
+        "priorities": priorities,
+        "milestones": milestones,
+        "estimated_turns_to_next_phase": turns_to_next,
+        "overall_progress": round(avg_progress, 3),
+        "next_milestone": milestones[0] if milestones else None,
+    }

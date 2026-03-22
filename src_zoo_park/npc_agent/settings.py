@@ -58,6 +58,7 @@ class NpcAgentSettings:
     fallback_model: str
     fallback_api_key: str
     fallback_base_url: str
+    exploration_rate: float  # A/B testing: fraction of actions to explore randomly
 
 
 def load_npc_agent_settings() -> NpcAgentSettings:
@@ -170,6 +171,10 @@ def load_npc_agent_settings() -> NpcAgentSettings:
             "NPC_LLM_FALLBACK_BASE_URL",
             "https://api.groq.com/openai/v1",
         ).strip(),
+        exploration_rate=max(
+            0.0,
+            min(0.3, float(os.getenv("NPC_EXPLORATION_RATE", "0.1"))),
+        ),
     )
 
 

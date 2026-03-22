@@ -85,15 +85,63 @@ def _infer_resource_deficit(error_code: str) -> str | None:
     return None
 
 
+def _compute_cooldown_for_failure(
+    error_code: str,
+    action_name: str,
+    action_history: list[dict[str, Any]],
+) -> int:
+    """
+    Динамический cooldown на основе частоты повторения ошибки.
+    Увеличивает задержку при повторяющихся ошибках одного типа.
+    """
+    base_cooldown = 120 if error_code in {
+        "not_enough_usd",
+        "not_enough_rub",
+        "amount_too_small",
+        "not_enough_seats",
+        "no_seat_capacity",
+        "invite_already_sent",
+        "recruit_target_unavailable",
+        "unity_request_exists",
+        "unity_request_not_found",
+        "applicant_already_in_unity",
+    } else 300
+    
+    # Считаем повторения той же ошибки в последних 5 действиях
+    recent_failures = 0
+    for h in reversed(action_history[-5:]):
+        if not isinstance(h, dict):
+            continue
+        h_action = str(h.get("action", "")).strip()
+        h_result = h.get("result", {}) or {}
+        h_error = str(h_result.get("error_code", "")).strip().lower()
+        
+        if h_action == action_name and h_result.get("status") == "error":
+            if error_code in h_error or h_error in error_code:
+                recent_failures += 1
+    
+    # Экспоненциальное увеличение cooldown при повторениях
+    if recent_failures >= 3:
+        return min(1800, base_cooldown * 4)  # 30 минут макс
+    elif recent_failures >= 2:
+        return min(900, base_cooldown * 2)  # 15 минут макс
+    elif recent_failures >= 1:
+        return int(base_cooldown * 1.5)
+    
+    return base_cooldown
+
+
 async def execute_action(
     session: AsyncSession,
     user: User,
     action: dict[str, Any],
     observation: dict[str, Any],
     client: NpcDecisionClient | None = None,
+    action_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     action_name = action["action"]
     params = action["params"]
+    action_history = action_history or []
 
     handlers = {
         "wait": execute_wait,
@@ -167,6 +215,14 @@ async def execute_action(
             "applicant_already_in_unity",
         }
         retryable = any(code in error_code for code in retryable_codes)
+        
+        # Dynamic cooldown based on repeated failures
+        cooldown_sec = _compute_cooldown_for_failure(
+            error_code=error_code,
+            action_name=action_name,
+            action_history=action_history,
+        )
+        
         suggested_alternatives = [
             name for name in allowed_actions if name != action_name
         ][:5]
@@ -176,7 +232,7 @@ async def execute_action(
         result["error_message"] = summary
         result["allowed_actions"] = allowed_actions
         result["retryable"] = bool(retryable)
-        result["cooldown_sec"] = 120 if retryable else 300
+        result["cooldown_sec"] = cooldown_sec
         result["suggested_alternatives"] = suggested_alternatives
         result["resource_deficit"] = _infer_resource_deficit(error_code)
 

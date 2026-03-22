@@ -25,7 +25,7 @@ from text_utils import (
 )
 
 from .client import NpcDecisionClient
-from .logs import log_npc_decision
+from .logs import log_npc_decision, log_decision_metrics
 from .memory import build_npc_snapshot, remember_npc_turn
 from .schedule import (
     clear_npc_event_wake,
@@ -366,125 +366,156 @@ async def _process_single_npc(npc_user: User, client: NpcDecisionClient, sem: as
                         )
 
                 # Phase 2: Action decision via LLM WITHOUT blocking DB session
-                try:
-                    decision = await client.choose_action(observation=observation)
-                    llm_error_count = 0  # reset streak on success
-                    await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
-                    if await redis.delete(npc_llm_degraded_key(npc_user.idpk)):
-                        logging.warning(
-                            "NPC %s: LLM connection recovered, decision loop back to normal.",
-                            npc_user.nickname,
+                # A/B Testing: exploration mode
+                do_exploration = random.random() < settings.exploration_rate
+                
+                if do_exploration:
+                    # Exploration: choose random action from allowed actions
+                    allowed = [
+                        row
+                        for row in (observation.get("allowed_actions", []) or [])
+                        if isinstance(row, dict)
+                    ]
+                    if allowed:
+                        selected = random.choice(allowed)
+                        decision = {
+                            "action": selected.get("action", "wait"),
+                            "params": selected.get("params", {}) or {},
+                            "reason": f"exploration:random_action:{selected.get('action', 'wait')}",
+                            "sleep_seconds": default_npc_sleep_seconds(
+                                user=npc_user_refreshed, salt="explore"
+                            ),
+                        }
+                    else:
+                        decision = {
+                            "action": "wait",
+                            "params": {},
+                            "reason": "exploration:no_actions_available",
+                            "sleep_seconds": default_npc_sleep_seconds(
+                                user=npc_user_refreshed, salt="explore"
+                            ),
+                        }
+                else:
+                    # Exploitation: use LLM for decision
+                    try:
+                        decision = await client.choose_action(observation=observation)
+                        llm_error_count = 0  # reset streak on success
+                        await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
+                        if await redis.delete(npc_llm_degraded_key(npc_user.idpk)):
+                            logging.warning(
+                                "NPC %s: LLM connection recovered, decision loop back to normal.",
+                                npc_user.nickname,
+                            )
+                    except Exception as exc:
+                        logging.exception(
+                            f"LLM Error during action decision for {npc_user.nickname}"
                         )
-                except Exception as exc:
-                    logging.exception(
-                        f"LLM Error during action decision for {npc_user.nickname}"
-                    )
 
-                    # On any primary LLM error, try secondary provider/model once.
-                    err_text = str(exc)
-                    fallback_model_ok = False
-                    if (
-                        settings.fallback_model
-                        and settings.fallback_api_key
-                        and settings.fallback_base_url
-                    ):
-                        try:
-                            decision = await client.choose_action_with_provider(
-                                observation=observation,
-                                model_override=settings.fallback_model,
-                                base_url_override=settings.fallback_base_url,
-                                api_key_override=settings.fallback_api_key,
+                        # On any primary LLM error, try secondary provider/model once.
+                        err_text = str(exc)
+                        fallback_model_ok = False
+                        if (
+                            settings.fallback_model
+                            and settings.fallback_api_key
+                            and settings.fallback_base_url
+                        ):
+                            try:
+                                decision = await client.choose_action_with_provider(
+                                    observation=observation,
+                                    model_override=settings.fallback_model,
+                                    base_url_override=settings.fallback_base_url,
+                                    api_key_override=settings.fallback_api_key,
+                                )
+                                decision["reason"] = preview_with_prefix(
+                                    f"fallback_model:{settings.fallback_model}",
+                                    decision.get("reason", ""),
+                                    max_chars=280,
+                                )
+                                llm_error_count = 0
+                                fallback_model_ok = True
+                                await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
+                            except Exception as fallback_exc:
+                                logging.exception(
+                                    f"Fallback model error for {npc_user.nickname}"
+                                )
+                                exc = fallback_exc
+                                err_text = str(exc)
+                                kind = _classify_llm_error(err_text)
+                                if kind in {"rate_limit", "transient"}:
+                                    try:
+                                        await asyncio.sleep(2)
+                                        decision = await client.choose_action_with_provider(
+                                            observation=observation,
+                                            model_override=settings.fallback_model,
+                                            base_url_override=settings.fallback_base_url,
+                                            api_key_override=settings.fallback_api_key,
+                                        )
+                                        decision["reason"] = preview_with_prefix(
+                                            f"fallback_retry:{settings.fallback_model}",
+                                            decision.get("reason", ""),
+                                            max_chars=280,
+                                        )
+                                        llm_error_count = 0
+                                        fallback_model_ok = True
+                                        await redis.delete(
+                                            npc_llm_error_streak_key(npc_user.idpk)
+                                        )
+                                    except Exception as fallback_retry_exc:
+                                        exc = fallback_retry_exc
+                                        err_text = str(exc)
+
+                        if not fallback_model_ok:
+                            llm_error_count += 1
+                            streak = int(
+                                await redis.incr(npc_llm_error_streak_key(npc_user.idpk))
+                                or 1
                             )
-                            decision["reason"] = preview_with_prefix(
-                                f"fallback_model:{settings.fallback_model}",
-                                decision.get("reason", ""),
-                                max_chars=280,
+                            await redis.expire(
+                                npc_llm_error_streak_key(npc_user.idpk), 14400
                             )
-                            llm_error_count = 0
-                            fallback_model_ok = True
-                            await redis.delete(npc_llm_error_streak_key(npc_user.idpk))
-                        except Exception as fallback_exc:
-                            logging.exception(
-                                f"Fallback model error for {npc_user.nickname}"
-                            )
-                            exc = fallback_exc
-                            err_text = str(exc)
+
                             kind = _classify_llm_error(err_text)
                             if kind in {"rate_limit", "transient"}:
-                                try:
-                                    await asyncio.sleep(2)
-                                    decision = await client.choose_action_with_provider(
-                                        observation=observation,
-                                        model_override=settings.fallback_model,
-                                        base_url_override=settings.fallback_base_url,
-                                        api_key_override=settings.fallback_api_key,
-                                    )
-                                    decision["reason"] = preview_with_prefix(
-                                        f"fallback_retry:{settings.fallback_model}",
-                                        decision.get("reason", ""),
-                                        max_chars=280,
-                                    )
-                                    llm_error_count = 0
-                                    fallback_model_ok = True
-                                    await redis.delete(
-                                        npc_llm_error_streak_key(npc_user.idpk)
-                                    )
-                                except Exception as fallback_retry_exc:
-                                    exc = fallback_retry_exc
-                                    err_text = str(exc)
+                                # Short exponential backoff for rate limits, max 15 minutes
+                                base_delay = 60
+                                retry_delay = min(
+                                    int(base_delay * (1.5 ** min(streak, 10))), 15 * 60
+                                )
+                            else:
+                                # Default backoff for serious auth or content errors, up to 4 hours
+                                base_delay = default_npc_sleep_seconds(
+                                    user=npc_user, salt="llm_error"
+                                )
+                                retry_delay = min(
+                                    int(base_delay * (2 ** min(streak, 6))), 4 * 3600
+                                )
 
-                    if not fallback_model_ok:
-                        llm_error_count += 1
-                        streak = int(
-                            await redis.incr(npc_llm_error_streak_key(npc_user.idpk))
-                            or 1
-                        )
-                        await redis.expire(
-                            npc_llm_error_streak_key(npc_user.idpk), 14400
-                        )
-                        
-                        kind = _classify_llm_error(err_text)
-                        if kind in {"rate_limit", "transient"}:
-                            # Short exponential backoff for rate limits, max 15 minutes
-                            base_delay = 60
-                            retry_delay = min(
-                                int(base_delay * (1.5 ** min(streak, 10))), 15 * 60
-                            )
-                        else:
-                            # Default backoff for serious auth or content errors, up to 4 hours
-                            base_delay = default_npc_sleep_seconds(
-                                user=npc_user, salt="llm_error"
-                            )
-                            retry_delay = min(
-                                int(base_delay * (2 ** min(streak, 6))), 4 * 3600
-                            )
-                            
-                        # Exponential backoff with ±10% jitter
-                        retry_delay += int(retry_delay * random.uniform(-0.1, 0.1))
+                            # Exponential backoff with ±10% jitter
+                            retry_delay += int(retry_delay * random.uniform(-0.1, 0.1))
 
-                        # Degraded mode alert (one message per 30 min max)
-                        degraded_mark = await redis.set(
-                            npc_llm_degraded_key(npc_user.idpk),
-                            datetime.now().isoformat(),
-                            ex=1800,
-                            nx=True,
-                        )
-                        if degraded_mark:
-                            logging.warning(
-                                "NPC %s: LLM degraded (%s). Fallback policy enabled.",
-                                npc_user.nickname,
-                                type(exc).__name__,
+                            # Degraded mode alert (one message per 30 min max)
+                            degraded_mark = await redis.set(
+                                npc_llm_degraded_key(npc_user.idpk),
+                                datetime.now().isoformat(),
+                                ex=1800,
+                                nx=True,
                             )
+                            if degraded_mark:
+                                logging.warning(
+                                    "NPC %s: LLM degraded (%s). Fallback policy enabled.",
+                                    npc_user.nickname,
+                                    type(exc).__name__,
+                                )
 
-                        decision = _fallback_action_without_llm(
-                            observation=observation,
-                            retry_delay=retry_delay,
-                        )
-                        decision["reason"] = preview_with_prefix(
-                            f"llm_error:{preview_error(err_text, max_chars=180)}",
-                            decision["reason"],
-                            max_chars=280,
-                        )
+                            decision = _fallback_action_without_llm(
+                                observation=observation,
+                                retry_delay=retry_delay,
+                            )
+                            decision["reason"] = preview_with_prefix(
+                                f"llm_error:{preview_error(err_text, max_chars=180)}",
+                                decision["reason"],
+                                max_chars=280,
+                            )
 
                 if decision.get("action") not in {"wait"} and "llm_error" not in str(
                     decision.get("reason", "")
@@ -586,63 +617,71 @@ async def _process_single_npc(npc_user: User, client: NpcDecisionClient, sem: as
                     await session.commit()
 
                 try:
-                    await log_npc_decision(
-                        log_path=settings.log_path,
-                        payload={
-                            "time": datetime.now().isoformat(),
-                            "npc": {
-                                "id_user": npc_user.id_user,
-                                "nickname": npc_user.nickname,
+                    log_payload = {
+                        "time": datetime.now().isoformat(),
+                        "npc": {
+                            "id_user": npc_user.id_user,
+                            "nickname": npc_user.nickname,
+                        },
+                        "step": decision_index,
+                        "action": action,
+                        "result": result,
+                        "snapshot_before": before_snapshot,
+                        "snapshot_after": after_snapshot,
+                        "observation": observation,
+                        "decision_trace": {
+                            "phase_1_observation": {
+                                "wake_context": observation.get("wake_context"),
+                                "planner": observation.get("planner"),
+                                "action_contract": observation.get(
+                                    "action_contract"
+                                ),
                             },
-                            "step": decision_index,
-                            "action": action,
-                            "result": result,
-                            "snapshot_before": before_snapshot,
-                            "snapshot_after": after_snapshot,
-                            "observation": observation,
-                            "decision_trace": {
-                                "phase_1_observation": {
-                                    "wake_context": observation.get("wake_context"),
-                                    "planner": observation.get("planner"),
-                                    "action_contract": observation.get(
-                                        "action_contract"
-                                    ),
-                                },
-                                "phase_2_decision": decision,
-                                "phase_2_action": action,
-                                "phase_3_execution": result,
-                                "phase_3_delta": {
-                                    "usd": int(after_snapshot.get("usd", 0) or 0)
-                                    - int(before_snapshot.get("usd", 0) or 0),
-                                    "rub": int(after_snapshot.get("rub", 0) or 0)
-                                    - int(before_snapshot.get("rub", 0) or 0),
-                                    "income_per_minute_rub": int(
-                                        after_snapshot.get("income_per_minute_rub", 0)
-                                        or 0
-                                    )
-                                    - int(
-                                        before_snapshot.get("income_per_minute_rub", 0)
-                                        or 0
-                                    ),
-                                    "animals": int(
-                                        after_snapshot.get("total_animals", 0) or 0
-                                    )
-                                    - int(before_snapshot.get("total_animals", 0) or 0),
-                                },
-                                "quality_metrics": {
-                                    "decision_execution_match": str(
-                                        decision.get("action", "")
-                                    ).strip()
-                                    == str(action.get("action", "")).strip(),
-                                    "rerouted": str(decision.get("action", "")).strip()
-                                    != str(action.get("action", "")).strip(),
-                                    "status_ok": str(result.get("status", ""))
-                                    .strip()
-                                    .lower()
-                                    == "ok",
-                                },
+                            "phase_2_decision": decision,
+                            "phase_2_action": action,
+                            "phase_3_execution": result,
+                            "phase_3_delta": {
+                                "usd": int(after_snapshot.get("usd", 0) or 0)
+                                - int(before_snapshot.get("usd", 0) or 0),
+                                "rub": int(after_snapshot.get("rub", 0) or 0)
+                                - int(before_snapshot.get("rub", 0) or 0),
+                                "income_per_minute_rub": int(
+                                    after_snapshot.get("income_per_minute_rub", 0)
+                                    or 0
+                                )
+                                - int(
+                                    before_snapshot.get("income_per_minute_rub", 0)
+                                    or 0
+                                ),
+                                "animals": int(
+                                    after_snapshot.get("total_animals", 0) or 0
+                                )
+                                - int(before_snapshot.get("total_animals", 0) or 0),
+                            },
+                            "quality_metrics": {
+                                "decision_execution_match": str(
+                                    decision.get("action", "")
+                                ).strip()
+                                == str(action.get("action", "")).strip(),
+                                "rerouted": str(decision.get("action", "")).strip()
+                                != str(action.get("action", "")).strip(),
+                                "status_ok": str(result.get("status", ""))
+                                .strip()
+                                .lower()
+                                == "ok",
                             },
                         },
+                    }
+                    
+                    await log_npc_decision(
+                        log_path=settings.log_path,
+                        payload=log_payload,
+                    )
+                    
+                    # Log decision metrics for analysis
+                    await log_decision_metrics(
+                        log_path=settings.log_path,
+                        payload=log_payload,
                     )
                 except Exception:
                     pass

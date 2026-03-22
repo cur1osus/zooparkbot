@@ -139,6 +139,36 @@ def _ratio(current: int, target: int) -> float:
     return max(0.0, min(1.0, current / target))
 
 
+def compute_goal_priority_score(goal: dict, context: dict) -> float:
+    """
+    Вычисляет приоритет цели на основе срочности, ROI и блокировок.
+    Возвращает score для сортировки целей (выше = приоритетнее).
+    """
+    progress_ratio = float(goal.get("progress", {}).get("ratio", 0) or 0)
+    priority = int(goal.get("priority", 500) or 500)
+    horizon = str(goal.get("horizon", "medium")).strip().lower()
+    
+    # Блокировки — высший приоритет
+    is_blocker = context.get("is_hard_blocker", False)
+    if is_blocker:
+        return 1000.0
+    
+    # Срочные цели получают бонус
+    horizon_bonus = {"short": 150, "medium": 80, "long": 0}.get(horizon, 0)
+    
+    # Недостигнутые цели с высоким прогрессом приоритетнее (эффект завершения)
+    completion_bonus = (1 - progress_ratio) * 100
+    
+    # Бонус за критически низкий прогресс
+    urgency_bonus = 0
+    if progress_ratio < 0.2:
+        urgency_bonus = 80
+    elif progress_ratio < 0.5:
+        urgency_bonus = 40
+    
+    return float(priority) + float(horizon_bonus) + float(completion_bonus) + float(urgency_bonus)
+
+
 def _topic_suffix() -> str:
     return _now().strftime("%Y%m%d%H%M%S%f")
 
@@ -829,9 +859,22 @@ async def refresh_npc_goals(
         )
 
     active_topics = set()
-    for payload in sorted(
-        active_payloads, key=lambda item: item["priority"], reverse=True
-    ):
+    
+    # Build context for priority computation
+    priority_context = {
+        "is_hard_blocker": int(snapshot.get("remain_seats", 0) or 0) <= 0,
+        "usd_balance": int(snapshot.get("usd", 0) or 0),
+        "income_per_minute": int(snapshot.get("income_per_minute_rub", 0) or 0),
+    }
+    
+    # Sort payloads by computed priority score instead of raw priority
+    sorted_payloads = sorted(
+        active_payloads,
+        key=lambda item: compute_goal_priority_score(item, priority_context),
+        reverse=True,
+    )
+    
+    for payload in sorted_payloads:
         active_topics.add(payload["topic"])
         await _upsert_memory_row(
             session=session,
@@ -1084,28 +1127,119 @@ def _validated_reflection_tactics(reflection_payload: dict[str, Any]) -> list[st
     return tactics
 
 
+def _compute_success_score_from_outcome(
+    action_name: str,
+    result: dict[str, Any],
+    delta: dict[str, Any],
+) -> float:
+    """
+    Вычисляет score успешности действия на основе результата и изменений.
+    Возвращает значение от -100 до +100.
+    """
+    status = str(result.get("status", "")).strip().lower()
+    summary = str(result.get("summary", "")).strip().lower()
+    
+    # Базовый score по статусу
+    if status == "ok":
+        base_score = 50.0
+    elif status == "skipped":
+        # Skipped — нейтральный результат, не неудача
+        if summary in {"no_bonus", "merchant_offer_used", "item_not_found"}:
+            base_score = 10.0
+        else:
+            base_score = -10.0
+    else:
+        # Error или failed
+        base_score = -50.0
+    
+    # Бонусы за конкретные метрики
+    delta_income = int(delta.get("income_per_minute_rub", 0) or 0)
+    delta_usd = int(delta.get("usd", 0) or 0)
+    delta_animals = int(delta.get("animals", 0) or 0)
+    delta_seats = int(delta.get("seats", 0) or 0)
+    
+    # Рост дохода — всегда хорошо
+    if delta_income > 0:
+        base_score += min(40.0, delta_income * 0.5)
+    elif delta_income < 0:
+        base_score -= min(30.0, abs(delta_income) * 0.3)
+    
+    # Рост USD (если не за счет продажи животных)
+    if action_name not in {"sell_item", "exchange_bank"} and delta_usd > 0:
+        base_score += min(20.0, delta_usd * 0.05)
+    
+    # Рост количества животных
+    if delta_animals > 0:
+        base_score += min(15.0, delta_animals * 2.0)
+    
+    # Рост мест (авиарии)
+    if delta_seats > 0:
+        base_score += min(20.0, delta_seats * 3.0)
+    
+    # Специфичные бонусы для действий
+    if action_name == "claim_daily_bonus" and status == "ok":
+        base_score += 15.0
+    
+    if action_name == "review_unity_request" and status == "ok":
+        base_score += 10.0
+    
+    # Штраф за повторяющиеся ошибки
+    if "already" in summary or "duplicate" in summary:
+        base_score -= 20.0
+    
+    return max(-100.0, min(100.0, base_score))
+
+
 def _derive_event_tactic_adjustments(
     current_event: dict[str, Any],
     after_snapshot: dict[str, Any],
 ) -> list[dict[str, Any]]:
     action_name = str(current_event.get("action", {}).get("name", "wait"))
-    result_status = str(current_event.get("result", {}).get("status", ""))
+    result = current_event.get("result", {}) or {}
     delta = current_event.get("delta", {})
     tactics = _action_tactics(action_name)
     updates: list[dict[str, Any]] = []
-    base_shift = 8 if result_status == "ok" else -6
+    
+    # Вычисляем success score для действия
+    success_score = _compute_success_score_from_outcome(
+        action_name=action_name,
+        result=result,
+        delta=delta,
+    )
+    
+    # Базовое изменение тактики на основе успеха
+    if success_score > 30:
+        base_shift = 12  # Сильный успех
+    elif success_score > 0:
+        base_shift = 6  # Умеренный успех
+    elif success_score > -20:
+        base_shift = 0  # Нейтрально
+    else:
+        base_shift = -8  # Неудача
+    
     for tactic in tactics:
         delta_value = base_shift
+        
+        # Дополнительные бонусы для специфичных тактик
         if tactic == "economy_growth":
-            delta_value += min(
-                8, max(0, int(delta.get("income_per_minute_rub", 0)) // 25)
-            )
+            delta_value += min(12, max(0, int(delta.get("income_per_minute_rub", 0)) // 20))
         elif tactic == "capacity_expansion":
-            delta_value += 4 if int(delta.get("seats", 0)) > 0 else 0
+            if int(delta.get("seats", 0)) > 0:
+                delta_value += 8
+            if int(after_snapshot.get("remain_seats", 0)) <= 0:
+                delta_value += settings.memory_tactic_step_limit // 2  # Seat pressure
         elif tactic == "unity_leverage":
-            delta_value += 5 if int(delta.get("unity_members", 0)) > 0 else 0
+            if int(delta.get("unity_members", 0)) > 0:
+                delta_value += 10
         elif tactic == "liquidity_control":
-            delta_value += 4 if int(after_snapshot.get("usd", 0)) < 450 else 0
+            if int(after_snapshot.get("usd", 0)) < 300:
+                delta_value += 6  # Need more liquidity
+            elif int(delta.get("usd", 0)) > 100:
+                delta_value += 4  # Good liquidity management
+        elif tactic == "leaderboard_pressure":
+            if int(delta.get("animals", 0)) > 0:
+                delta_value += 5
+        
         updates.append(
             {
                 "tactic": tactic,
@@ -1118,6 +1252,8 @@ def _derive_event_tactic_adjustments(
                 "source": "event",
             }
         )
+    
+    # Принудительное усиление тактик при блокировках
     if int(after_snapshot.get("remain_seats", 0)) <= 0:
         updates.append(
             {
@@ -1127,6 +1263,7 @@ def _derive_event_tactic_adjustments(
                 "source": "state",
             }
         )
+    
     return updates
 
 
