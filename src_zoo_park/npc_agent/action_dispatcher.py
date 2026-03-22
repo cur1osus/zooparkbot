@@ -565,9 +565,31 @@ async def execute_buy_rarity_animal(
     remain_seats = await get_remain_seats(session=session, user=user)
     if remain_seats <= 0:
         return {"status": "skipped", "summary": "no_seat_capacity"}
+    
+    # HARD CONSTRAINT: Never buy more animals than available seats
+    if quantity > remain_seats:
+        return {
+            "status": "skipped",
+            "summary": f"quantity_exceeds_seats:{quantity}>{remain_seats}",
+            "error_code": "not_enough_seats",
+        }
     quantity = min(quantity, int(remain_seats))
-    if remain_seats < quantity:
-        return {"status": "skipped", "summary": "not_enough_seats"}
+    
+    # Also check affordable_quantity from observation if available
+    animal_market = observation.get("animal_market", []) or []
+    for market_animal in animal_market:
+        if str(market_animal.get("animal", "")) == animal:
+            for variant in market_animal.get("variants", []) or []:
+                if str(variant.get("rarity", "")) == rarity:
+                    affordable = int(variant.get("affordable_quantity", 0) or 0)
+                    if affordable <= 0:
+                        return {
+                            "status": "skipped",
+                            "summary": f"not_affordable:{animal}{rarity}",
+                            "error_code": "not_enough_usd",
+                        }
+                    quantity = min(quantity, affordable)
+                    break
 
     unity_idpk = int(get_unity_idpk(user.current_unity) or 0) or None
     code_name = f"{animal}{rarity}"
