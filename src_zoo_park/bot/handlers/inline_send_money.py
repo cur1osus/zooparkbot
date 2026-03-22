@@ -142,6 +142,7 @@ async def inline_send_money(
         currency=split_query[1],
         one_piece_sum=one_piece,
         pieces=pieces,
+        source_chat_id=-1 if getattr(inline_query, "chat_type", "") in ("sender", "private") else 0,
     )
     session.add(tr)
     await session.commit()

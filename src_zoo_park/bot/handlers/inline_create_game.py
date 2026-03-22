@@ -182,6 +182,7 @@ async def inline_game_three_pm(
         currency_award=split_query[3],
         end_date=datetime.now() + timedelta(seconds=SEC_TO_EXPIRE_GAME),
         amount_moves=random.randint(1, 10),
+        source_chat_id=-1 if getattr(inline_query, "chat_type", "") in ("sender", "private") else 0,
     )
     session.add(game)
     await session.commit()
