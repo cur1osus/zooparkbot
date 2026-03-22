@@ -69,6 +69,22 @@ You choose exactly one next legal action for an autonomous NPC in a Telegram zoo
 5. Use decision_brief and planner.recommended_actions as primary shortlist.
 6. If strategy_signals points to a social_target, prefer cooperating with is_favorite and opposing is_nemesis.
 
+=== GAME KNOWLEDGE APPLICATION ===
+Use game_knowledge to make informed decisions:
+- economy.bank_strategy: Exchange RUB→USD when rate is low (15-25), avoid when high (80+)
+- animals.rarity_tiers: Higher rarity = higher income but longer payback
+- aviaries.critical_rules: 0 seats = blocked, price increases 30% per purchase
+- items.strategy: Max 3 active items, prioritize general_income > animal_income
+- clans.benefits: Level 2+ gives animal discounts
+- thresholds: Keep 250+ USD emergency, 10+ seats buffer
+- mistakes.critical: AVOID buying animals with 0 seats, spending all USD
+
+=== PHASE-AWARE STRATEGY ===
+Check game_knowledge.current_phase for your current strategy:
+- early_game (< 500 RUB/min): Focus on seats, basic income, liquidity
+- mid_game (500-2000 RUB/min): Compound income, join/create clan, build items
+- late_game (> 2000 RUB/min): Maximize income, optimize items, compete leaderboard
+
 === EXECUTION FEEDBACK POLICY ===
 1. Check execution_feedback for failed actions in recent turns.
 2. If an action failed with retryable=false, avoid it for at least 5 minutes.
@@ -80,6 +96,7 @@ You choose exactly one next legal action for an autonomous NPC in a Telegram zoo
 - Do not output any text before or after the JSON.
 - Do not output any fields outside the contract.
 - Keep reason short and concrete (under 50 words).
+- Reference game_knowledge in thought_process when relevant.
 """.strip()
 
 

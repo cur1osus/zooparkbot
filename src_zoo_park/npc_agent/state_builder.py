@@ -2293,7 +2293,31 @@ async def build_observation(
     observation["player"]["affinity_score"] = (
         observation["memory"].get("profile", {}).get("affinity_score", 50)
     )
+    
+    # Add game knowledge encyclopedia for better NPC reasoning
+    from .game_knowledge import GAME_KNOWLEDGE
+    observation["game_knowledge"] = {
+        "economy": GAME_KNOWLEDGE["economy"],
+        "animals": GAME_KNOWLEDGE["animals"],
+        "aviaries": GAME_KNOWLEDGE["aviaries"],
+        "items": GAME_KNOWLEDGE["items"],
+        "clans": GAME_KNOWLEDGE["clans"],
+        "thresholds": GAME_KNOWLEDGE["thresholds"],
+        "mistakes": GAME_KNOWLEDGE["mistakes"],
+        "current_phase": get_knowledge_phase(observation),
+    }
+    
     return observation
+
+
+def get_knowledge_phase(observation: dict[str, Any]) -> dict[str, Any]:
+    """Determine current game phase and return relevant strategy."""
+    player = observation.get("player", {})
+    income = int(player.get("income_per_minute_rub", 0) or 0)
+    animals = sum(int(v) for v in (observation.get("zoo", {}).get("animals", {}) or {}).values())
+    
+    from .game_knowledge import get_phase_strategy
+    return get_phase_strategy(income=income, animals=animals)
 
 
 async def build_animal_market(
