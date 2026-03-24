@@ -59,20 +59,22 @@ async def get_rarity_shop_caption(
     animal_price: int,
     unity_idpk: int | None,
 ) -> str:
+    income = await get_income_animal(
+        session=session,
+        animal=animal,
+        unity_idpk=unity_idpk,
+        info_about_items=user.info_about_items,
+    )
+    quantity_animals = (await get_dict_animals(user, session=session)).get(
+        animal.code_name, 0
+    )
     return await get_text_message(
         "choice_quantity_rarity_shop_menu",
         name_=animal.name,
         price=formatter.format_large_number(animal_price),
-        income=await get_income_animal(
-            session=session,
-            animal=animal,
-            unity_idpk=unity_idpk,
-            info_about_items=user.info_about_items,
-        ),
-        usd=user.usd,
-        quantity_animals=(await get_dict_animals(user, session=session)).get(
-            animal.code_name, 0
-        ),
+        income=formatter.format_large_number(income),
+        usd=formatter.format_large_number(user.usd),
+        quantity_animals=quantity_animals,
     )
 
 
