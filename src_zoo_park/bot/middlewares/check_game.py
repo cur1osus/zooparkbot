@@ -36,7 +36,9 @@ class CheckGame(BaseMiddleware):
             if isinstance(event, Message):
                 return await event.answer(text=text, reply_markup=reply_markup)
             if isinstance(event, CallbackQuery):
-                await event.message.delete()
-                return await event.message.answer(text=text, reply_markup=reply_markup)
+                if event.message:
+                    await event.message.delete()
+                    return await event.message.answer(text=text, reply_markup=reply_markup)
+                return await event.answer()
 
         return await handler(event, data)

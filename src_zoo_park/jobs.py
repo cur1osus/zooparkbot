@@ -5,6 +5,7 @@ import logging
 import random
 from datetime import datetime, timedelta, timezone
 
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.deep_linking import create_start_link
 from bot.keyboards import ik_start_created_game, rk_main_menu
 from config import CHAT_ID
@@ -397,6 +398,8 @@ async def add_award_and_send_message(session: AsyncSession, game: Game):
                 message_effect_id=petard_emoji_effect,
                 reply_markup=await rk_main_menu(user_id=user.id_user),
             )
+        except TelegramBadRequest:
+            pass
         except Exception:
             logging.exception(
                 "Failed to send game_winer_message", extra={"id_user": user.id_user}
