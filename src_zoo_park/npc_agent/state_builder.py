@@ -1565,7 +1565,7 @@ def build_strategy_signals(observation: dict[str, Any]) -> dict[str, Any]:
     income_options.sort(
         key=lambda row: (
             int(row.get("affordable_quantity", 0) or 0) > 0,
-            float(row.get("score", 0.0)),
+            float(row.get("score") or 0.0),
             -(row.get("payback_minutes") or 999999),
         ),
         reverse=True,
