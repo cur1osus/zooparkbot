@@ -33,6 +33,7 @@ from tools import (
     add_animal,
     disable_not_main_window,
     find_integers,
+    formatter,
     get_dict_animals,
     get_income_animal,
     get_price_animal,
@@ -61,7 +62,7 @@ async def get_rarity_shop_caption(
     return await get_text_message(
         "choice_quantity_rarity_shop_menu",
         name_=animal.name,
-        price=animal_price,
+        price=formatter.format_large_number(animal_price),
         income=await get_income_animal(
             session=session,
             animal=animal,
