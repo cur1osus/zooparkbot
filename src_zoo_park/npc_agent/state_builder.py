@@ -1140,11 +1140,12 @@ async def build_allowed_actions(
         action_name in {"send_chat_transfer", "create_chat_game", "join_chat_game"}
         for action_name in recent_actions
     )
+    global_chat_cooldown = bool(await redis.exists("npc_chat_action_cooldown"))
     effective_usd = float(usd) + float(rub) / max(1, rate)
     has_strong_surplus = effective_usd >= 6000 and usd >= 1200
     economy_not_blocked = remain_seats > 0
 
-    if has_strong_surplus and economy_not_blocked and not recent_chat_action:
+    if has_strong_surplus and economy_not_blocked and not recent_chat_action and not global_chat_cooldown:
         _append_unique_action(
             actions,
             "send_chat_transfer",
@@ -1164,6 +1165,7 @@ async def build_allowed_actions(
         and usd >= 1800
         and economy_not_blocked
         and not recent_chat_action
+        and not global_chat_cooldown
     ):
         _append_unique_action(
             actions,
@@ -1177,7 +1179,7 @@ async def build_allowed_actions(
         )
 
     # Joining existing chat games is low-cost and can be +EV even during capacity lock.
-    if not recent_chat_action:
+    if not recent_chat_action and not global_chat_cooldown:
         for row in (observation.get("chat_games") or [])[:3]:
             # Join official chat games or user-created global games.
             game_chat_id = int(row.get("source_chat_id", 0) or 0)

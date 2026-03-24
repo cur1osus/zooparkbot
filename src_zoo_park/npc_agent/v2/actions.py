@@ -1137,6 +1137,7 @@ class SendChatTransferAction(BaseAction[SendChatTransferParams]):
             ),
             reply_markup=keyboard,
         )
+        await redis.set("npc_chat_action_cooldown", "1", ex=7200)
         return ActionResponse(
             status="ok",
             summary=f"chat_transfer:{currency}:{total_spend}:{pieces}",
@@ -1260,6 +1261,7 @@ class CreateChatGameAction(BaseAction[CreateChatGameParams]):
             disable_web_page_preview=True,
         )
         game.id_mess = str(msg.message_id)
+        await redis.set("npc_chat_action_cooldown", "1", ex=7200)
         return ActionResponse(status="ok", summary=f"create_chat_game:{game.id_game}")
 
 class JoinChatGameParams(BaseModel):

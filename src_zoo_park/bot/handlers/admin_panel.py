@@ -61,6 +61,7 @@ class AdminPanelAction(str, Enum):
     LIST = "list"
     REFRESH = "refresh"
     USAGE_24H = "usage24h"
+    WAKE_ALL = "wake_all"
 
 
 class AdminNpcSection(str, Enum):
@@ -501,6 +502,11 @@ def _build_admin_panel_keyboard(npcs: list[User]):
         text="🔄 Обновить",
         callback_data=AdminPanelCallback(action=AdminPanelAction.REFRESH),
     )
+    builder.button(
+        text="⚡ Разбудить всех",
+        callback_data=AdminPanelCallback(action=AdminPanelAction.WAKE_ALL),
+    )
+    row_sizes.append(1)
     for npc in npcs:
         builder.button(
             text=_build_npc_button_text(npc),
@@ -1166,6 +1172,13 @@ async def admin_panel_callbacks(
                 caption=_build_usage_caption_24h(stats),
             )
         await query.answer("Готово")
+        return
+
+    if action == AdminPanelAction.WAKE_ALL.value:
+        from npc_agent.schedule import wake_all_npcs_now
+        woken = await wake_all_npcs_now(session=session, reason=f"admin_panel_all:{query.from_user.id}")
+        await session.commit()
+        await query.answer(f"Разбужено {woken} НПС", show_alert=True)
         return
 
     text = _clip_text(await _build_admin_panel_text(session=session))
