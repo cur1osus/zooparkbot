@@ -422,13 +422,10 @@ class InvestForIncomeAction(BaseAction[InvestForIncomeParams]):
         signal = ctx.observation["strategy_signals"]["summary"]
         if signal["need_seats"] and signal["best_aviary_option"]:
             best_aviary = signal["best_aviary_option"]
-            aviary_size = max(1, int(best_aviary.get("size", 1) or 1))
             affordable_quantity = max(
                 1, int(best_aviary.get("affordable_quantity", 1) or 1)
             )
-            target_new_seats = max(aviary_size, 6)
-            quantity = max(1, (target_new_seats + aviary_size - 1) // aviary_size)
-            quantity = min(quantity, affordable_quantity)
+            quantity = affordable_quantity
 
             action = ActionRegistry.get("buy_aviary")
             if action:
@@ -438,13 +435,7 @@ class InvestForIncomeAction(BaseAction[InvestForIncomeParams]):
 
         best_income_option = signal.get("best_income_option")
         if best_income_option:
-            quantity = max(
-                1,
-                min(
-                    int(best_income_option.get("affordable_quantity", 1) or 1),
-                    int(ctx.observation.get("zoo", {}).get("remain_seats", 1) or 1),
-                ),
-            )
+            quantity = max(1, int(best_income_option.get("affordable_quantity", 1) or 1))
             action = ActionRegistry.get("buy_rarity_animal")
             if action:
                 return await action.execute(

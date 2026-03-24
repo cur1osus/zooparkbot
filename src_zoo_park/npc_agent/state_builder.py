@@ -970,27 +970,16 @@ async def build_allowed_actions(
         _append_unique_action(actions, "invest_for_top_animals", {})
 
     for row in affordable_aviaries[:3]:
-        aviary_size = max(1, int(row.get("size", 1) or 1))
         affordable_quantity = max(1, int(row.get("affordable_quantity", 1) or 1))
-        # Let the model choose meaningful multi-buy batches instead of hardcoded x1.
-        quantity_options = {1, min(2, affordable_quantity), min(5, affordable_quantity)}
-        if remain_seats <= 0:
-            # Capacity-lock: suggest enough aviaries to open a playable seat buffer.
-            target_new_seats = max(aviary_size, 6)
-            needed_qty = max(1, (target_new_seats + aviary_size - 1) // aviary_size)
-            quantity_options.add(min(needed_qty, affordable_quantity))
-
-        for qty in sorted(q for q in quantity_options if q >= 1):
-            _append_unique_action(
-                actions,
-                "buy_aviary",
-                {"code_name_aviary": row.get("code_name"), "quantity": int(qty)},
-            )
+        _append_unique_action(
+            actions,
+            "buy_aviary",
+            {"code_name_aviary": row.get("code_name"), "quantity": affordable_quantity},
+        )
 
     for row in affordable_variants[:4]:
         affordable_quantity = int(row.get("affordable_quantity", 0) or 0)
-        # No hard cap: suggest full currently available quantity.
-        suggested_quantity = max(1, min(affordable_quantity, remain_seats))
+        suggested_quantity = max(1, affordable_quantity)
         _append_unique_action(
             actions,
             "buy_rarity_animal",
