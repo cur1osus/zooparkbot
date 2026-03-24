@@ -122,6 +122,12 @@ class LargeNumberFormatter:
 
     def format_large_number(self, number: int | float, **kw) -> str:
         """Выбор форматировщика и форматирование числа."""
+        # Fallback to scientific notation for astronomically large numbers
+        if number >= 10 ** 33:
+            d = Decimal(number)
+            exp = len(str(int(d))) - 1
+            mantissa = d / Decimal(10) ** exp
+            return f"{mantissa:.2f}E+{exp}"
         for formatter in self.formatters:
             if number < formatter.threshold:
                 continue

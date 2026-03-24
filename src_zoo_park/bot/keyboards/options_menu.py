@@ -190,7 +190,9 @@ async def ik_choice_quantity_animals_rshop(
     for quantity_animal, price in zip(all_quantity_animals, prices):
         builder.button(
             text=await tools.get_text_button(
-                "pattern_quantity_animals_rshop", qa=quantity_animal, pr=price
+                "pattern_quantity_animals_rshop",
+                qa=quantity_animal,
+                pr=tools.formatter.format_large_number(price),
             ),
             callback_data=RarityShopQuantityCallback(quantity=quantity_animal),
         )
@@ -199,7 +201,9 @@ async def ik_choice_quantity_animals_rshop(
         pr = magic_count_animal * animal_price
         builder.button(
             text=await tools.get_text_button(
-                "pattern_quantity_animals_magic", qa=magic_count_animal, pr=pr
+                "pattern_quantity_animals_magic",
+                qa=magic_count_animal,
+                pr=tools.formatter.format_large_number(pr),
             ),
             callback_data=RarityShopQuantityCallback(quantity=magic_count_animal),
         )
