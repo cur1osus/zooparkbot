@@ -68,7 +68,10 @@ async def get_price_animal(
             scale_pct = await tools.get_value(
                 session=session, value_name="ANIMAL_PRICE_SCALE_PER_10"
             )
-            scale_multiplier = (1 + Decimal(scale_pct) / 100) ** (Decimal(quantity_owned) / 10)
+            scale_multiplier = min(
+                Decimal(100),  # max 10000% = 100x
+                (1 + Decimal(scale_pct) / 100) ** (Decimal(quantity_owned) / 10),
+            )
             price = int(Decimal(price) * scale_multiplier)
 
     return int(price)
