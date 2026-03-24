@@ -969,7 +969,7 @@ async def build_allowed_actions(
     if remain_seats > 0 and (targeted_candidates or affordable_variants):
         _append_unique_action(actions, "invest_for_top_animals", {})
 
-    for row in affordable_aviaries[:3]:
+    for row in affordable_aviaries:
         affordable_quantity = max(1, int(row.get("affordable_quantity", 1) or 1))
         _append_unique_action(
             actions,
@@ -977,7 +977,7 @@ async def build_allowed_actions(
             {"code_name_aviary": row.get("code_name"), "quantity": affordable_quantity},
         )
 
-    for row in affordable_variants[:4]:
+    for row in affordable_variants:
         affordable_quantity = int(row.get("affordable_quantity", 0) or 0)
         suggested_quantity = max(1, affordable_quantity)
         _append_unique_action(
@@ -1003,7 +1003,7 @@ async def build_allowed_actions(
         _append_unique_action(actions, "buy_merchant_random_offer", {})
 
     if remain_seats > 0:
-        for animal_name in targeted_candidates[:3]:
+        for animal_name in targeted_candidates:
             _append_unique_action(
                 actions,
                 "buy_merchant_targeted_offer",
@@ -1043,7 +1043,7 @@ async def build_allowed_actions(
         for row in item_opportunities.get("upgrade_candidates", [])
         if usd >= int(row.get("cost_usd", 0) or 0)
     ]
-    for row in affordable_upgrades[:3]:
+    for row in affordable_upgrades:
         _append_unique_action(actions, "upgrade_item", {"id_item": row.get("id_item")})
 
     affordable_merges = [
@@ -1051,7 +1051,7 @@ async def build_allowed_actions(
         for row in item_opportunities.get("merge_candidates", [])
         if usd >= int(row.get("cost_usd", 0) or 0)
     ]
-    for row in affordable_merges[:2]:
+    for row in affordable_merges:
         _append_unique_action(
             actions,
             "merge_items",
