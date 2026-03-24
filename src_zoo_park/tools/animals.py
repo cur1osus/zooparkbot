@@ -64,11 +64,12 @@ async def get_price_animal(
         user_animals = await get_user_animals_map(session=session, user=user)
         quantity_owned = user_animals.get(animal_code_name, 0)
         if quantity_owned > 0:
+            from decimal import Decimal
             scale_pct = await tools.get_value(
                 session=session, value_name="ANIMAL_PRICE_SCALE_PER_10"
             )
-            scale_multiplier = min(100.0, (1 + scale_pct / 100) ** (quantity_owned / 10))
-            price = int(price * scale_multiplier)
+            scale_multiplier = (1 + Decimal(scale_pct) / 100) ** (Decimal(quantity_owned) / 10)
+            price = int(Decimal(price) * scale_multiplier)
 
     return int(price)
 
