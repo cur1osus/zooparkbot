@@ -213,7 +213,7 @@ class UserAviaryState(Base):
     aviary_code_name: Mapped[str] = mapped_column(String(length=64), index=True)
     quantity: Mapped[int] = mapped_column(default=0)
     buy_count: Mapped[int] = mapped_column(default=0)
-    current_price: Mapped[int] = mapped_column(BigInteger, default=0)
+    current_price: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, index=True
     )
@@ -242,8 +242,8 @@ class Animal(Base):
     code_name: Mapped[str] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(length=64))
     description: Mapped[str] = mapped_column(String(length=4096))
-    price: Mapped[int] = mapped_column(BigInteger)
-    income: Mapped[int] = mapped_column(BigInteger)
+    price: Mapped[int] = mapped_column(Numeric(precision=65, scale=0))
+    income: Mapped[int] = mapped_column(Numeric(precision=65, scale=0))
 
 
 class Aviary(Base):
@@ -278,7 +278,7 @@ class TransferMoney(Base):
     id_transfer: Mapped[str] = mapped_column(String(length=10), index=True)
     idpk_user: Mapped[int] = mapped_column()
     currency: Mapped[str] = mapped_column(String(length=10))
-    one_piece_sum: Mapped[int] = mapped_column(BigInteger)
+    one_piece_sum: Mapped[int] = mapped_column(Numeric(precision=65, scale=0))
     pieces: Mapped[int] = mapped_column()
     id_mess: Mapped[str] = mapped_column(String(length=80), nullable=True)
     source_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
@@ -365,7 +365,7 @@ class Value(Base):
     name: Mapped[str] = mapped_column(
         String(length=100), index=True
     )  # Название значения
-    value_int: Mapped[int] = mapped_column(BigInteger, default=0)  # Значение целое
+    value_int: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0)  # Значение целое
     value_str: Mapped[str] = mapped_column(
         String(length=4096), default="не установлено"
     )  # Значение строка
