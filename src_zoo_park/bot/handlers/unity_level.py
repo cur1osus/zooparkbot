@@ -1,6 +1,7 @@
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.filters import GetTextButton
 from bot.keyboards import (
     ik_update_level_unity,
@@ -15,6 +16,7 @@ from tools import (
     disable_not_main_window,
     get_data_by_lvl_unity,
     get_text_message,
+    sync_user_income,
 )
 
 flags = {"throttling_key": "default"}
@@ -79,7 +81,21 @@ async def update_unity_level(
                 return
 
             unity.level = 3
+            await session.commit()
+            # After reaching level 3, require specialization choice
+            if not unity.specialization:
+                await query.message.edit_text(
+                    text=_specialization_text(),
+                    reply_markup=_specialization_kb(),
+                )
+                return
         case 3:
+            if not unity.specialization:
+                await query.message.edit_text(
+                    text=_specialization_text(),
+                    reply_markup=_specialization_kb(),
+                )
+                return
             await query.answer(
                 text=await get_text_message("unity_level_max"),
                 show_alert=True,
@@ -93,3 +109,71 @@ async def update_unity_level(
         text=await get_text_message(f"unity_level_{unity.level}", **data_for_text),
         reply_markup=await ik_update_level_unity(),
     )
+
+
+_SPECIALIZATIONS = {
+    "specialist": (
+        "🔬 Редкий зверинец",
+        "+50% доход от эпических/мифических/лег животных\n-20% доход от редких\n\nИдеально для коллекционеров редкостей",
+    ),
+    "megapark": (
+        "🏟 Мегапарк",
+        "+1% дохода на каждые 10 животных (макс. +60%)\n+15% к расходам на содержание\n\nИдеально для тех, кто хочет огромный зоопарк",
+    ),
+    "wild": (
+        "🌿 Дикий заповедник",
+        "+3% дохода за каждый уникальный вид (дополнительно к базовому бонусу)\n-30% стоимость лечения животных\n\nИдеально для разнообразного зоопарка",
+    ),
+}
+
+
+def _specialization_text() -> str:
+    lines = ["🌟 Выберите специализацию клана\n\nДостигнув 3-го уровня, клан получает уникальный путь развития. Выбор нельзя изменить!\n"]
+    for key, (name, desc) in _SPECIALIZATIONS.items():
+        lines.append(f"{name}\n{desc}\n")
+    return "\n".join(lines)
+
+
+def _specialization_kb():
+    b = InlineKeyboardBuilder()
+    for key, (name, _) in _SPECIALIZATIONS.items():
+        b.button(text=name, callback_data=f"choose_specialization:{key}")
+    b.adjust(1)
+    return b.as_markup()
+
+
+@router.callback_query(UserState.unity_menu, F.data.startswith("choose_specialization:"))
+async def choose_specialization(
+    query: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+    user: User,
+):
+    spec = (query.data or "").split(":", 1)[-1]
+    if spec not in _SPECIALIZATIONS:
+        await query.answer("Неизвестная специализация", show_alert=True)
+        return
+
+    data = await state.get_data()
+    unity = await session.get(Unity, data["idpk_unity"])
+    if not unity:
+        await query.answer("Клан не найден", show_alert=True)
+        return
+    if unity.idpk_user != user.idpk:
+        await query.answer("Только лидер клана может выбрать специализацию", show_alert=True)
+        return
+    if unity.specialization:
+        await query.answer("Специализация уже выбрана", show_alert=True)
+        return
+
+    unity.specialization = spec
+    # Recalculate income for clan leader to apply new specialization bonuses
+    await sync_user_income(session=session, user=user)
+    await session.commit()
+
+    name, desc = _SPECIALIZATIONS[spec]
+    await query.message.edit_text(
+        text=f"✅ Специализация выбрана!\n\n{name}\n{desc}",
+        reply_markup=None,
+    )
+    await query.answer(f"Выбрано: {name}")

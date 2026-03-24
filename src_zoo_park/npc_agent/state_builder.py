@@ -2228,6 +2228,7 @@ async def build_animal_market(
                 animal_code_name=code_name,
                 unity_idpk=unity_idpk,
                 info_about_items=user.info_about_items,
+                user=user,
             )
             income_value = await income_for_animal_option(
                 session=session,

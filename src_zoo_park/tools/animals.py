@@ -26,7 +26,22 @@ async def get_price_animal(
     animal_code_name: str,
     unity_idpk: int | None,
     info_about_items: str | dict,
+    user: User | None = None,
 ) -> int:
+    """
+    Calculate purchase price for one unit of an animal.
+
+    If `user` is provided, applies quantity-based price scaling:
+    each 10 already owned of this species raises the price by
+    ANIMAL_PRICE_SCALE_PER_10 percent (default 15%).
+
+    Example with ANIMAL_PRICE_SCALE_PER_10=15:
+      0 owned  → 1.00x base price
+      10 owned → 1.15x
+      20 owned → 1.32x  (1.15²)
+      50 owned → 2.01x  (1.15⁵)
+      100 owned → 4.05x (1.15¹⁰)
+    """
     discount = (
         await _get_unity_data_for_price_animal(session=session, idpk_unity=unity_idpk)
         if unity_idpk
@@ -42,6 +57,18 @@ async def get_price_animal(
         price = price * (1 - v / 100)
     if discount:
         price *= 1 - (discount / 100)
+
+    # Quantity-based price scaling (exponential cost to prevent farming one species)
+    if user is not None:
+        from db.structured_state import get_user_animals_map
+        user_animals = await get_user_animals_map(session=session, user=user)
+        quantity_owned = user_animals.get(animal_code_name, 0)
+        if quantity_owned > 0:
+            scale_pct = await tools.get_value(
+                session=session, value_name="ANIMAL_PRICE_SCALE_PER_10"
+            )
+            price = int(price * ((1 + scale_pct / 100) ** (quantity_owned / 10)))
+
     return int(price)
 
 

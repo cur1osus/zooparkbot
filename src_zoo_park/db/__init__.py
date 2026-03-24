@@ -14,6 +14,7 @@ from .models import (
     Photo,
     RandomMerchant,
     RequestToUnity,
+    SickAnimalEvent,
     Text,
     TransferMoney,
     TransferMoneyClaim,

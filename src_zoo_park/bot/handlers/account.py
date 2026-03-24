@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import json
 
+from datetime import datetime
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -21,7 +23,7 @@ from bot.keyboards import (
     ik_yes_or_not_sell_item,
 )
 from bot.states import UserState
-from db import Animal, Item, User
+from db import Animal, Item, SickAnimalEvent, User
 from db.structured_state import get_user_animals_map, get_user_aviaries_map
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +32,7 @@ from tools import (
     disable_not_main_window,
     factory_text_account_animals,
     factory_text_account_aviaries,
+    formatter,
     ft_item_props,
     get_remain_seats,
     get_text_message,
@@ -566,3 +569,115 @@ async def open_chest_do(
             reply_markup=_chests_menu_kb(balance),
         )
     await query.answer("Сундук открыт")
+
+
+# ─── Vet section ──────────────────────────────────────────────────────────────
+
+def _vet_kb(sick_events: list):
+    b = InlineKeyboardBuilder()
+    for event in sick_events:
+        b.button(
+            text=f"💊 Лечить {event.animal_code_name} — {formatter(int(event.cure_cost))}₽",
+            callback_data=f"cure_animal:{event.idpk}",
+        )
+    b.button(text="⬅️ Назад", callback_data="open_chests_back")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def _vet_text(sick_events: list, maintenance: int) -> str:
+    lines = [
+        "🏥 Ветеринар\n",
+        f"💸 Расходы на содержание: {formatter(maintenance)}₽/мин\n",
+    ]
+    if not sick_events:
+        lines.append("✅ Все животные здоровы!")
+    else:
+        lines.append("🤒 Больные животные (доход -50% до лечения):\n")
+        for e in sick_events:
+            now = datetime.now()
+            if e.deadline > now:
+                remaining = int((e.deadline - now).total_seconds() / 60)
+                status = f"⏳ штраф через {remaining} мин."
+            else:
+                status = "❗ штраф активен"
+            lines.append(
+                f"• {e.animal_code_name} — {formatter(int(e.cure_cost))}₽ ({status})"
+            )
+    return "\n".join(lines)
+
+
+@router.callback_query(UserState.main_menu, F.data == "account_vet")
+async def account_vet(
+    query: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+    user: User,
+):
+    sick_events = (
+        await session.scalars(
+            select(SickAnimalEvent).where(
+                SickAnimalEvent.idpk_user == user.idpk,
+                SickAnimalEvent.is_cured == False,  # noqa: E712
+            )
+        )
+    ).all()
+
+    maintenance = int(user.maintenance_per_minute or 0)
+    text = _vet_text(sick_events=sick_events, maintenance=maintenance)
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(text=text, reply_markup=_vet_kb(sick_events))
+    await query.answer()
+
+
+@router.callback_query(UserState.main_menu, F.data.startswith("cure_animal:"))
+async def cure_animal(
+    query: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+    user: User,
+):
+    try:
+        event_idpk = int((query.data or "").split(":", 1)[-1])
+    except (ValueError, IndexError):
+        await query.answer("Неверные данные", show_alert=True)
+        return
+
+    event: SickAnimalEvent | None = await session.get(SickAnimalEvent, event_idpk)
+    if event is None or event.idpk_user != user.idpk or event.is_cured:
+        await query.answer("Это животное уже здорово 🐾", show_alert=True)
+        return
+
+    cure_cost = int(event.cure_cost)
+    if int(user.rub) < cure_cost:
+        await query.answer(
+            f"Недостаточно рублей. Нужно: {formatter(cure_cost)}₽",
+            show_alert=True,
+        )
+        return
+
+    user.rub -= cure_cost
+    user.amount_expenses_rub += cure_cost
+    event.is_cured = True
+
+    # Recalculate income to remove sick-animal penalty
+    await sync_user_income(session=session, user=user)
+    await session.commit()
+
+    await query.answer(f"✅ Животное {event.animal_code_name} вылечено!", show_alert=True)
+
+    # Refresh vet screen
+    remaining_sick = (
+        await session.scalars(
+            select(SickAnimalEvent).where(
+                SickAnimalEvent.idpk_user == user.idpk,
+                SickAnimalEvent.is_cured == False,  # noqa: E712
+            )
+        )
+    ).all()
+    maintenance = int(user.maintenance_per_minute or 0)
+    text = _vet_text(sick_events=remaining_sick, maintenance=maintenance)
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(
+            text=text, reply_markup=_vet_kb(remaining_sick)
+        )

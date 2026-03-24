@@ -201,6 +201,7 @@ async def get_rarity_rshop(
         animal_code_name=data["animal"] + rarity,
         unity_idpk=unity_idpk,
         info_about_items=user.info_about_items,
+        user=user,
     )
     animal = await session.scalar(
         select(Animal).where(Animal.code_name == data["animal"] + rarity)
@@ -264,6 +265,7 @@ async def rshop_switch_rarity(
         animal_code_name=data["animal"] + rarity,
         unity_idpk=data["unity_idpk"],
         info_about_items=user.info_about_items,
+        user=user,
     )
     animal = await session.scalar(
         select(Animal).where(Animal.code_name == data["animal"] + rarity)

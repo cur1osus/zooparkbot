@@ -53,6 +53,8 @@ class User(Base):
     # Optimized fields for high-performance background jobs
     income_per_minute: Mapped[int] = mapped_column(BigInt(), default=0, index=True)
     last_income_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    # Economy: maintenance cost deducted every minute (scales with animal count)
+    maintenance_per_minute: Mapped[int] = mapped_column(BigInt(), default=0)
 
 
 class Unity(Base):
@@ -61,6 +63,8 @@ class Unity(Base):
     idpk_user: Mapped[int] = mapped_column()
     name: Mapped[str] = mapped_column(String(length=64))
     level: Mapped[int] = mapped_column(default=0)
+    # Clan specialization chosen at level 3: "specialist", "megapark", "wild"
+    specialization: Mapped[Optional[str]] = mapped_column(String(length=32), nullable=True)
 
     @property
     def format_name(self) -> str:
@@ -375,3 +379,19 @@ class Photo(Base):
 
     name: Mapped[str] = mapped_column(String(length=30), index=True)  # Название фото
     photo_id: Mapped[str] = mapped_column(String(length=100))  # Идентификатор фото
+
+
+class SickAnimalEvent(Base):
+    """An animal species has fallen ill — income penalty until cured or expired."""
+    __tablename__ = "sick_animal_events"
+    __table_args__ = (
+        Index("ix_sick_animal_events_user_active", "idpk_user", "is_cured"),
+    )
+
+    idpk_user: Mapped[int] = mapped_column(index=True)
+    animal_code_name: Mapped[str] = mapped_column(String(length=64))
+    sick_since: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    # After this timestamp income penalty kicks in (warning window)
+    deadline: Mapped[datetime] = mapped_column(DateTime, index=True)
+    is_cured: Mapped[bool] = mapped_column(default=False, index=True)
+    cure_cost: Mapped[int] = mapped_column(BigInt(), default=0)

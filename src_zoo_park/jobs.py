@@ -9,7 +9,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.deep_linking import create_start_link
 from bot.keyboards import ik_start_created_game, rk_main_menu
 from config import CHAT_ID
-from db import Game, Gamer, RandomMerchant, RequestToUnity, User, Value
+from db import Game, Gamer, RandomMerchant, RequestToUnity, SickAnimalEvent, User, Value
 from game_variables import (
     ID_AUTOGENERATE_MINI_GAME,
     MAX_AMOUNT_GAMERS,
@@ -19,7 +19,7 @@ from game_variables import (
 from init_bot import bot
 from init_db import _sessionmaker_for_func
 from npc_agent.schedule import wake_all_npcs_now
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from tools import (
     add_to_currency,
@@ -85,6 +85,7 @@ async def job_minute() -> None:
             await check_inaction(session=session)
             await deleter_request_to_unity(session=session)
             await settle_all_due_projects(session=session)
+            await _maybe_generate_sick_events(session=session)
             await session.commit()
 
 
@@ -223,12 +224,19 @@ async def accrual_of_income(
 ):
     """
     Optimized high-performance income accrual.
-    Uses bulk update to process all users in a single SQL operation.
+    Net income = income_per_minute - maintenance_per_minute (clamped to >= 0).
+    Uses a single bulk SQL operation for all users.
     """
     await session.execute(
         update(User)
         .where(User.income_per_minute > 0)
-        .values(rub=User.rub + User.income_per_minute, last_income_at=datetime.now())
+        .values(
+            rub=func.greatest(
+                0,
+                User.rub + User.income_per_minute - User.maintenance_per_minute,
+            ),
+            last_income_at=datetime.now(),
+        )
     )
 
 
@@ -455,3 +463,96 @@ async def edit_text_game_in_chat(session: AsyncSession, game: Game):
 
 async def check_inaction(session: AsyncSession):
     return
+
+
+async def _maybe_generate_sick_events(session: AsyncSession) -> None:
+    """
+    Randomly make an animal species sick for a random subset of active players.
+
+    Runs every minute but uses a counter (SICK_CHECK_COUNTER) stored in DB so
+    the actual check only fires every SICK_CHECK_INTERVAL minutes (default 60).
+
+    Config values (DB):
+      SICK_CHECK_INTERVAL   — how many minutes between sick checks (default 60)
+      SICK_CHANCE_PER_1000  — probability per user per check, as N/1000 (default 3)
+      SICK_CURE_BASE_COST   — RUB per animal in the sick species (default 500)
+      SICK_WARNING_HOURS    — hours of warning before income penalty (default 2)
+    """
+    # Throttle: increment counter and only proceed every INTERVAL minutes
+    counter_row = await session.scalar(
+        select(Value).where(Value.name == "SICK_CHECK_COUNTER")
+    )
+    if counter_row is None:
+        counter_row = Value(name="SICK_CHECK_COUNTER", value_int=0, value_str="-")
+        session.add(counter_row)
+        await session.flush()
+
+    interval = await get_value(session=session, value_name="SICK_CHECK_INTERVAL")
+    counter = int(counter_row.value_int or 0) + 1
+    counter_row.value_int = counter % interval
+    if counter % interval != 0:
+        return
+
+    chance = await get_value(session=session, value_name="SICK_CHANCE_PER_1000")
+    cure_base = await get_value(session=session, value_name="SICK_CURE_BASE_COST")
+    warning_hours = await get_value(session=session, value_name="SICK_WARNING_HOURS")
+
+    from db.structured_state import get_user_animals_map
+
+    # Only consider users who actually have animals
+    users = (
+        await session.scalars(select(User).where(User.income_per_minute > 0))
+    ).all()
+
+    now = datetime.now()
+
+    for user in users:
+        # Skip if already has an active (uncured) sick event
+        existing = await session.scalar(
+            select(SickAnimalEvent).where(
+                SickAnimalEvent.idpk_user == user.idpk,
+                SickAnimalEvent.is_cured == False,  # noqa: E712
+            )
+        )
+        if existing:
+            continue
+
+        if random.randint(1, 1000) > chance:
+            continue
+
+        animals = await get_user_animals_map(session=session, user=user)
+        if not animals:
+            continue
+
+        animal_code = random.choice(list(animals.keys()))
+        quantity = animals[animal_code]
+        cure_cost = cure_base * max(1, quantity)
+
+        event = SickAnimalEvent(
+            idpk_user=user.idpk,
+            animal_code_name=animal_code,
+            sick_since=now,
+            deadline=now + timedelta(hours=warning_hours),
+            is_cured=False,
+            cure_cost=cure_cost,
+        )
+        session.add(event)
+
+        # Notify user
+        animal_name = animal_code
+        try:
+            await bot.send_message(
+                chat_id=user.id_user,
+                text=(
+                    f"🤒 Одно из ваших животных заболело!\n\n"
+                    f"Вид: {animal_name}\n"
+                    f"Стоимость лечения: {formatter(cure_cost)}₽\n"
+                    f"⏳ До штрафа на доход: {warning_hours} ч.\n\n"
+                    f"Зайдите в профиль → «Ветеринар» чтобы вылечить."
+                ),
+            )
+        except Exception:
+            logging.exception(
+                "Failed to send sick_animal notification",
+                extra={"id_user": user.id_user},
+            )

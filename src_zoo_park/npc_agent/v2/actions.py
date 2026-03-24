@@ -290,6 +290,7 @@ class BuyRarityAnimalAction(BaseAction[BuyRarityAnimalParams]):
             animal_code_name=code_name,
             unity_idpk=unity_idpk,
             info_about_items=ctx.user.info_about_items,
+            user=ctx.user,
         )
         finite_price = animal_price * quantity
         if int(ctx.user.usd) < finite_price:
