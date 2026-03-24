@@ -47,6 +47,7 @@ from tools import (
     is_unique_name,
     mention_html,
     shorten_whitespace_name_unity,
+    sync_user_income,
 )
 
 flags = {"throttling_key": "default"}
@@ -349,7 +350,7 @@ async def process_accept_to_unity(
     if r:
         await session.delete(r)
     await add_unity_member(session=session, unity=unity, member_idpk=member.idpk)
-    await tools.sync_user_income(session=session, user=member)
+    await sync_user_income(session=session, user=member)
     await session.commit()
     await query.message.edit_text(
         text=await get_text_message("request_accepted"),
@@ -425,7 +426,7 @@ async def accept_npc_unity_invite(
         user_idpk=owner.idpk,
         reason=f"npc_invite_accepted:{user.idpk}",
     )
-    await tools.sync_user_income(session=session, user=user)
+    await sync_user_income(session=session, user=user)
     await session.commit()
     await query.message.edit_text("Вы вступили в объединение NPC")
     await query.answer(text="Приглашение принято", show_alert=False)
@@ -475,7 +476,7 @@ async def exit_from_unity(
                 reason=f"unity_member_left:{user.idpk}",
             )
         await state.set_state(UserState.main_menu)
-        await tools.sync_user_income(session=session, user=user)
+        await sync_user_income(session=session, user=user)
         await session.commit()
         await message.answer(
             text=await get_text_message("exit_from_unity_text"), reply_markup=None
@@ -487,12 +488,12 @@ async def exit_from_unity(
         return
     # если владелец объединения
     user.current_unity = None
-    await tools.sync_user_income(session=session, user=user)
+    await sync_user_income(session=session, user=user)
     idpk_next_owner = await pop_next_unity_owner(session=session, unity=unity)
     if idpk_next_owner:
         next_owner: User = await session.get(User, idpk_next_owner)
         next_owner.current_unity = f"owner:{unity.idpk}"
-        await tools.sync_user_income(session=session, user=next_owner)
+        await sync_user_income(session=session, user=next_owner)
         unity.idpk_user = next_owner.idpk
         if next_owner.id_user < 0:
             await wake_npc_now(
