@@ -146,18 +146,9 @@ async def account(
 ):
     await disable_not_main_window(data=await state.get_data(), message=message)
 
-    income, ik_account_menu_k = await asyncio.gather(
-        income_(session=session, user=user),
+    text_message, ik_account_menu_k = await asyncio.gather(
+        _account_text(session=session, user=user),
         ik_account_menu(),
-    )
-
-    text_message = await get_text_message(
-        "account_info",
-        nn=user.nickname,
-        rub=user.rub,
-        usd=user.usd,
-        pawc=user.paw_coins,
-        income=income,
     )
 
     msg = await message.answer(
