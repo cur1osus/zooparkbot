@@ -577,7 +577,7 @@ def _vet_kb(sick_events: list):
     b = InlineKeyboardBuilder()
     for event in sick_events:
         b.button(
-            text=f"💊 Лечить {event.animal_code_name} — {formatter(int(event.cure_cost))}₽",
+            text=f"💊 Лечить {event.animal_code_name} — {formatter.format_large_number(int(event.cure_cost))}₽",
             callback_data=f"cure_animal:{event.idpk}",
         )
     b.button(text="⬅️ Назад", callback_data="open_chests_back")
@@ -588,7 +588,7 @@ def _vet_kb(sick_events: list):
 def _vet_text(sick_events: list, maintenance: int) -> str:
     lines = [
         "🏥 Ветеринар\n",
-        f"💸 Расходы на содержание: {formatter(maintenance)}₽/мин\n",
+        f"💸 Расходы на содержание: {formatter.format_large_number(maintenance)}₽/мин\n",
     ]
     if not sick_events:
         lines.append("✅ Все животные здоровы!")
@@ -602,7 +602,7 @@ def _vet_text(sick_events: list, maintenance: int) -> str:
             else:
                 status = "❗ штраф активен"
             lines.append(
-                f"• {e.animal_code_name} — {formatter(int(e.cure_cost))}₽ ({status})"
+                f"• {e.animal_code_name} — {formatter.format_large_number(int(e.cure_cost))}₽ ({status})"
             )
     return "\n".join(lines)
 
@@ -651,7 +651,7 @@ async def cure_animal(
     cure_cost = int(event.cure_cost)
     if int(user.rub) < cure_cost:
         await query.answer(
-            f"Недостаточно рублей. Нужно: {formatter(cure_cost)}₽",
+            f"Недостаточно рублей. Нужно: {formatter.format_large_number(cure_cost)}₽",
             show_alert=True,
         )
         return

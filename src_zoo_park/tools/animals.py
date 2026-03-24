@@ -67,7 +67,8 @@ async def get_price_animal(
             scale_pct = await tools.get_value(
                 session=session, value_name="ANIMAL_PRICE_SCALE_PER_10"
             )
-            price = int(price * ((1 + scale_pct / 100) ** (quantity_owned / 10)))
+            scale_multiplier = min(100.0, (1 + scale_pct / 100) ** (quantity_owned / 10))
+            price = int(price * scale_multiplier)
 
     return int(price)
 
