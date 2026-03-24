@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from decimal import Decimal
 
 
 class NumberFormatter(ABC):
@@ -10,13 +11,34 @@ class NumberFormatter(ABC):
         pass
 
 
+class NonillionFormatter(NumberFormatter):
+    threshold = 10 ** 30
+
+    def format_number(self, number: int) -> str:
+        return f"{Decimal(number) / Decimal(10 ** 30):.1f}No"
+
+
+class OctillionFormatter(NumberFormatter):
+    threshold = 10 ** 27
+
+    def format_number(self, number: int) -> str:
+        return f"{Decimal(number) / Decimal(10 ** 27):.1f}Oc"
+
+
+class SeptillionFormatter(NumberFormatter):
+    threshold = 10 ** 24
+
+    def format_number(self, number: int) -> str:
+        return f"{Decimal(number) / Decimal(10 ** 24):.1f}Sp"
+
+
 class SextillionFormatter(NumberFormatter):
     """Форматировщик для секстиллионов."""
 
     threshold = 1_000_000_000_000_000_000_000
 
     def format_number(self, number: int) -> str:
-        return f"{number / 1_000_000_000_000_000_000_000:,.1f}Sx"
+        return f"{Decimal(number) / Decimal(1_000_000_000_000_000_000_000):.1f}Sx"
 
 
 class QuintillionFormatter(NumberFormatter):
@@ -85,6 +107,9 @@ class LargeNumberFormatter:
 
     def __init__(self):
         self.formatters = [
+            NonillionFormatter(),
+            OctillionFormatter(),
+            SeptillionFormatter(),
             SextillionFormatter(),
             QuintillionFormatter(),
             QuadrillionFormatter(),
