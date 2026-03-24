@@ -8,14 +8,13 @@ from sqlalchemy import (
     DateTime,
     Index,
     JSON,
-    Numeric,
     String,
     Text as SQLText,
 )
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base
+from .base import Base, BigInt
 
 
 class User(Base):
@@ -37,13 +36,13 @@ class User(Base):
     moves: Mapped[int] = mapped_column(default=0)
     paw_coins: Mapped[int] = mapped_column(default=0)
     amount_expenses_paw_coins: Mapped[int] = mapped_column(default=0)
-    rub: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0)
+    rub: Mapped[int] = mapped_column(BigInt(), default=0)
     amount_expenses_rub: Mapped[int] = mapped_column(
-        Numeric(precision=65, scale=0), default=0
+        BigInt(), default=0
     )
-    usd: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0)
+    usd: Mapped[int] = mapped_column(BigInt(), default=0)
     amount_expenses_usd: Mapped[int] = mapped_column(
-        Numeric(precision=65, scale=0), default=0
+        BigInt(), default=0
     )
     info_about_items: Mapped[str] = mapped_column(SQLText, default="{}")
     current_unity: Mapped[str] = mapped_column(String(64), nullable=True)
@@ -52,7 +51,7 @@ class User(Base):
     bonus: Mapped[int] = mapped_column(default=1)
 
     # Optimized fields for high-performance background jobs
-    income_per_minute: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0, index=True)
+    income_per_minute: Mapped[int] = mapped_column(BigInt(), default=0, index=True)
     last_income_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -213,7 +212,7 @@ class UserAviaryState(Base):
     aviary_code_name: Mapped[str] = mapped_column(String(length=64), index=True)
     quantity: Mapped[int] = mapped_column(default=0)
     buy_count: Mapped[int] = mapped_column(default=0)
-    current_price: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0)
+    current_price: Mapped[int] = mapped_column(BigInt(), default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, index=True
     )
@@ -242,8 +241,8 @@ class Animal(Base):
     code_name: Mapped[str] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(length=64))
     description: Mapped[str] = mapped_column(String(length=4096))
-    price: Mapped[int] = mapped_column(Numeric(precision=65, scale=0))
-    income: Mapped[int] = mapped_column(Numeric(precision=65, scale=0))
+    price: Mapped[int] = mapped_column(BigInt())
+    income: Mapped[int] = mapped_column(BigInt())
 
 
 class Aviary(Base):
@@ -278,7 +277,7 @@ class TransferMoney(Base):
     id_transfer: Mapped[str] = mapped_column(String(length=10), index=True)
     idpk_user: Mapped[int] = mapped_column()
     currency: Mapped[str] = mapped_column(String(length=10))
-    one_piece_sum: Mapped[int] = mapped_column(Numeric(precision=65, scale=0))
+    one_piece_sum: Mapped[int] = mapped_column(BigInt())
     pieces: Mapped[int] = mapped_column()
     id_mess: Mapped[str] = mapped_column(String(length=80), nullable=True)
     source_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
@@ -303,7 +302,7 @@ class Game(Base):
     idpk_user: Mapped[int] = mapped_column()
     type_game: Mapped[str] = mapped_column(String(length=64))
     amount_gamers: Mapped[int] = mapped_column()
-    amount_award: Mapped[int] = mapped_column(Numeric(precision=65, scale=0))
+    amount_award: Mapped[int] = mapped_column(BigInt())
     currency_award: Mapped[str] = mapped_column(String(length=10))
     amount_moves: Mapped[int] = mapped_column(default=7)
     id_mess: Mapped[str] = mapped_column(String(length=64), nullable=True)
@@ -365,7 +364,7 @@ class Value(Base):
     name: Mapped[str] = mapped_column(
         String(length=100), index=True
     )  # Название значения
-    value_int: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0)  # Значение целое
+    value_int: Mapped[int] = mapped_column(BigInt(), default=0)  # Значение целое
     value_str: Mapped[str] = mapped_column(
         String(length=4096), default="не установлено"
     )  # Значение строка

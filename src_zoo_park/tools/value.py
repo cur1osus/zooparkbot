@@ -43,8 +43,6 @@ async def get_value(
             session.add(new_val)
             await session.flush()  # Use flush instead of commit to be part of caller's transaction
             value = 1
-        else:
-            value = int(value)
     elif value_type == "str":
         value = await session.scalar(
             select(Value.value_str).where(Value.name == value_name)

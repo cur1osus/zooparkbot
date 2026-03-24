@@ -1,6 +1,16 @@
-from sqlalchemy import Column, Integer
+from sqlalchemy import Column, Integer, Numeric
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
+
+
+class BigInt(TypeDecorator):
+    """Numeric(65,0) в БД, всегда int в Python."""
+    impl = Numeric(precision=65, scale=0)
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        return int(value) if value is not None else None
 
 
 class Base(DeclarativeBase, AsyncAttrs):
