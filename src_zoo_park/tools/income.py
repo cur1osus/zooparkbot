@@ -9,13 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import tools
 
 
-_BIGINT_MAX = 9223372036854775807
-
-
 async def sync_user_income(session: AsyncSession, user: User) -> int:
     """Recalculate and update the cached income_per_minute for a user."""
     income = await income_(session=session, user=user)
-    user.income_per_minute = min(int(income), _BIGINT_MAX)
+    user.income_per_minute = int(income)
     await session.flush()
     return int(income)
 

@@ -52,7 +52,7 @@ class User(Base):
     bonus: Mapped[int] = mapped_column(default=1)
 
     # Optimized fields for high-performance background jobs
-    income_per_minute: Mapped[int] = mapped_column(BigInteger, default=0, index=True)
+    income_per_minute: Mapped[int] = mapped_column(Numeric(precision=65, scale=0), default=0, index=True)
     last_income_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
