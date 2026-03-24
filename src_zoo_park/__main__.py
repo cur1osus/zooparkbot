@@ -1,6 +1,9 @@
 import asyncio
+import sys
 from datetime import datetime
 import traceback
+
+sys.set_int_max_str_digits(0)
 
 import tools
 from aiogram import Bot, Dispatcher
