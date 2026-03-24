@@ -54,6 +54,7 @@ async def _account_text(session: AsyncSession, user: User) -> str:
         usd=user.usd,
         pawc=user.paw_coins,
         income=await income_(session=session, user=user),
+        maintenance=int(user.maintenance_per_minute or 0),
     )
 
 
