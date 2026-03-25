@@ -561,7 +561,7 @@ def format_project_text(
 
     buff_desc_map = {
         "rare_chance": "🍀 +Шанс на редких животных",
-        "shop_discount": "🛍 Скидка на покупку животных",
+        "shop_discount": "🛍 Скидка -10% на покупку животных",
         "income_boost": "💰 +10% к доходу",
         "extra_seats": "🏠 +5% мест в вольере",
         "chest_luck": "🎁 Улучшенный дроп сундуков",
