@@ -27,13 +27,16 @@ async def sync_maintenance_cost(session: AsyncSession, user: User) -> int:
     """
     Recalculate and cache maintenance_per_minute.
 
-    Formula: rate = BASE_RATE + (total_animals * SCALE_PER_100 / 100)
+    Formula: rate = BASE_RATE + LOG_SCALE * log10(total_animals)
     capped at MAX_RATE. Maintenance = income * rate / 100.
 
+    Logarithmic scaling keeps the rate meaningful across the full range
+    from hundreds to quadrillions of animals.
+
     Config values (DB):
-      MAINTENANCE_BASE_RATE   — base % of income taken as maintenance (default 5)
-      MAINTENANCE_SCALE_PER_100 — extra % per 100 animals (default 5)
-      MAINTENANCE_MAX_RATE    — cap on the rate (default 45)
+      MAINTENANCE_BASE_RATE     — base % of income (default 5)
+      MAINTENANCE_LOG_SCALE     — stored as int×10, e.g. 25 → 2.5 per log10 step
+      MAINTENANCE_MAX_RATE      — cap on the rate (default 45)
     """
     total_animals = await get_user_total_animals(session=session, user=user)
     if total_animals == 0 or user.income_per_minute == 0:
@@ -42,10 +45,11 @@ async def sync_maintenance_cost(session: AsyncSession, user: User) -> int:
         return 0
 
     base_rate = await tools.get_value(session=session, value_name="MAINTENANCE_BASE_RATE")
-    scale = await tools.get_value(session=session, value_name="MAINTENANCE_SCALE_PER_100")
+    log_scale_x10 = await tools.get_value(session=session, value_name="MAINTENANCE_LOG_SCALE")
     max_rate = await tools.get_value(session=session, value_name="MAINTENANCE_MAX_RATE")
 
-    rate = base_rate + (total_animals * scale / 100)
+    log_scale = log_scale_x10 / 10
+    rate = base_rate + log_scale * math.log10(max(1, total_animals))
     rate = min(rate, max_rate)
 
     # megapark specialization: +15% maintenance
