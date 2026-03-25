@@ -435,6 +435,34 @@ async def settle_all_due_projects(session: AsyncSession) -> int:
     return count
 
 
+def _format_remaining(ends_at: str) -> str:
+    try:
+        end = datetime.fromisoformat(ends_at)
+        delta = end - datetime.now()
+        if delta.total_seconds() <= 0:
+            return "время вышло"
+        s = int(delta.total_seconds())
+        days, s = divmod(s, 86400)
+        hours, s = divmod(s, 3600)
+        minutes = s // 60
+        if days > 0:
+            return f"{days}д {hours}ч"
+        if hours > 0:
+            return f"{hours}ч {minutes}мин"
+        return f"{minutes}мин"
+    except Exception:
+        return "—"
+
+
+def _make_bar(ratio: float, length: int = 10) -> str:
+    filled = int(length * min(ratio, 1.0))
+    return "█" * filled + "░" * (length - filled)
+
+
+def _fmt_num(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
 def format_project_text(
     project: dict[str, Any], active_buff: dict[str, Any] | None = None
 ) -> str:
@@ -442,103 +470,100 @@ def format_project_text(
     tg = project.get("target", {})
     ratio = _calc_ratio(project)
     raw_status = str(project.get("status", "active"))
-    status_map = {
-        "active": "активен",
-        "completed": "завершён",
-        "expired": "истёк",
-    }
-    status = status_map.get(raw_status, raw_status)
     ends = project.get("ends_at", "-")
-    member_count = int(project.get("member_count", 1) or 1)
-    if member_count < 1:
-        member_count = 1
-    bar_length = 10
-    filled_length = int(bar_length * ratio)
-    bar = "█" * filled_length + "░" * (bar_length - filled_length)
+    level = int(project.get("level", 1))
+    name = project.get("name", "Проект")
 
-    rub_current = int(pr.get("rub", 0))
-    usd_current = int(pr.get("usd", 0))
+    status_map = {"active": ("🟢", "активен"), "completed": ("✅", "завершён"), "expired": ("🔴", "истёк")}
+    status_emoji, status_label = status_map.get(raw_status, ("⚪", raw_status))
+
+    buff_desc_map = {
+        "rare_chance": "🍀 +Шанс на редких животных",
+        "shop_discount": "🛍 Скидка на покупку животных",
+        "income_boost": "💰 +10% к доходу",
+        "extra_seats": "🏠 +Места в вольере",
+        "chest_luck": "🎁 Улучшенный дроп сундуков",
+    }
+
+    rub_current = min(int(pr.get("rub", 0)), int(tg.get("rub", 0)))
+    usd_current = min(int(pr.get("usd", 0)), int(tg.get("usd", 0)))
     rub_target = int(tg.get("rub", 0))
     usd_target = int(tg.get("usd", 0))
+    rub_ratio = rub_current / rub_target if rub_target > 0 else 0
+    usd_ratio = usd_current / usd_target if usd_target > 0 else 0
 
-    rub_pr = f"{min(rub_current, rub_target):,}".replace(",", " ")
-    rub_tg = f"{rub_target:,}".replace(",", " ")
-    usd_pr = f"{min(usd_current, usd_target):,}".replace(",", " ")
-    usd_tg = f"{usd_target:,}".replace(",", " ")
+    lines = [
+        f"🏗 <b>{name}  ·  Уровень {level}</b>",
+        f"{status_emoji} {status_label}  ·  ⏳ {_format_remaining(ends)}",
+    ]
 
-    # Calculate top contributors
+    # Active buff block
+    if active_buff:
+        btype = active_buff.get("type", "")
+        ends_raw = active_buff.get("ends_at", "")
+        lines += [
+            "",
+            f"✨ <b>Бафф клана активен:</b>",
+            f"└ {buff_desc_map.get(btype, btype)}  · до {format_iso_datetime_short(ends_raw)}",
+        ]
+
+    # Progress section
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━",
+        f"💰 <b>RUB</b>  <code>{_fmt_num(rub_current)} / {_fmt_num(rub_target)}</code>",
+        f"[{_make_bar(rub_ratio)}] {rub_ratio * 100:.0f}%",
+        f"💵 <b>USD</b>  <code>{_fmt_num(usd_current)} / {_fmt_num(usd_target)}</code>",
+        f"[{_make_bar(usd_ratio)}] {usd_ratio * 100:.0f}%",
+        "",
+        f"Общий прогресс: <b>{ratio * 100:.1f}%</b>",
+    ]
+
+    # Leaderboard
     contributors = project.get("contributors", {}) or {}
     leaderboard = []
     for uid, c_data in contributors.items():
         w = int((c_data or {}).get("rub", 0)) + int((c_data or {}).get("usd", 0)) * 10
         if w > 0:
-            name = str(c_data.get("name") or f"Игрок {uid}")
-            leaderboard.append(
-                {
-                    "name": name,
-                    "weight": w,
-                    "rub": c_data.get("rub", 0),
-                    "usd": c_data.get("usd", 0),
-                }
-            )
-
+            leaderboard.append({
+                "name": str(c_data.get("name") or f"Игрок {uid}"),
+                "weight": w,
+                "rub": int(c_data.get("rub", 0)),
+                "usd": int(c_data.get("usd", 0)),
+            })
     leaderboard.sort(key=lambda x: x["weight"], reverse=True)
     top_3 = leaderboard[:3]
 
-    board_text = ""
     if top_3:
         medals = ["🥇", "🥈", "🥉"]
-        leaders = []
+        lines += ["", "━━━━━━━━━━━━━━", "🏆 <b>Лидеры</b>"]
         for idx, entry in enumerate(top_3):
-            leaders.append(f"{medals[idx]} {entry['name']}")
-        board_text = "\n🏆 Лидеры: " + ", ".join(leaders)
+            parts = [f"{_fmt_num(entry['rub'])}₽"]
+            if entry["usd"] > 0:
+                parts.append(f"{_fmt_num(entry['usd'])}$")
+            lines.append(f"{medals[idx]} {entry['name']}  ·  {' + '.join(parts)}")
 
-    # Display prospective project buff
+    # Rewards
     buff_type = project.get("buff", "")
-    buff_desc_map = {
-        "rare_chance": "🍀 +Шанс на редких животных",
-        "shop_discount": "🛍 Скидка на покупку животных",
-        "income_boost": "💰 +10% к доходу (бафф)",
-        "extra_seats": "🏠 +Места в вольере",
-        "chest_luck": "🎁 Улучшенный дроп сундуков",
-    }
-    buff_str = ""
-    active_buff_str = ""
-    if active_buff:
-        btype = active_buff.get("type", "")
-        bname = active_buff.get("name", "Проект")
-        ends_raw = active_buff.get("ends_at", "")
-        active_buff_str = (
-            f"✨ <b>Действующий бафф клана:</b> {buff_desc_map.get(btype, btype)} "
-            f"(от '{bname}') до {format_iso_datetime_short(ends_raw)}\n\n"
-        )
-
     reward_preview = get_project_reward_preview(project)
     success_pool = reward_preview["success"]
-    current_fail_pool = reward_preview["current"]
-    reward_success_text = f"{success_pool['common']} обычн. / {success_pool['rare']} редк. / {success_pool['epic']} эпик"
-    reward_current_text = f"{current_fail_pool['common']} обычн. / {current_fail_pool['rare']} редк. / {current_fail_pool['epic']} эпик"
-    reward_lines = [
-        "🎁 <b>Награда:</b>",
-        f"За успех: {reward_success_text}",
-        f"Бафф клана: {buff_desc_map.get(buff_type, buff_type)}",
-        "MVP: +1 эпич. сундук",
+    current_pool = reward_preview["current"]
+
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━",
+        "🎁 <b>Награда за успех</b>",
+        f"🟤 ×{success_pool['common']}  🔵 ×{success_pool['rare']}  🟣 ×{success_pool['epic']}",
+        f"🌟 MVP: +1 🟣 эпический сундук",
+        f"⚡ Бафф: {buff_desc_map.get(buff_type, buff_type)}",
     ]
     if raw_status == "active":
-        reward_lines.append(f"Если время выйдет сейчас: {reward_current_text}")
-    reward_text = "\n".join(reward_lines)
+        lines += [
+            "",
+            f"<i>Сейчас: 🟤×{current_pool['common']}  🔵×{current_pool['rare']}  🟣×{current_pool['epic']}</i>",
+        ]
 
-    return (
-        f"🏗 Клан-проект: {project.get('name', 'Заповедник')} L{int(project.get('level', 1))}\n"
-        f"До: {format_iso_datetime_short(ends)} | {status}\n\n"
-        f"{active_buff_str}"
-        f"{buff_str}"
-        f"Нужно закрыть обе цели: RUB и USD\n"
-        f"RUB: {rub_pr} / {rub_tg}\n"
-        f"USD: {usd_pr} / {usd_tg}\n"
-        f"Прогресс: [{bar}] {ratio * 100:.1f}%{board_text}\n\n"
-        f"{reward_text}"
-    )
+    return "\n".join(lines)
 
 
 async def get_active_clan_buff(

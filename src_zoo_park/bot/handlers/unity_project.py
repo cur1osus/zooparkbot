@@ -36,19 +36,19 @@ def _kb(project: dict):
     usd_step = min(10_000, usd_left)
 
     if rub_step > 0:
-        b.button(text=f"💸 +{rub_step:,} RUB".replace(",", " "), callback_data=f"clprj:rub:{rub_step}")
+        b.button(text=f"💰 +{rub_step:,} ₽".replace(",", " "), callback_data=f"clprj:rub:{rub_step}")
     else:
-        b.button(text="✅ RUB цель закрыта", callback_data="clprj:noop:rub")
+        b.button(text="✅ RUB закрыт", callback_data="clprj:noop:rub")
 
     if usd_step > 0:
-        b.button(text=f"💵 +{usd_step:,} USD".replace(",", " "), callback_data=f"clprj:usd:{usd_step}")
+        b.button(text=f"💵 +{usd_step:,} $".replace(",", " "), callback_data=f"clprj:usd:{usd_step}")
     else:
-        b.button(text="✅ USD цель закрыта", callback_data="clprj:noop:usd")
+        b.button(text="✅ USD закрыт", callback_data="clprj:noop:usd")
 
     if rub_left > 0:
-        b.button(text="Ввести RUB ⌨️", callback_data="clprj:custom:rub")
+        b.button(text="✏️ Своя сумма ₽", callback_data="clprj:custom:rub")
     if usd_left > 0:
-        b.button(text="Ввести USD ⌨️", callback_data="clprj:custom:usd")
+        b.button(text="✏️ Своя сумма $", callback_data="clprj:custom:usd")
 
     b.button(text="🔄 Обновить", callback_data="clprj:refresh")
 
