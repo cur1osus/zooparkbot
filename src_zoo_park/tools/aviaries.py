@@ -32,7 +32,7 @@ async def get_remain_seats(session: AsyncSession, user: User) -> int:
     aviary_map = await get_user_aviaries_map(session=session, user=user)
     all_seats = await get_total_number_seats(session=session, aviaries=aviary_map)
 
-    # Check for clan project buff "Расширение вольеров" (+10 bonus seats)
+    # Check for clan project buff "Расширение вольеров" (+5% bonus seats)
     if user.current_unity:
         from tools.unity import get_unity_idpk
         from tools.unity_projects import get_active_clan_buff
@@ -43,7 +43,7 @@ async def get_remain_seats(session: AsyncSession, user: User) -> int:
                 session=session, unity_idpk=unity_idpk
             )
             if active_buff and active_buff.get("type") == "extra_seats":
-                all_seats += 10
+                all_seats += max(1, int(all_seats * 0.05))
 
     amount_animals = await tools.get_total_number_animals(self=user, session=session)
     return all_seats - amount_animals

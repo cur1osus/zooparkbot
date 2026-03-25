@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from text_utils import format_iso_datetime_short
 
 from db import Animal, Unity, User, Value
-from db.structured_state import count_unity_members
+from db.structured_state import count_unity_members, list_unity_member_ids
 from init_bot import bot
 from tools.animals import add_animal
 from tools.aviaries import get_remain_seats
@@ -17,6 +17,8 @@ from tools.income import income_
 
 PROJECT_KEY_PREFIX = "UNITY_PROJECT_"
 CHEST_KEY_PREFIX = "CLAN_CHESTS_"
+STREAK_KEY_PREFIX = "CLAN_STREAK_"
+STATS_KEY_PREFIX = "USER_PROJECT_STATS_"
 PROJECT_DURATION_HOURS = 72
 
 
@@ -228,6 +230,59 @@ async def _add_chests(
     row.value_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+async def _get_streak(session: AsyncSession, unity_idpk: int) -> int:
+    row = await _get_or_create_value(session, f"{STREAK_KEY_PREFIX}{unity_idpk}")
+    return int(row.value_int or 0)
+
+
+async def _set_streak(session: AsyncSession, unity_idpk: int, value: int) -> None:
+    row = await _get_or_create_value(session, f"{STREAK_KEY_PREFIX}{unity_idpk}")
+    row.value_int = value
+
+
+async def _update_user_stats(session: AsyncSession, user_idpk: int, won: bool) -> None:
+    row = await _get_or_create_value(session, f"{STATS_KEY_PREFIX}{user_idpk}")
+    try:
+        stats = json.loads(row.value_str or "{}")
+    except Exception:
+        stats = {}
+    if not isinstance(stats, dict):
+        stats = {}
+    stats["participated"] = int(stats.get("participated", 0)) + 1
+    if won:
+        stats["won"] = int(stats.get("won", 0)) + 1
+    row.value_str = json.dumps(stats, ensure_ascii=False, separators=(",", ":"))
+
+
+async def get_user_project_stats(session: AsyncSession, user_idpk: int) -> dict:
+    row = await _get_or_create_value(session, f"{STATS_KEY_PREFIX}{user_idpk}")
+    try:
+        stats = json.loads(row.value_str or "{}")
+        return stats if isinstance(stats, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _notify_milestone(
+    session: AsyncSession, unity: Unity, project: dict, milestone: int
+) -> None:
+    """Send milestone notification (50% or 75%) to all clan members."""
+    name = project.get("name", "Проект")
+    member_idpks = await list_unity_member_ids(session=session, unity=unity)
+    users = await session.scalars(select(User).where(User.idpk.in_(member_idpks)))
+    for u in users.all():
+        try:
+            await bot.send_message(
+                chat_id=u.id_user,
+                text=(
+                    f"🏗 <b>{name}</b> — {milestone}% выполнено!\n"
+                    f"Навалимся вместе — до победы осталось совсем чуть-чуть 💪"
+                ),
+            )
+        except Exception:
+            pass
+
+
 async def settle_project_if_due(
     session: AsyncSession, unity: Unity, project: dict[str, Any], force: bool = False
 ) -> dict[str, Any] | None:
@@ -251,6 +306,12 @@ async def settle_project_if_due(
 
     project["status"] = "completed" if completed else "expired"
     project["completed_at"] = now.isoformat()
+
+    # Streak: increment on success, reset on failure
+    old_streak = await _get_streak(session=session, unity_idpk=unity.idpk)
+    new_streak = (old_streak + 1) if completed else 0
+    await _set_streak(session=session, unity_idpk=unity.idpk, value=new_streak)
+    streak_bonus = completed and new_streak > 0 and new_streak % 3 == 0
 
     if total_weight > 0 and not project.get("rewarded"):
         pool = _reward_pool(
@@ -277,16 +338,26 @@ async def settle_project_if_due(
                     session=session, user_idpk=uid, chests={chest_kind: cnt}
                 )
 
-        # Apply global clan buff
+        # Apply global clan buff (with fast-completion bonus hours)
         if completed:
             buff_type = project.get("buff", "income_boost")
             buff_row = await _get_or_create_value(session, f"CLAN_BUFF_{unity.idpk}")
+            base_hours = 72
+            if now < end:
+                days_remaining = (end - now).total_seconds() / 86400
+                base_hours += min(48, int(days_remaining) * 24)
             buff_payload = {
                 "type": buff_type,
-                "ends_at": (now + timedelta(hours=72)).isoformat(),
+                "ends_at": (now + timedelta(hours=base_hours)).isoformat(),
                 "name": project.get("name", "Проект"),
             }
             buff_row.value_str = json.dumps(buff_payload, ensure_ascii=False)
+
+        # Streak bonus: +1 rare chest to all clan members every 3 wins
+        if streak_bonus:
+            member_idpks = await list_unity_member_ids(session=session, unity=unity)
+            for mid in member_idpks:
+                await _add_chests(session=session, user_idpk=mid, chests={"rare": 1})
 
         # Calculate MVP (Top 1 contributor) if completed
         mvp_uid = None
@@ -294,12 +365,13 @@ async def settle_project_if_due(
             mvp_uid = max(totals.items(), key=lambda item: item[1])[0]
             await _add_chests(session=session, user_idpk=mvp_uid, chests={"epic": 1})
 
-        # notify contributors
+        # Update history and notify contributors
         users = await session.scalars(
             select(User).where(User.idpk.in_(list(totals.keys())))
         )
         users_by_id = {u.idpk: u for u in users.all()}
         for uid in totals.keys():
+            await _update_user_stats(session=session, user_idpk=uid, won=completed)
             u = users_by_id.get(uid)
             if not u:
                 continue
@@ -309,20 +381,18 @@ async def settle_project_if_due(
             except Exception:
                 chest_payload = {}
 
-            mvp_text = (
-                "\n🌟 Ты стал MVP проекта и получил +1 Эпический Сундук!"
-                if uid == mvp_uid
-                else ""
-            )
-
-            msg = (
-                f"🏗 Клан-проект {project.get('name', 'Проект')} {('завершён' if completed else 'не закрыт за 3 дня')}\n"
-                f"Твой вклад учтён. Текущие сундуки: "
-                f"обычн {int(chest_payload.get('common', 0))}, редк {int(chest_payload.get('rare', 0))}, эпик {int(chest_payload.get('epic', 0))}"
-                f"{mvp_text}"
-            )
+            lines = [
+                f"🏗 <b>{project.get('name', 'Проект')}</b> — {'✅ завершён!' if completed else '❌ не закрыт за 3 дня'}",
+                f"🟤 ×{int(chest_payload.get('common', 0))}  🔵 ×{int(chest_payload.get('rare', 0))}  🟣 ×{int(chest_payload.get('epic', 0))}",
+            ]
+            if uid == mvp_uid:
+                lines.append("🌟 Ты MVP проекта — +1 🟣 эпический сундук!")
+            if streak_bonus:
+                lines.append(f"🔥 Стрик ×{new_streak} — +1 🔵 редкий сундук всем участникам клана!")
+            elif completed:
+                lines.append(f"🔥 Стрик клана: {new_streak}")
             try:
-                await bot.send_message(chat_id=u.id_user, text=msg)
+                await bot.send_message(chat_id=u.id_user, text="\n".join(lines))
             except Exception:
                 pass
 
@@ -402,6 +472,15 @@ async def contribute_to_project(
     pr["rub"] = int(pr.get("rub", 0)) + rub_progress_add
     pr["usd"] = int(pr.get("usd", 0)) + usd_progress_add
 
+    # Milestone notifications (50% / 75%)
+    old_ratio = _calc_ratio({"progress": {"rub": int(pr.get("rub", 0)) - rub_progress_add, "usd": int(pr.get("usd", 0)) - usd_progress_add}, "target": tg})
+    new_ratio = _calc_ratio(project)
+    for threshold in (50, 75):
+        flag = f"notified_{threshold}"
+        if not project.get(flag) and old_ratio < threshold / 100 <= new_ratio:
+            project[flag] = True
+            await _notify_milestone(session=session, unity=unity, project=project, milestone=threshold)
+
     await save_project(session=session, unity_idpk=unity.idpk, payload=project)
     await settle_project_if_due(session=session, unity=unity, project=project)
 
@@ -464,7 +543,10 @@ def _fmt_num(n: int) -> str:
 
 
 def format_project_text(
-    project: dict[str, Any], active_buff: dict[str, Any] | None = None
+    project: dict[str, Any],
+    active_buff: dict[str, Any] | None = None,
+    user_idpk: int | None = None,
+    user_stats: dict | None = None,
 ) -> str:
     pr = project.get("progress", {})
     tg = project.get("target", {})
@@ -481,7 +563,7 @@ def format_project_text(
         "rare_chance": "🍀 +Шанс на редких животных",
         "shop_discount": "🛍 Скидка на покупку животных",
         "income_boost": "💰 +10% к доходу",
-        "extra_seats": "🏠 +Места в вольере",
+        "extra_seats": "🏠 +5% мест в вольере",
         "chest_luck": "🎁 Улучшенный дроп сундуков",
     }
 
@@ -562,6 +644,24 @@ def format_project_text(
             "",
             f"<i>Сейчас: 🟤×{current_pool['common']}  🔵×{current_pool['rare']}  🟣×{current_pool['epic']}</i>",
         ]
+
+    # Personal contribution
+    if user_idpk is not None:
+        contrib = contributors.get(str(user_idpk))
+        if contrib:
+            my_rub = int(contrib.get("rub", 0))
+            my_usd = int(contrib.get("usd", 0))
+            parts = [f"{_fmt_num(my_rub)}₽"]
+            if my_usd > 0:
+                parts.append(f"{_fmt_num(my_usd)}$")
+            lines += ["", f"👤 Твой вклад: {' + '.join(parts)}"]
+
+    # Personal history
+    if user_stats:
+        participated = int(user_stats.get("participated", 0))
+        won = int(user_stats.get("won", 0))
+        if participated > 0:
+            lines.append(f"📊 Статистика: {participated} проектов, {won} побед")
 
     return "\n".join(lines)
 

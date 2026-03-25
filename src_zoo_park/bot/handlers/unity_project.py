@@ -12,6 +12,7 @@ from tools.unity_projects import (
     format_project_text,
     get_or_create_project,
     get_active_clan_buff,
+    get_user_project_stats,
 )
 
 router = Router()
@@ -32,16 +33,29 @@ def _kb(project: dict):
     b = InlineKeyboardBuilder()
 
     rub_left, usd_left = _remaining_by_currency(project)
-    rub_step = min(100_000, rub_left)
-    usd_step = min(10_000, usd_left)
 
-    if rub_step > 0:
-        b.button(text=f"💰 +{rub_step:,} ₽".replace(",", " "), callback_data=f"clprj:rub:{rub_step}")
+    def _fmt(n: int) -> str:
+        return f"{n:,}".replace(",", " ")
+
+    # RUB buttons
+    if rub_left > 0:
+        rub_10 = max(1, rub_left // 10)
+        rub_50 = max(1, rub_left // 2)
+        if rub_10 != rub_50:
+            b.button(text=f"💰 10% ({_fmt(rub_10)}₽)", callback_data=f"clprj:rub:{rub_10}")
+            b.button(text=f"💰 50% ({_fmt(rub_50)}₽)", callback_data=f"clprj:rub:{rub_50}")
+        b.button(text=f"💰 Закрыть RUB ({_fmt(rub_left)}₽)", callback_data=f"clprj:rub:{rub_left}")
     else:
         b.button(text="✅ RUB закрыт", callback_data="clprj:noop:rub")
 
-    if usd_step > 0:
-        b.button(text=f"💵 +{usd_step:,} $".replace(",", " "), callback_data=f"clprj:usd:{usd_step}")
+    # USD buttons
+    if usd_left > 0:
+        usd_10 = max(1, usd_left // 10)
+        usd_50 = max(1, usd_left // 2)
+        if usd_10 != usd_50:
+            b.button(text=f"💵 10% ({_fmt(usd_10)}$)", callback_data=f"clprj:usd:{usd_10}")
+            b.button(text=f"💵 50% ({_fmt(usd_50)}$)", callback_data=f"clprj:usd:{usd_50}")
+        b.button(text=f"💵 Закрыть USD ({_fmt(usd_left)}$)", callback_data=f"clprj:usd:{usd_left}")
     else:
         b.button(text="✅ USD закрыт", callback_data="clprj:noop:usd")
 
@@ -49,16 +63,12 @@ def _kb(project: dict):
         b.button(text="✏️ Своя сумма ₽", callback_data="clprj:custom:rub")
     if usd_left > 0:
         b.button(text="✏️ Своя сумма $", callback_data="clprj:custom:usd")
-
     b.button(text="🔄 Обновить", callback_data="clprj:refresh")
 
+    rub_btn_count = 3 if (rub_left > 0 and rub_left // 10 != rub_left // 2) else 1
+    usd_btn_count = 3 if (usd_left > 0 and usd_left // 10 != usd_left // 2) else 1
     custom_count = int(rub_left > 0) + int(usd_left > 0)
-    if custom_count == 2:
-        b.adjust(2, 2, 1)
-    elif custom_count == 1:
-        b.adjust(2, 1, 1)
-    else:
-        b.adjust(2, 1)
+    b.adjust(rub_btn_count, usd_btn_count, custom_count, 1)
 
     return b.as_markup()
 
@@ -75,8 +85,12 @@ async def open_project(message: Message, session: AsyncSession, user: User):
         return
     project = await get_or_create_project(session=session, unity=unity)
     active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
+    user_stats = await get_user_project_stats(session=session, user_idpk=user.idpk)
     await session.commit()
-    await message.answer(format_project_text(project, active_buff), reply_markup=_kb(project))
+    await message.answer(
+        format_project_text(project, active_buff, user_idpk=user.idpk, user_stats=user_stats),
+        reply_markup=_kb(project),
+    )
 
 
 @router.callback_query(StateFilter(UserState.unity_menu), F.data.startswith("clprj:"))
@@ -107,8 +121,12 @@ async def on_project_cb(query: CallbackQuery, session: AsyncSession, user: User,
     if action == "refresh":
         project = await get_or_create_project(session=session, unity=unity)
         active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
+        user_stats = await get_user_project_stats(session=session, user_idpk=user.idpk)
         await session.commit()
-        await query.message.edit_text(format_project_text(project, active_buff), reply_markup=_kb(project))
+        await query.message.edit_text(
+            format_project_text(project, active_buff, user_idpk=user.idpk, user_stats=user_stats),
+            reply_markup=_kb(project),
+        )
         await query.answer("Обновлено")
         return
 
@@ -139,7 +157,11 @@ async def on_project_cb(query: CallbackQuery, session: AsyncSession, user: User,
         return
 
     active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
-    await query.message.edit_text(format_project_text(project, active_buff), reply_markup=_kb(project))
+    user_stats = await get_user_project_stats(session=session, user_idpk=user.idpk)
+    await query.message.edit_text(
+        format_project_text(project, active_buff, user_idpk=user.idpk, user_stats=user_stats),
+        reply_markup=_kb(project),
+    )
     await query.answer(msg)
 
 
@@ -180,7 +202,11 @@ async def _handle_custom_contribution(message: Message, session: AsyncSession, u
     await message.answer(msg)
     if ok:
         active_buff = await get_active_clan_buff(session=session, unity_idpk=unity.idpk)
-        await message.answer(format_project_text(project, active_buff), reply_markup=_kb(project))
+        user_stats = await get_user_project_stats(session=session, user_idpk=user.idpk)
+        await message.answer(
+            format_project_text(project, active_buff, user_idpk=user.idpk, user_stats=user_stats),
+            reply_markup=_kb(project),
+        )
         await state.set_state(UserState.unity_menu)
 
 
