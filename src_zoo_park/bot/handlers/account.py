@@ -47,12 +47,23 @@ from tools.unity_projects import get_user_chests, open_user_chests, _income_scal
 
 
 async def _account_text(session: AsyncSession, user: User) -> str:
+    import math
     animals = await get_user_animals_map(session=session, user=user)
     unique_species = len(animals)
     bonus_per_species = await get_value(
         session=session, value_name="DIVERSITY_BONUS_PER_SPECIES"
     )
-    diversity_bonus_pct = unique_species * bonus_per_species
+    if animals:
+        total_animals = sum(animals.values())
+        shannon_h = -sum(
+            (q / total_animals) * math.log(q / total_animals)
+            for q in animals.values()
+            if q > 0
+        )
+        n_eff = math.exp(shannon_h)
+        diversity_bonus_pct = round(n_eff * bonus_per_species, 1)
+    else:
+        diversity_bonus_pct = 0
     return await get_text_message(
         "account_info",
         nn=user.nickname,
