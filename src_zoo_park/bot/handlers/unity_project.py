@@ -37,38 +37,36 @@ def _kb(project: dict):
     def _fmt(n: int) -> str:
         return f"{n:,}".replace(",", " ")
 
-    # RUB buttons
+    # RUB row: 3 short buttons on one line
     if rub_left > 0:
         rub_10 = max(1, rub_left // 10)
         rub_50 = max(1, rub_left // 2)
-        if rub_10 != rub_50:
-            b.button(text=f"💰 10% ({_fmt(rub_10)}₽)", callback_data=f"clprj:rub:{rub_10}")
-            b.button(text=f"💰 50% ({_fmt(rub_50)}₽)", callback_data=f"clprj:rub:{rub_50}")
-        b.button(text=f"💰 Закрыть RUB ({_fmt(rub_left)}₽)", callback_data=f"clprj:rub:{rub_left}")
+        b.button(text="💰 10%", callback_data=f"clprj:rub:{rub_10}")
+        b.button(text="💰 50%", callback_data=f"clprj:rub:{rub_50}")
+        b.button(text="💰 100%", callback_data=f"clprj:rub:{rub_left}")
     else:
         b.button(text="✅ RUB закрыт", callback_data="clprj:noop:rub")
 
-    # USD buttons
+    # USD row: 3 short buttons on one line
     if usd_left > 0:
         usd_10 = max(1, usd_left // 10)
         usd_50 = max(1, usd_left // 2)
-        if usd_10 != usd_50:
-            b.button(text=f"💵 10% ({_fmt(usd_10)}$)", callback_data=f"clprj:usd:{usd_10}")
-            b.button(text=f"💵 50% ({_fmt(usd_50)}$)", callback_data=f"clprj:usd:{usd_50}")
-        b.button(text=f"💵 Закрыть USD ({_fmt(usd_left)}$)", callback_data=f"clprj:usd:{usd_left}")
+        b.button(text="💵 10%", callback_data=f"clprj:usd:{usd_10}")
+        b.button(text="💵 50%", callback_data=f"clprj:usd:{usd_50}")
+        b.button(text="💵 100%", callback_data=f"clprj:usd:{usd_left}")
     else:
         b.button(text="✅ USD закрыт", callback_data="clprj:noop:usd")
 
     if rub_left > 0:
-        b.button(text="✏️ Своя сумма ₽", callback_data="clprj:custom:rub")
+        b.button(text="✏️ Своя ₽", callback_data="clprj:custom:rub")
     if usd_left > 0:
-        b.button(text="✏️ Своя сумма $", callback_data="clprj:custom:usd")
+        b.button(text="✏️ Своя $", callback_data="clprj:custom:usd")
     b.button(text="🔄 Обновить", callback_data="clprj:refresh")
 
-    rub_btn_count = 3 if (rub_left > 0 and rub_left // 10 != rub_left // 2) else 1
-    usd_btn_count = 3 if (usd_left > 0 and usd_left // 10 != usd_left // 2) else 1
+    rub_row = 3 if rub_left > 0 else 1
+    usd_row = 3 if usd_left > 0 else 1
     custom_count = int(rub_left > 0) + int(usd_left > 0)
-    b.adjust(rub_btn_count, usd_btn_count, custom_count, 1)
+    b.adjust(rub_row, usd_row, custom_count, 1)
 
     return b.as_markup()
 
