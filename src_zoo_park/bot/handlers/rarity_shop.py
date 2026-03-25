@@ -44,6 +44,7 @@ from tools import (
     get_value_prop_from_iai,
     magic_count_animal_for_kb,
 )
+from tools.unity_projects import get_active_clan_buff
 
 flags = {"throttling_key": "default"}
 router = Router()
@@ -91,6 +92,50 @@ async def get_rarity_shop_caption(
         info_about_items=user.info_about_items,
     )
 
+    # --- Price discounts ---
+    base_price = int(animal.price)
+
+    item_sale_pct = int(get_value_prop_from_iai(
+        info_about_items=user.info_about_items,
+        name_prop=f"{animal.code_name}:animal_sale",
+    ) or 0)
+
+    unity_discount_pct = 0
+    clan_discount = False
+    if unity_idpk:
+        from db import Unity
+        unity_obj = await session.get(Unity, unity_idpk)
+        if unity_obj and unity_obj.level == 2:
+            unity_discount_pct = int(await get_value(session=session, value_name="BONUS_DISCOUNT_FOR_ANIMAL_2ND_LVL"))
+        elif unity_obj and unity_obj.level == 3:
+            unity_discount_pct = int(await get_value(session=session, value_name="BONUS_DISCOUNT_FOR_ANIMAL_3RD_LVL"))
+        active_buff = await get_active_clan_buff(session=session, unity_idpk=unity_idpk)
+        if active_buff and active_buff.get("type") == "shop_discount":
+            clan_discount = True
+
+    # Quantity markup
+    _price_milestones = [10**i for i in range(1, 19)]
+    quantity_markup_n = sum(1 for m in _price_milestones if quantity_animals >= m)
+    scale_pct = int(await get_value(session=session, value_name="ANIMAL_PRICE_SCALE_PER_10")) if quantity_markup_n else 0
+    quantity_markup_pct = quantity_markup_n * scale_pct
+
+    discounts = []
+    if item_sale_pct:
+        discounts.append(f"🎒 Предметы: -{item_sale_pct}%")
+    if unity_discount_pct:
+        discounts.append(f"🏰 Клан (ур.): -{unity_discount_pct}%")
+    if clan_discount:
+        discounts.append("🛍 Бафф клана: -10%")
+    if quantity_markup_pct:
+        discounts.append(f"📦 Наценка за кол-во: +{quantity_markup_pct}%")
+
+    has_discount = bool(item_sale_pct or unity_discount_pct or clan_discount)
+    price_str = formatter.format_large_number(animal_price)
+    if has_discount or quantity_markup_pct:
+        price_str += f" (база: {formatter.format_large_number(base_price)}$)"
+    discounts_text = "\n".join(discounts) if discounts else ""
+
+    # --- Income bonuses ---
     bonuses = []
     if item_pct:
         bonuses.append(f"🎒 Предметы: +{item_pct}%")
@@ -103,7 +148,8 @@ async def get_rarity_shop_caption(
     return await get_text_message(
         "choice_quantity_rarity_shop_menu",
         name_=animal.name,
-        price=formatter.format_large_number(animal_price),
+        price=price_str,
+        discounts=discounts_text,
         base_income=formatter.format_large_number(base_income),
         income=formatter.format_large_number(income),
         bonuses=bonuses_text,
