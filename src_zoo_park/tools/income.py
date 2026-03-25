@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import tools
 
-# Milestone thresholds: owning this many of one species unlocks a bonus
-_MILESTONES = [10, 25, 50, 100, 200, 500]
+# Milestone thresholds: powers of 10 — each gives +MILESTONE_BONUS_PERCENT%
+_MILESTONES = [10**i for i in range(1, 19)]
 
 
 async def sync_user_income(session: AsyncSession, user: User) -> int:
