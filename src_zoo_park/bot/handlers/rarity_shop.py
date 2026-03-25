@@ -68,11 +68,14 @@ async def get_rarity_shop_caption(
     quantity_animals = (await get_dict_animals(user, session=session)).get(
         animal.code_name, 0
     )
+    milestones = [10**i for i in range(1, 19)]
+    milestone_pct = sum(1 for m in milestones if quantity_animals >= m)
     return await get_text_message(
         "choice_quantity_rarity_shop_menu",
         name_=animal.name,
         price=formatter.format_large_number(animal_price),
         income=formatter.format_large_number(income),
+        milestone_pct=milestone_pct,
         usd=formatter.format_large_number(user.usd),
         quantity_animals=quantity_animals,
     )
