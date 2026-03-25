@@ -64,14 +64,20 @@ async def _account_text(session: AsyncSession, user: User) -> str:
         diversity_bonus_pct = round(n_eff * bonus_per_species, 1)
     else:
         diversity_bonus_pct = 0
+    income = await income_(session=session, user=user)
+    maintenance = int(user.maintenance_per_minute or 0)
+    net_income = income - maintenance
+    maintenance_pct = round(maintenance / income * 100, 1) if income > 0 else 0
     return await get_text_message(
         "account_info",
         nn=user.nickname,
         rub=user.rub,
         usd=user.usd,
         pawc=user.paw_coins,
-        income=await income_(session=session, user=user),
-        maintenance=int(user.maintenance_per_minute or 0),
+        income=income,
+        maintenance=maintenance,
+        maintenance_pct=maintenance_pct,
+        net_income=net_income,
         diversity=f"{unique_species} видов (+{diversity_bonus_pct}%)",
     )
 
