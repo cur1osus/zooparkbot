@@ -583,11 +583,12 @@ async def open_chest_do(
 
 # ─── Vet section ──────────────────────────────────────────────────────────────
 
-def _vet_kb(sick_events: list):
+def _vet_kb(sick_events: list, names_map: dict[str, str]):
     b = InlineKeyboardBuilder()
     for event in sick_events:
+        name = names_map.get(event.animal_code_name, event.animal_code_name)
         b.button(
-            text=f"💊 Лечить {event.animal_code_name} — {formatter.format_large_number(int(event.cure_cost))}₽",
+            text=f"💊 Лечить {name} — {formatter.format_large_number(int(event.cure_cost))}₽",
             callback_data=f"cure_animal:{event.idpk}",
         )
     b.button(text="⬅️ Назад", callback_data="open_chests_back")
@@ -595,7 +596,7 @@ def _vet_kb(sick_events: list):
     return b.as_markup()
 
 
-def _vet_text(sick_events: list, maintenance: int) -> str:
+def _vet_text(sick_events: list, maintenance: int, names_map: dict[str, str]) -> str:
     lines = [
         "🏥 Ветеринар\n",
         f"💸 Расходы на содержание: {formatter.format_large_number(maintenance)}₽/мин\n",
@@ -605,6 +606,7 @@ def _vet_text(sick_events: list, maintenance: int) -> str:
     else:
         lines.append("🤒 Больные животные (доход -50% до лечения):\n")
         for e in sick_events:
+            name = names_map.get(e.animal_code_name, e.animal_code_name)
             now = datetime.now()
             if e.deadline > now:
                 remaining = int((e.deadline - now).total_seconds() / 60)
@@ -612,7 +614,7 @@ def _vet_text(sick_events: list, maintenance: int) -> str:
             else:
                 status = "❗ штраф активен"
             lines.append(
-                f"• {e.animal_code_name} — {formatter.format_large_number(int(e.cure_cost))}₽ ({status})"
+                f"• {name} — {formatter.format_large_number(int(e.cure_cost))}₽ ({status})"
             )
     return "\n".join(lines)
 
@@ -633,10 +635,16 @@ async def account_vet(
         )
     ).all()
 
+    codes = [e.animal_code_name for e in sick_events]
+    animals_rows = (
+        await session.scalars(select(Animal).where(Animal.code_name.in_(codes)))
+    ).all()
+    names_map = {a.code_name: a.name for a in animals_rows}
+
     maintenance = int(user.maintenance_per_minute or 0)
-    text = _vet_text(sick_events=sick_events, maintenance=maintenance)
+    text = _vet_text(sick_events=sick_events, maintenance=maintenance, names_map=names_map)
     with contextlib.suppress(Exception):
-        await query.message.edit_text(text=text, reply_markup=_vet_kb(sick_events))
+        await query.message.edit_text(text=text, reply_markup=_vet_kb(sick_events, names_map))
     await query.answer()
 
 
@@ -672,9 +680,15 @@ async def cure_animal(
 
     # Recalculate income to remove sick-animal penalty
     await sync_user_income(session=session, user=user)
+
+    animal_row = await session.scalar(
+        select(Animal).where(Animal.code_name == event.animal_code_name)
+    )
+    animal_name = animal_row.name if animal_row else event.animal_code_name
+
     await session.commit()
 
-    await query.answer(f"✅ Животное {event.animal_code_name} вылечено!", show_alert=True)
+    await query.answer(f"✅ Животное {animal_name} вылечено!", show_alert=True)
 
     # Refresh vet screen
     remaining_sick = (
@@ -685,9 +699,14 @@ async def cure_animal(
             )
         )
     ).all()
+    codes = [e.animal_code_name for e in remaining_sick]
+    animals_rows = (
+        await session.scalars(select(Animal).where(Animal.code_name.in_(codes)))
+    ).all()
+    names_map = {a.code_name: a.name for a in animals_rows}
     maintenance = int(user.maintenance_per_minute or 0)
-    text = _vet_text(sick_events=remaining_sick, maintenance=maintenance)
+    text = _vet_text(sick_events=remaining_sick, maintenance=maintenance, names_map=names_map)
     with contextlib.suppress(Exception):
         await query.message.edit_text(
-            text=text, reply_markup=_vet_kb(remaining_sick)
+            text=text, reply_markup=_vet_kb(remaining_sick, names_map)
         )
