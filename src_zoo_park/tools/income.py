@@ -1,3 +1,4 @@
+import math
 from datetime import datetime
 
 from db import Animal, SickAnimalEvent, Unity, User, Value
@@ -78,13 +79,21 @@ async def income_(session: AsyncSession, user: User):
     ):
         income = income * (1 + v / 100)
 
-    # Diversity bonus: +N% per unique species owned
+    # Diversity bonus: +N% per effective species (Shannon entropy-based)
+    # N_eff = exp(H), where H = -sum(p_i * log(p_i)), p_i = species_count / total
+    # Even distribution → N_eff = unique_species; monopoly → N_eff ≈ 1
     if animals:
-        unique_species = len(animals)
         bonus_per_species = await tools.get_value(
             session=session, value_name="DIVERSITY_BONUS_PER_SPECIES"
         )
-        diversity_mult = 1 + (unique_species * bonus_per_species / 100)
+        total_animals = sum(animals.values())
+        shannon_h = -sum(
+            (q / total_animals) * math.log(q / total_animals)
+            for q in animals.values()
+            if q > 0
+        )
+        n_eff = math.exp(shannon_h)
+        diversity_mult = 1 + (n_eff * bonus_per_species / 100)
         income = income * diversity_mult
 
     if unity_idpk:
@@ -229,9 +238,15 @@ async def _apply_specialization_bonus(
         income = income * (1.0 + megapark_bonus / 100)
 
     elif spec == "wild":
-        unique_species = len(animals)
-        # +3% additional per unique species
-        income = income * (1.0 + unique_species * 3 / 100)
+        # +3% per effective species (same entropy-based N_eff as diversity bonus)
+        total_animals = sum(animals.values())
+        shannon_h = -sum(
+            (q / total_animals) * math.log(q / total_animals)
+            for q in animals.values()
+            if q > 0
+        )
+        n_eff = math.exp(shannon_h)
+        income = income * (1.0 + n_eff * 3 / 100)
 
     return income
 
