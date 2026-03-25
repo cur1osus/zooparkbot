@@ -9,7 +9,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.utils.deep_linking import create_start_link
 from bot.keyboards import ik_start_created_game, rk_main_menu
 from config import CHAT_ID
-from db import Game, Gamer, RandomMerchant, RequestToUnity, SickAnimalEvent, User, Value
+from db import Animal, Game, Gamer, RandomMerchant, RequestToUnity, SickAnimalEvent, User, Value
 from game_variables import (
     ID_AUTOGENERATE_MINI_GAME,
     MAX_AMOUNT_GAMERS,
@@ -539,14 +539,17 @@ async def _maybe_generate_sick_events(session: AsyncSession) -> None:
         session.add(event)
 
         # Notify user
-        animal_name = animal_code
+        animal_row = await session.scalar(
+            select(Animal).where(Animal.code_name == animal_code)
+        )
+        animal_name = animal_row.name if animal_row else animal_code
         try:
             await bot.send_message(
                 chat_id=user.id_user,
                 text=(
                     f"🤒 Одно из ваших животных заболело!\n\n"
                     f"Вид: {animal_name}\n"
-                    f"Стоимость лечения: {formatter(cure_cost)}₽\n"
+                    f"Стоимость лечения: {formatter.format_large_number(cure_cost)}₽\n"
                     f"⏳ До штрафа на доход: {warning_hours} ч.\n\n"
                     f"Зайдите в профиль → «Ветеринар» чтобы вылечить."
                 ),
