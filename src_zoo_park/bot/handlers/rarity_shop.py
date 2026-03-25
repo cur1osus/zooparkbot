@@ -39,6 +39,9 @@ from tools import (
     get_price_animal,
     get_remain_seats,
     get_text_message,
+    get_top_unity_by_animal,
+    get_value,
+    get_value_prop_from_iai,
     magic_count_animal_for_kb,
 )
 
@@ -59,23 +62,51 @@ async def get_rarity_shop_caption(
     animal_price: int,
     unity_idpk: int | None,
 ) -> str:
+    base_income = int(animal.income)
+    quantity_animals = (await get_dict_animals(user, session=session)).get(
+        animal.code_name, 0
+    )
+
+    # Item bonus for this animal
+    item_pct = int(get_value_prop_from_iai(
+        info_about_items=user.info_about_items,
+        name_prop=f"{animal.code_name}:animal_income",
+    ) or 0)
+
+    # Unity bonus (top unity by this animal type)
+    unity_pct = 0
+    if unity_idpk:
+        unity_idpk_top, animal_code_top = await get_top_unity_by_animal(session=session)
+        if unity_idpk_top == unity_idpk and animal_code_top == animal.code_name:
+            unity_pct = int(await get_value(session=session, value_name="BONUS_FOR_AMOUNT_ANIMALS"))
+
+    # Milestone bonus
+    _milestones = [10**i for i in range(1, 19)]
+    milestone_pct = sum(1 for m in _milestones if quantity_animals >= m)
+
     income = await get_income_animal(
         session=session,
         animal=animal,
         unity_idpk=unity_idpk,
         info_about_items=user.info_about_items,
     )
-    quantity_animals = (await get_dict_animals(user, session=session)).get(
-        animal.code_name, 0
-    )
-    milestones = [10**i for i in range(1, 19)]
-    milestone_pct = sum(1 for m in milestones if quantity_animals >= m)
+
+    bonuses = []
+    if item_pct:
+        bonuses.append(f"🎒 Предметы: +{item_pct}%")
+    if unity_pct:
+        bonuses.append(f"🏰 Клан: +{unity_pct}%")
+    if milestone_pct:
+        bonuses.append(f"📈 Прирост: +{milestone_pct}%")
+    bonuses_text = "\n".join(bonuses) if bonuses else "—"
+
     return await get_text_message(
         "choice_quantity_rarity_shop_menu",
         name_=animal.name,
         price=formatter.format_large_number(animal_price),
+        base_income=formatter.format_large_number(base_income),
         income=formatter.format_large_number(income),
-        milestone_pct=milestone_pct,
+        bonuses=bonuses_text,
         usd=formatter.format_large_number(user.usd),
         quantity_animals=quantity_animals,
     )
