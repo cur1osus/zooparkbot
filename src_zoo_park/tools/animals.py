@@ -58,21 +58,18 @@ async def get_price_animal(
     if discount:
         price *= 1 - (discount / 100)
 
-    # Quantity-based price scaling (exponential cost to prevent farming one species)
+    # Quantity-based price scaling: +N% per order of magnitude owned (10, 100, 1K...)
     if user is not None:
         from db.structured_state import get_user_animals_map
         user_animals = await get_user_animals_map(session=session, user=user)
         quantity_owned = user_animals.get(animal_code_name, 0)
         if quantity_owned > 0:
-            import math
             scale_pct = await tools.get_value(
                 session=session, value_name="ANIMAL_PRICE_SCALE_PER_10"
             )
-            base = 1 + scale_pct / 100
-            # Cap exponent so result never exceeds 100x (avoids Decimal overflow)
-            max_exp = math.log(100) / math.log(base) if base > 1 else float("inf")
-            exponent = min(quantity_owned / 10, max_exp)
-            scale_multiplier = min(100.0, base ** exponent)
+            _price_milestones = [10**i for i in range(1, 19)]
+            n = sum(1 for m in _price_milestones if quantity_owned >= m)
+            scale_multiplier = 1 + n * scale_pct / 100
             price = int(price * scale_multiplier)
 
     return int(price)
